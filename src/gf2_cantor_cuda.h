@@ -79,18 +79,26 @@ __global__ void k_pack(const u64 *a, size_t nwords, u64 *F, size_t nchunks,
     }
 }
 
-// overlap-add, phase 0: even chunks (bit offsets multiple of 64);
-// phase 1: odd chunks.  Split avoids write conflicts without atomics.
-__global__ void k_unpack(const u64 *F, size_t nchunks, u64 *out,
-                         size_t owords, int phase) {
-    size_t k = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    k = 2 * k + phase;
-    size_t stride = 2 * (size_t)gridDim.x * blockDim.x;
-    for (; k < nchunks; k += stride) {
-        u64 e = F[k];
-        size_t pos = 32 * k, w = pos >> 6, sh = pos & 63;
-        if (w < owords) out[w] ^= e << sh;
-        if (sh && w + 1 < owords) out[w + 1] ^= e >> 32;
+// Overlap-add in GATHER form: output word w overlaps exactly chunks
+// 2w-1, 2w, 2w+1 (64-bit elements at 32-bit stride), so each output
+// word is computed and written by exactly one thread.  No prior zeroing
+// needed: out[0..owords) is fully overwritten.
+//   (History: an earlier scatter formulation XORed chunk k into words w
+//   and w+1 with an even/odd phase split; but odd chunks k and k+2
+//   share a word, so adjacent threads in the same launch raced and lost
+//   updates on real GPUs -- caught by hardware selftest, invisible to
+//   sequential emulation.)
+__global__ void k_overlap_add(const u64 *F, size_t nchunks, u64 *out,
+                              size_t owords) {
+    size_t w = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)gridDim.x * blockDim.x;
+    for (; w < owords; w += stride) {
+        u64 v = 0;
+        size_t k = 2 * w;
+        if (k < nchunks) v ^= F[k];                     // aligned chunk
+        if (k + 1 < nchunks) v ^= F[k + 1] << 32;       // low half of odd chunk
+        if (w && k - 1 < nchunks) v ^= F[k - 1] >> 32;  // high half of prior odd
+        out[w] = v;
     }
 }
 

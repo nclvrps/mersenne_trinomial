@@ -145,13 +145,19 @@ Stage 2 on survivors (per s):
 
 ## Caveats, honestly stated
 
-- The CUDA code has never executed on a real GPU (none in this
-  container). It is the same arithmetic as the CPU-validated code
-  (shared headers), and the kernel logic is emulation-validated, but
-  launch-scale behavior, true atomic contention, and occupancy are
-  untested. Run the built-in selftests on hardware first; they are
-  designed to catch exactly those classes of bug (the sieve selftest
-  compares against an in-process CPU run over 10^6 s values).
+- Hardware field report (CC 7.5, 8 GB): coarse_sieve --selftest passed
+  and a full production run produced factors through d = 29, confirmed
+  valid with check-ntl (the stop at 29 is the memory guard working as
+  designed: d = 30 needs 8.59 GB of tables; a >= 12 GB card reaches 30,
+  a 24 GB card reaches 31). The first hardware run of cantor_cuda /
+  trinomial_stage2 exposed a write race between adjacent odd chunks in
+  the scatter-form overlap-add -- exactly the class of bug sequential
+  emulation cannot exhibit. Fixed by reformulating as a gather
+  (k_overlap_add: one thread owns each output word); re-run
+  `./cantor_cuda selftest` and `./trinomial_stage2 selftest` on
+  hardware after this fix. All other kernels were audited for the same
+  pattern: every remaining write is either to thread-owned locations
+  (gather form, bijective index maps) or through atomics.
 - Marking order is irrelevant by construction (atomicMin over packed
   keys is commutative/idempotent), so the emulation's serial execution
   does not mask ordering bugs in best[].

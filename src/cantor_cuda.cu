@@ -69,10 +69,7 @@ static void gpu_mul(const u64 *a, u64 abits, const u64 *b, u64 bbits,
     k_pointwise<<<blocks, threads>>>(dFA, dFB, n);
     F.inv(dFA);
     CudaFFT::launch_dims(ow, blocks, threads);
-    k_zero<<<blocks, threads>>>(dOut, ow);
-    CudaFFT::launch_dims((ca + cb) / 2 + 1, blocks, threads);
-    k_unpack<<<blocks, threads>>>(dFA, ca + cb - 1, dOut, ow, 0);
-    k_unpack<<<blocks, threads>>>(dFA, ca + cb - 1, dOut, ow, 1);
+    k_overlap_add<<<blocks, threads>>>(dFA, ca + cb - 1, dOut, ow);
 
     cudaEventRecord(ev1);
     CUCHK(cudaEventSynchronize(ev1));

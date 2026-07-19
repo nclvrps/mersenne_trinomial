@@ -192,10 +192,7 @@ struct Stage2 {
         k_pointwise<<<blocks, threads>>>(dFA, dFB, F.n);
         F.inv(dFA);
         CudaFFT::launch_dims(nw2, blocks, threads);
-        k_zero<<<blocks, threads>>>(dT0, nw2);
-        CudaFFT::launch_dims(ca + 1, blocks, threads);
-        k_unpack<<<blocks, threads>>>(dFA, 2 * ca - 1, dT0, nw2, 0);
-        k_unpack<<<blocks, threads>>>(dFA, 2 * ca - 1, dT0, nw2, 1);
+        k_overlap_add<<<blocks, threads>>>(dFA, 2 * ca - 1, dT0, nw2);
     }
 
     // dACC <- dACC * (dA + x) mod T
