@@ -141,6 +141,18 @@ B3. The actual bottleneck, quantified: it is the per-degree modular
     2-3x reduction is available) -- an optimization, not a correctness
     issue.
 
+    MEASURED CALIBRATION (user's CC 7.5, 8 GB card): cantor_cuda bench
+    = 489 ms per full 136,279,841-bit product, squarely inside the
+    predicted 0.4-0.5 s band, and equal to ~410 GB/s effective traffic
+    -- the kernels are memory-bandwidth-saturated, confirming both the
+    cost model and that Taylor-cascade fusion (traffic reduction) is
+    the right next optimization.  Derived: ~0.5 s per accumulation
+    modmul; E[products/survivor] ~ 29 ln(10^5/29) + localization ~
+    300-500 => ~2.5-4 min per survivor; a ~63K-survivor s < 10^6 slice
+    ~ 4-5 GPU-months on this card, scaling with memory bandwidth on
+    newer parts.  Run `./trinomial_stage2 bench 136279841 <s>` for the
+    fold-inclusive per-op numbers.
+
     Feasibility verdict for the deep scan: YES -- clearly worthwhile on
     >= 12 GB modern cards, and roughly CPU-parity (still useful as an
     offload) on the 8 GB CC 7.5 card.

@@ -48,10 +48,16 @@ static inline void poly_xor_shift(std::vector<u64> &A, const std::vector<u64> &B
 static inline u64 poly_gcd_naive(const u64 *a, size_t aw,
                                  const u64 *b, size_t bw,
                                  std::vector<u64> *gout) {
+    // Word counts beyond SIZE_MAX/16 are impossible for real inputs;
+    // the explicit clamp also gives the compiler a provable range for
+    // aw*8 and bw*8, which silences a -Wstringop-overflow false
+    // positive that GCC >= 13 emits from const-propagated clones of
+    // this function (observed with g++ 15.2 on Ubuntu 26.04).
+    if (aw > (SIZE_MAX >> 4) || bw > (SIZE_MAX >> 4)) return 0;
     size_t nw = (aw > bw ? aw : bw) + 1;
     std::vector<u64> A(nw, 0), B(nw, 0);
-    memcpy(A.data(), a, aw * 8);
-    memcpy(B.data(), b, bw * 8);
+    if (aw) memcpy(A.data(), a, aw * sizeof(u64));
+    if (bw) memcpy(B.data(), b, bw * sizeof(u64));
     int64_t da = poly_deg_v(A), db = poly_deg_v(B);
     if (da < db) { A.swap(B); std::swap(da, db); }
     while (db >= 0) {

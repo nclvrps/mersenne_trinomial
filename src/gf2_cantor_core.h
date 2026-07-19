@@ -67,9 +67,16 @@ GF2C_HD u64 gf64_reduce(cl128 t) {
 
 GF2C_HD u64 gf64_mul_portable(u64 a, u64 b) { return gf64_reduce(cl64(a, b)); }
 
-// On x86 hosts, use PCLMULQDQ for the reference/host path (validated
-// against the portable path at startup by the test program).
-#if !defined(__CUDA_ARCH__) && defined(__x86_64__)
+// On x86 hosts compiled with PCLMUL+SSE4.1 enabled (e.g. -march=native
+// or -mpclmul -msse4.1), use PCLMULQDQ for the reference/host path
+// (validated against the portable path at startup by the test
+// programs).  Newer GCC (13+, incl. 15.2 on Ubuntu 26.04) hard-errors
+// on always_inline intrinsics unless the ISA flags are set, so this is
+// gated on the feature macros and falls back to the bit-identical
+// (slower) portable path when they are absent.  The Makefile passes
+// -Xcompiler -march=native to nvcc for exactly this reason.
+#if !defined(__CUDA_ARCH__) && defined(__x86_64__) && \
+    defined(__PCLMUL__) && defined(__SSE4_1__)
 #include <immintrin.h>
 static inline cl128 cl64_x86(u64 a, u64 b) {
     __m128i p = _mm_clmulepi64_si128(_mm_cvtsi64_si128((long long)a),

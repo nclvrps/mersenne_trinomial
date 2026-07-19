@@ -196,6 +196,26 @@ Stage 2 primitives standalone (per s):
   hardware after this fix. All other kernels were audited for the same
   pattern: every remaining write is either to thread-owned locations
   (gather form, bijective index maps) or through atomics.
+- Measured on the same card: `cantor_cuda bench` = 489 ms for a full
+  136,279,841 x 136,279,841-bit product (FFT 2^24), residues PASS.
+  That is ~200 GB of kernel memory traffic in 0.489 s -- an effective
+  ~410 GB/s, i.e. the transform is already running at the card's
+  practical memory-bandwidth ceiling.  Consequences: (a) the 13.0 s
+  single-core CPU multiply maps to a 26.6x single-GPU speedup; (b) the
+  remaining optimization lever is traffic reduction (fusing Taylor
+  cascade levels in shared memory, est. 2-3x), not occupancy tuning;
+  (c) deep-scan calibration: ~0.5 s per accumulation modmul => roughly
+  2.5-4 min per survivor at maxd = 10^5 on this class of card (see
+  deep_scan_handoff.md B3).
+- Toolchain notes (GCC 13+, incl. g++ 15.2 / Ubuntu 26.04, CUDA hosts):
+  nvcc's host pass needs the ISA flags for the PCLMUL/SSE4.1
+  intrinsics, so NVFLAGS now defaults to `-Xcompiler -march=native`
+  (or use -mpclmul,-msse4.1); without them gf2_cantor_core.h now falls
+  back cleanly to the bit-identical portable carry-less multiply
+  instead of a hard always_inline error.  A -Wstringop-overflow false
+  positive from const-propagated clones of poly_gcd_naive (g++ 15.2)
+  is fixed with an explicit provable size clamp; the header compiles
+  clean at -O3 -Wstringop-overflow=4.
 - Marking order is irrelevant by construction (atomicMin over packed
   keys is commutative/idempotent), so the emulation's serial execution
   does not mask ordering bugs in best[].

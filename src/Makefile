@@ -6,7 +6,12 @@
 CXX      ?= g++
 NVCC     ?= nvcc
 CXXFLAGS ?= -O2 -march=native -Wall -Wextra
-NVFLAGS  ?= -O3 -arch=native  --compiler-options -march=native
+# -Xcompiler -march=native: newer GCC (13+) hard-errors on the PCLMUL/
+# SSE4.1 always_inline intrinsics in gf2_cantor_core.h unless host ISA
+# flags are enabled (alternative: -Xcompiler -mpclmul,-msse4.1).
+# Without them the code now compiles anyway via the slower portable
+# carry-less-multiply fallback.
+NVFLAGS  ?= -O3 -arch=native -Xcompiler -march=native
 INC       = -I. -Icommon
 
 vpath %.cpp . sieve cantor
