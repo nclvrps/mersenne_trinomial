@@ -6,7 +6,7 @@
 CXX      ?= g++
 NVCC     ?= nvcc
 CXXFLAGS ?= -O2 -march=native -Wall -Wextra
-NVFLAGS  ?= -O3 -arch=native
+NVFLAGS  ?= -O3 -arch=native --compiler-options -march=native
 INC       = -I. -Icommon
 
 vpath %.cpp . sieve cantor
