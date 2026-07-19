@@ -60,6 +60,18 @@ Two things are true at once:
     cantor/cantor_cuda.cu       CUDA FFT driver: selftest / bench
     stage2/trinomial_stage2.cu  squares-and-products accelerator:
                                 selftest / run / bench
+    common/gf2_trinomial_cuda.h shared trinomial kernels + GPU context
+                                (spread squaring, fold reduction, FFT
+                                modmul), used by stage2 and the scanner
+    common/gf2_gcd.h            host GCD layer: naive backend + helpers
+    common/gf2_gcd_ntl.cpp      NTL backend (subquadratic GCD, CanZass
+                                EDF); auto-detected by the Makefile
+    scan/trinomial_scan.cu      DEEP SCAN of coarse-sieve survivors:
+                                least factor degree in (k0, maxd] +
+                                lex-least mask, or "u"; speculative
+                                interval GCDs on a CPU pool, binary-
+                                search localization, resume support
+                                (design: deep_scan_handoff.md Part C)
     Makefile                    cpu / cuda / emultest targets
 
 ## Validation record (everything run in this container)
@@ -85,6 +97,20 @@ CPU FFT (`cantor_ref`):
 - full-scale: 136,279,841-bit x 136,279,841-bit multiply, FFT 2^24,
   **13.0 s on one CPU core**, verified by residues modulo three
   independent degree-61 irreducibles.
+
+Deep scanner (`trinomial_scan`, emulation + this container's NTL):
+- GCD backends: naive vs NTL cross-check on constructed common-factor
+  instances (validates the word<->GF2X byte conversions empirically).
+- end-to-end vs an independent CPU oracle (per-degree naive GCDs) at
+  r = 4423, k0 = 5, maxd = 200: 104 survivors, 102 factors + 2 "u",
+  including 3 multi-factor equal-degree ties resolved identically by
+  NTL CanZass (scan) and ascending-mask enumeration (oracle); 0
+  mismatches under both the default and a stress (L = 8) interval
+  policy, exercising deep localization.
+- pipeline cross-validation: sieve_ref survivors (Zech-log method)
+  agree exactly with the oracle's survivor set, and scan results with
+  d <= 11 are line-for-line identical (degrees AND masks) to a
+  depth-11 sieve_ref run -- two disjoint algorithms, same output.
 
 CUDA programs (no GPU in this container -- see caveats):
 - all three validated by *functional* single-threaded emulation of the
@@ -112,6 +138,7 @@ On the GPU box, in order:
     ./cantor_cuda selftest           # GPU vs host engine, many sizes
     ./coarse_sieve --selftest        # full sieve GPU-vs-CPU, 10^6 s values
     ./trinomial_stage2 selftest
+    ./trinomial_scan --selftest      # end-to-end vs CPU oracle at r=4423
     ./cantor_cuda bench              # 136M-bit multiply timing + residues
 
 Production coarse sieve (s up to (r-1)/2 = 68,139,920):
@@ -130,7 +157,18 @@ Production coarse sieve (s up to (r-1)/2 = 68,139,920):
   mults each. At d = 30 this is a few times 10^10 32-bit clmul-free
   field mults -- minutes on a modern card, versus CPU-hours.
 
-Stage 2 on survivors (per s):
+Deep scan of the survivors (the factor.cpp-style search for degrees
+k0 < d <= maxd; see deep_scan_handoff.md for design and cost model):
+
+    ./trinomial_scan 136279841 out.survivors.txt 29 100000 deep \
+        --gcd-threads 8 --state deep.state
+    # k0 MUST be the depth coarse_sieve actually reached (it prints it).
+    # deep.results.txt: "s d p<hex>" / "s u"; append-mode, resumable.
+    # Production r requires the NTL GCD backend: install libntl-dev
+    # (the Makefile auto-detects it), ideally NTL built with gf2x
+    # (NTL_GF2X_LIB=on) exactly as for factor.cpp.
+
+Stage 2 primitives standalone (per s):
 
     ./trinomial_stage2 run 136279841 <s> <k0> <k1> out_s [state.bin]
     # then on CPU: gcd(out_s.acc as an r-bit polynomial, T_s) with

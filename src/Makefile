@@ -6,15 +6,24 @@
 CXX      ?= g++
 NVCC     ?= nvcc
 CXXFLAGS ?= -O2 -march=native -Wall -Wextra
-NVFLAGS  ?= -O3 -arch=native --compiler-options -march=native
+NVFLAGS  ?= -O3 -arch=native  --compiler-options -march=native
 INC       = -I. -Icommon
 
 vpath %.cpp . sieve cantor
-vpath %.cu  . sieve cantor stage2
+vpath %.cu  . sieve cantor stage2 scan
 vpath %.h   . common
 
+# NTL (with gf2x for production r) provides the subquadratic GCD backend
+NTL_OK ?= $(shell test -e /usr/include/NTL/GF2X.h && echo 1)
+ifeq ($(NTL_OK),1)
+NTLDEF = -DHAVE_NTL
+NTLLIB = -lntl -lgmp
+NTLSRC = $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp))
+NTLSRC_EMUL = build_emul/gf2_gcd_ntl.cpp
+endif
+
 CPU  = sieve_ref cantor_ref
-CUDA = coarse_sieve cantor_cuda trinomial_stage2
+CUDA = coarse_sieve cantor_cuda trinomial_stage2 trinomial_scan
 
 all: cpu
 cpu: $(CPU)
@@ -32,8 +41,11 @@ coarse_sieve: coarse_sieve.cu gf2_small_field.h gf2_field_setup.h
 cantor_cuda: cantor_cuda.cu gf2_cantor_cuda.h gf2_cantor_core.h gf2_cantor_engine.h
 	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
 
-trinomial_stage2: trinomial_stage2.cu gf2_cantor_cuda.h gf2_small_field.h
+trinomial_stage2: trinomial_stage2.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_small_field.h
 	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
+
+trinomial_scan: trinomial_scan.cu gf2_trinomial_cuda.h gf2_gcd.h
+	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
 # Functional single-threaded CPU emulation of the CUDA programs (no GPU
 # needed): kernel launches become sequential loops via cuda_emul.h.
@@ -45,14 +57,27 @@ emul-%:
 	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h; do \
 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
 	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
+	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
 	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
 	$(SEDLAUNCH) $$(find . sieve cantor stage2 -maxdepth 1 -name '$*.cu' 2>/dev/null | head -1) > build_emul/$*.cpp
 	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul -o build_emul/$* build_emul/$*.cpp
 
-emultest: emul-coarse_sieve emul-cantor_cuda emul-trinomial_stage2
+emul-trinomial_scan:
+	mkdir -p build_emul
+	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h; do \
+	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
+	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
+	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
+	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
+	$(SEDLAUNCH) $$(find . sieve cantor stage2 scan -maxdepth 1 -name 'trinomial_scan.cu' 2>/dev/null | head -1) > build_emul/trinomial_scan.cpp
+	@if [ "$(NTL_OK)" = "1" ]; then cp $$(ls common/gf2_gcd_ntl.cpp 2>/dev/null || ls gf2_gcd_ntl.cpp) build_emul/; fi
+	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul $(NTLDEF) -pthread -o build_emul/trinomial_scan build_emul/trinomial_scan.cpp $(NTLSRC_EMUL) $(NTLLIB)
+
+emultest: emul-coarse_sieve emul-cantor_cuda emul-trinomial_stage2 emul-trinomial_scan
 	./build_emul/cantor_cuda selftest
 	./build_emul/coarse_sieve --selftest
 	./build_emul/trinomial_stage2 selftest
+	./build_emul/trinomial_scan --selftest
 
 clean:
 	rm -rf $(CPU) $(CUDA) build_emul

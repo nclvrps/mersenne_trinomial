@@ -1,0 +1,138 @@
+// gf2_gcd.h
+// Host-side GCD and small-factor utilities for GF(2)[x] bit arrays
+// (little-endian u64 words, bit i of word w = coefficient 64w + i).
+//
+// Two backends:
+//   - naive: self-contained binary-polynomial Euclid, O(d^2/64).
+//     Always available; fine for selftests and r up to ~10^6 bits.
+//   - NTL (define HAVE_NTL, link gf2_gcd_ntl.cpp with -lntl -lgmp):
+//     subquadratic HalfGCD + CanZass equal-degree factorization --
+//     the same machinery factor.cpp uses.  REQUIRED for production r.
+//
+// Degree convention: return value is deg(gcd); 0 means gcd == 1
+// (trivial).  gcd(0, b) = b.
+
+#ifndef GF2_GCD_H
+#define GF2_GCD_H
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+typedef uint64_t u64;
+
+static inline int64_t poly_deg_w(const u64 *w, size_t nw) {
+    for (size_t i = nw; i-- > 0;)
+        if (w[i]) return (int64_t)(i * 64 + 63 - __builtin_clzll(w[i]));
+    return -1;
+}
+static inline int64_t poly_deg_v(const std::vector<u64> &v) {
+    return poly_deg_w(v.data(), v.size());
+}
+
+// A ^= B << sh  (A must be large enough; caller guarantees)
+static inline void poly_xor_shift(std::vector<u64> &A, const std::vector<u64> &B,
+                                  int64_t bdeg, u64 sh) {
+    size_t ws = (size_t)(sh >> 6);
+    unsigned bs = (unsigned)(sh & 63);
+    size_t bw = (size_t)(bdeg >> 6) + 1;
+    for (size_t j = bw; j-- > 0;) {
+        u64 v = B[j];
+        A[j + ws] ^= v << bs;
+        if (bs && j + ws + 1 < A.size()) A[j + ws + 1] ^= v >> (64 - bs);
+    }
+}
+
+// naive Euclid; returns deg(gcd); writes gcd words into *gout if given
+static inline u64 poly_gcd_naive(const u64 *a, size_t aw,
+                                 const u64 *b, size_t bw,
+                                 std::vector<u64> *gout) {
+    size_t nw = (aw > bw ? aw : bw) + 1;
+    std::vector<u64> A(nw, 0), B(nw, 0);
+    memcpy(A.data(), a, aw * 8);
+    memcpy(B.data(), b, bw * 8);
+    int64_t da = poly_deg_v(A), db = poly_deg_v(B);
+    if (da < db) { A.swap(B); std::swap(da, db); }
+    while (db >= 0) {
+        while (da >= db) {
+            poly_xor_shift(A, B, db, (u64)(da - db));
+            da = poly_deg_v(A);
+            if (da < 0) break;
+        }
+        A.swap(B);
+        std::swap(da, db);
+    }
+    if (da < 0) return 0;              // gcd(0,0); treat as trivial
+    if (gout) { gout->assign(A.begin(), A.begin() + (size_t)(da >> 6) + 1); }
+    return (u64)da;
+}
+
+// does m divide g?  (gcd(m, g) == m)
+static inline bool poly_divides(const std::vector<u64> &m,
+                                const std::vector<u64> &g) {
+    std::vector<u64> d;
+    u64 dd = poly_gcd_naive(m.data(), m.size(), g.data(), g.size(), &d);
+    return (int64_t)dd == poly_deg_v(m) && dd > 0;
+}
+
+// numeric (== lexicographic-at-equal-degree) comparison
+static inline bool poly_less(const std::vector<u64> &x,
+                             const std::vector<u64> &y) {
+    size_t n = (x.size() > y.size() ? x.size() : y.size());
+    for (size_t i = n; i-- > 0;) {
+        u64 xv = i < x.size() ? x[i] : 0, yv = i < y.size() ? y[i] : 0;
+        if (xv != yv) return xv < yv;
+    }
+    return false;
+}
+
+static inline std::string poly_hex(const std::vector<u64> &v) {
+    int64_t d = poly_deg_v(v);
+    if (d < 0) return "0";
+    std::string s;
+    for (int64_t n = d / 4; n >= 0; n--) {
+        unsigned dig = (unsigned)((v[(size_t)(n >> 4)] >> ((n & 15) * 4)) & 0xF);
+        s += "0123456789abcdef"[dig];
+    }
+    return s;
+}
+
+#ifdef HAVE_NTL
+// defined in gf2_gcd_ntl.cpp
+u64 poly_gcd_ntl(const u64 *a, size_t aw, const u64 *b, size_t bw,
+                 std::vector<u64> *gout, u64 keep_max_bits);
+// least (numeric) irreducible factor of g with degree exactly `target`;
+// returns false if none (should not happen when preconditions hold)
+bool edf_least_ntl(const u64 *g, size_t gw, u64 target,
+                   std::vector<u64> &out);
+#endif
+
+#define GCD_KEEP_MAX_BITS ((u64)1 << 22)
+
+// dispatch: NTL when compiled in, else naive
+static inline u64 poly_gcd(const u64 *a, size_t aw, const u64 *b, size_t bw,
+                           std::vector<u64> *gout) {
+#ifdef HAVE_NTL
+    return poly_gcd_ntl(a, aw, b, bw, gout, GCD_KEEP_MAX_BITS);
+#else
+    return poly_gcd_naive(a, aw, b, bw, gout);
+#endif
+}
+
+// Fallback equal-degree "least factor" by ascending-mask enumeration.
+// Valid because every irreducible factor of g has degree exactly
+// `target` (see deep_scan_handoff.md C2): any degree-`target` divisor
+// of g is then necessarily one of those irreducible factors.  Only
+// usable for small target (2^(target-1) candidates).
+static inline bool edf_least_enum(const std::vector<u64> &g, u64 target,
+                                  std::vector<u64> &out) {
+    if (target > 22) return false;
+    for (u64 m = ((u64)1 << target) | 1; m < ((u64)2 << target); m += 2) {
+        std::vector<u64> mv{m};
+        if (poly_divides(mv, g)) { out = mv; return true; }
+    }
+    return false;
+}
+
+#endif // GF2_GCD_H
