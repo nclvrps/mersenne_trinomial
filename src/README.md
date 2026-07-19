@@ -69,9 +69,12 @@ Two things are true at once:
     scan/trinomial_scan.cu      DEEP SCAN of coarse-sieve survivors:
                                 least factor degree in (k0, maxd] +
                                 lex-least mask, or "u"; speculative
-                                interval GCDs on a CPU pool, binary-
-                                search localization, resume support
-                                (design: deep_scan_handoff.md Part C)
+                                interval GCDs on a CPU pool; hits are
+                                resolved by factoring the SMALL interval
+                                gcd (no further full-size GCDs, no GPU
+                                work); resume support (design:
+                                deep_scan_handoff.md Part C + updates)
+    common/ntl_check.cpp        tiny link check for NTL auto-detection
     Makefile                    cpu / cuda / emultest targets
 
 ## Validation record (everything run in this container)
@@ -163,7 +166,10 @@ k0 < d <= maxd; see deep_scan_handoff.md for design and cost model):
     ./trinomial_scan 136279841 out.survivors.txt 29 100000 deep \
         --gcd-threads 8 --state deep.state
     # k0 MUST be the depth coarse_sieve actually reached (it prints it).
-    # deep.results.txt: "s d p<hex>" / "s u"; append-mode, resumable.
+    # deep.results.txt: "s d p<hex>" / "s u" (plus rare "s rA-B" =
+    # unresolved factor with degree in [A,B]); append-mode, resumable.
+    # --l0 / --interval set the geometric interval lengths (default 64
+    # doubling to 4096); one CPU GCD per interval, overlapped.
     # Production r requires the NTL GCD backend: install libntl-dev
     # (the Makefile auto-detects it), ideally NTL built with gf2x
     # (NTL_GF2X_LIB=on) exactly as for factor.cpp.
@@ -216,6 +222,28 @@ Stage 2 primitives standalone (per s):
   positive from const-propagated clones of poly_gcd_naive (g++ 15.2)
   is fixed with an explicit provable size clamp; the header compiles
   clean at -O3 -Wstringop-overflow=4.
+- NTL specifics from a local-install field report: detection now
+  TRY-LINKS common/ntl_check.cpp against "-lntl -lgmp", then
+  "-lntl -lgf2x -lgmp" (an NTL built with NTL_GF2X_LIB=on references
+  gf2x and needs it spelled out at link time), then with -lpthread;
+  the try-compile also handles /usr/local installs.  Overrides:
+  make NTL_OK=0, or make NTLLIB="-L/opt/ntl/lib -lntl -lgf2x -lgmp".
+- Deep-scan performance, measured honestly (6-core Zen 2 + the CC 7.5
+  GPU): one NTL/gf2x GCD at r bits is ~62 s; a gf2x CPU modmul is
+  ~0.183 s/term single-core versus 0.492 s on this GPU, so tuned gf2x
+  multiplication currently BEATS the unfused GPU FFT ~2.7x per product
+  on this pairing.  The first scanner build additionally serialized
+  6-8 full-size GCDs per find inside a binary-search localization;
+  that design is now removed -- hits resolve by factoring the small
+  interval gcd (all its factors provably have degrees inside the hit
+  interval), cutting per-found-survivor wall from the observed 5.5-13
+  min to an expected ~1.5-2.5 min.  Straight verdict: even after the
+  fix, multi-instance factor.cpp remains the stronger deep-scan tool
+  on that CPU/GPU pairing; the GPU path wins after Taylor-cascade
+  fusion (2-3x product-traffic reduction) and/or on high-bandwidth
+  cards, while coarse_sieve (d <= 31) remains an unambiguous GPU win.
+  Zen 2's slow PDEP/PEXT is irrelevant: nothing in this codebase (or
+  gf2x's configuration) uses BMI2.
 - Marking order is irrelevant by construction (atomicMin over packed
   keys is commutative/idempotent), so the emulation's serial execution
   does not mask ordering bugs in best[].

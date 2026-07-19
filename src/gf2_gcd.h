@@ -112,6 +112,9 @@ u64 poly_gcd_ntl(const u64 *a, size_t aw, const u64 *b, size_t bw,
 // returns false if none (should not happen when preconditions hold)
 bool edf_least_ntl(const u64 *g, size_t gw, u64 target,
                    std::vector<u64> &out);
+// least factor degree of g AND its lex-least mask, via one CanZass
+bool factor_min_degree_ntl(const u64 *g, size_t gw, u64 &min_deg,
+                           std::vector<u64> &least_mask);
 #endif
 
 #define GCD_KEEP_MAX_BITS ((u64)1 << 22)

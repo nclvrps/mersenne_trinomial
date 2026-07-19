@@ -60,3 +60,33 @@ bool edf_least_ntl(const u64 *g, size_t gw, u64 target,
     return have;
 }
 #endif // HAVE_NTL
+
+// One CanZass over the interval gcd g: every irreducible factor of g
+// has degree inside the hit interval (deep_scan_handoff.md C2), so the
+// least factor degree of T in that interval and its lexicographically
+// least mask are read off directly -- no further full-size GCDs.
+bool factor_min_degree_ntl(const u64 *g, size_t gw, u64 &min_deg,
+                           std::vector<u64> &least_mask) {
+    GF2X G;
+    to_gf2x(G, g, gw);
+    if (deg(G) <= 0) return false;
+    vec_pair_GF2X_long fac;
+    CanZass(fac, G);
+    long best_d = -1;
+    std::vector<u64> best;
+    for (long i = 0; i < fac.length(); i++) {
+        long d = deg(fac[i].a);
+        if (d <= 0) continue;
+        std::vector<u64> w;
+        from_gf2x(w, fac[i].a);
+        if (best_d < 0 || d < best_d ||
+            (d == best_d && poly_less(w, best))) {
+            best_d = d;
+            best = w;
+        }
+    }
+    if (best_d < 0) return false;
+    min_deg = (u64)best_d;
+    least_mask = best;
+    return true;
+}

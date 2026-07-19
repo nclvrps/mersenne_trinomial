@@ -310,3 +310,50 @@ touched gf2_cantor_cuda.h (k_overlap_add), cantor_cuda.cu and
 trinomial_stage2.cu (call sites). Build: `make cpu`, `make cuda`,
 `make emultest`. Next implementation step: trinomial_scan.cu per Part C
 (reuse map C9), selftests C8(a) first, on emulation, before hardware.
+
+---------------------------------------------------------------------------
+## UPDATE 2 (after first production runs on real hardware)
+
+Measured on the user's 6-core Zen 2 + CC 7.5 8 GB GPU, r = 136279841:
+squaring+reduction 0.69 ms; product+reduction 492 ms (s-independent);
+one NTL/gf2x GCD ~62 s; factor.cpp reference ~0.183 s per term
+single-core with one GCD per ~210-630-degree interval.
+
+1. LOCALIZATION REDESIGN (obsoletes the C3 LOCALIZE step and most of
+   the practical case for B1).  The binary-search localization spent
+   one full-size GCD per level plus a final extraction GCD -- 6-8
+   serialized 62 s GCDs per find with the GPU idle (observed: silent
+   fans, --gcd-threads irrelevant).  All of it is unnecessary: by C2
+   plus induction over the previously cleared intervals, EVERY
+   irreducible factor of the interval gcd g has degree inside the hit
+   interval, so factoring the small g (one CanZass; or squaring mod g
+   without NTL) yields the least degree AND the lex-least mask
+   directly, in microseconds.  Implemented; discarding stale
+   speculative jobs is now non-blocking too (the old drain waited up
+   to pending x 62 s after each find; jobs now own their modulus via
+   shared_ptr so the next s starts immediately).  Verified: results
+   byte-identical to the pre-rewrite scanner, to the CPU oracle, and
+   to sieve_ref on the overlapping degree range.  Pathological
+   fallback when g is not capturable: emit "s rA-B" (a factor with
+   degree in [A, B], unresolved) -- the user's suggested range-only
+   mode, kept as the automatic escape hatch.
+
+2. HONEST PERFORMANCE VERDICT, revised with measurements.  gf2x's
+   tuned CPU multiplication (0.183 s/term) beats the unfused GPU FFT
+   (0.492 s) ~2.7x on this pairing, and a 6-core box can run several
+   single-threaded factor.cpp instances.  Even after fix (1), the deep
+   scan here costs ~1.5-2.5 min per found survivor (scan to the hit
+   interval end + one 62 s GCD, partly overlapped) versus factor.cpp's
+   ~100 s per ~210-degree interval per instance times N cores:
+   factor.cpp wins the deep scan on this hardware today.  The GPU path
+   becomes competitive-to-winning with (a) Taylor-cascade fusion
+   (2-3x traffic reduction -> 0.16-0.25 s/modmul on this card), and
+   (b) high-bandwidth GPUs (~1 TB/s puts current code at ~0.22 s and a
+   fused version at ~0.07-0.1 s/modmul).  The coarse sieve (d <= 31)
+   remains an unambiguous GPU win regardless.  Next engineering
+   priority if the deep scan matters: the fusion.
+
+3. Interval sizing after (1): larger intervals amortize the 62 s GCDs
+   against product overshoot past d*; break-even ~126 products per GCD
+   on this pairing.  Defaults now L0 = 64 doubling to Lmax = 4096
+   (--l0 / --interval to tune).

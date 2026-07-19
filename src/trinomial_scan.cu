@@ -13,23 +13,28 @@
 // thread pool, fully overlapped: the GPU keeps scanning speculatively
 // while GCD verdicts are pending, and verdicts are processed strictly
 // in interval order so out-of-order pool completions cannot misreport
-// the FIRST hit.  A hit interval is localized by binary search from its
-// start checkpoint; the first-hit degree k* equals the least factor
-// degree, and every irreducible factor of gcd(F_{k*} + x, T) has degree
-// exactly k* (proof in the handoff, C2), so the tie-break reduces to
-// equal-degree factorization of a small polynomial.
+// the FIRST hit.  Resolving a hit needs NO further full-size GCDs and
+// no GPU work: the interval gcd g is a small polynomial whose
+// irreducible factors ALL have degrees inside the hit interval (the C2
+// theorem plus induction over the previously cleared intervals), so a
+// single factorization of g yields both the least factor degree and
+// its lexicographically least mask.
 //
 // Build (NTL auto-detected by the Makefile; REQUIRED for large r):
 //     make trinomial_scan
 // Run:
 //     ./trinomial_scan <r> <survivors.txt> <k0> <maxd> <out_prefix>
-//         [--interval L] [--gcd-threads N] [--state FILE] [--verbose 0..3]
+//         [--interval Lmax] [--l0 L0] [--gcd-threads N] [--state FILE]
+//         [--verbose 0..3]
 // k0 MUST be the depth the coarse sieve actually reached (it prints
 // this; 29 on an 8 GB card), or factors in the gap will be missed.
 // Output <out_prefix>.results.txt, appended, resumable:
 //     s d p<hex>    least-degree factor (mask lex-least at that degree)
 //     s d g<file>   degree found, tie-break deferred (no NTL, d > 22):
 //                   gcd polynomial dumped to <file> for offline EDF
+//     s rA-B        pathological fallback: at least one factor with
+//                   degree in [A, B], unresolved (interval gcd not
+//                   capturable); rerun that range or hand to factor.cpp
 //     s u           no factor of degree <= maxd (hand to factor.cpp)
 // Selftest (CPU-oracle end-to-end at r = 4423, both backends):
 //     ./trinomial_scan --selftest
@@ -45,6 +50,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <memory>
 
 // ---------------------------------------------------------------------------
 // CPU GCD thread pool.  Jobs are (id, ACC words); the modulus T is set
@@ -58,11 +64,14 @@ struct GcdRes {
 class GcdPool {
     std::mutex mu;
     std::condition_variable cv_job, cv_res;
-    std::deque<std::pair<u64, std::vector<u64>>> jobs;
+    struct Job {
+        u64 id;
+        std::vector<u64> acc;
+        std::shared_ptr<const std::vector<u64>> mod;
+    };
+    std::deque<Job> jobs;
     std::map<u64, GcdRes> results;
-    std::set<u64> outstanding;
-    const u64 *T = nullptr;
-    size_t tw = 0;
+    std::set<u64> outstanding, discard;
     bool stopf = false;
     std::vector<std::thread> ths;
 
@@ -71,17 +80,15 @@ class GcdPool {
             std::unique_lock<std::mutex> lk(mu);
             cv_job.wait(lk, [&] { return stopf || !jobs.empty(); });
             if (jobs.empty()) { if (stopf) return; continue; }
-            u64 id = jobs.front().first;
-            std::vector<u64> acc = std::move(jobs.front().second);
+            Job j = std::move(jobs.front());
             jobs.pop_front();
-            const u64 *Tp = T;
-            size_t tww = tw;
             lk.unlock();
             GcdRes r;
-            r.gdeg = poly_gcd(acc.data(), acc.size(), Tp, tww, &r.g);
+            r.gdeg = poly_gcd(j.acc.data(), j.acc.size(), j.mod->data(),
+                              j.mod->size(), &r.g);
             lk.lock();
-            results[id] = std::move(r);
-            outstanding.erase(id);
+            outstanding.erase(j.id);
+            if (discard.erase(j.id) == 0) results[j.id] = std::move(r);
             cv_res.notify_all();
         }
     }
@@ -90,18 +97,13 @@ public:
     void start(int n) {
         for (int i = 0; i < n; i++) ths.emplace_back([this] { worker(); });
     }
-    void set_modulus(const u64 *t, size_t w) {
-        std::lock_guard<std::mutex> lk(mu);
-        if (!outstanding.empty()) {
-            fprintf(stderr, "internal: set_modulus with jobs in flight\n");
-            exit(1);
-        }
-        T = t; tw = w;
-    }
-    void submit(u64 id, std::vector<u64> acc) {
+    // each job carries shared ownership of its modulus, so a new s can
+    // start immediately while stale jobs from the previous s finish
+    void submit(u64 id, std::vector<u64> acc,
+                std::shared_ptr<const std::vector<u64>> mod) {
         std::lock_guard<std::mutex> lk(mu);
         outstanding.insert(id);
-        jobs.emplace_back(id, std::move(acc));
+        jobs.push_back(Job{id, std::move(acc), std::move(mod)});
         cv_job.notify_one();
     }
     bool try_get(u64 id, GcdRes &out) {
@@ -119,9 +121,12 @@ public:
         results.erase(id);
         return r;
     }
-    void drain_discard() {
-        std::unique_lock<std::mutex> lk(mu);
-        cv_res.wait(lk, [&] { return outstanding.empty(); });
+    // NON-BLOCKING: mark everything still in flight or unread as stale;
+    // workers drop stale results on completion.  (The old drain-based
+    // version blocked for up to pending * one-full-GCD after each find.)
+    void forget_all_pending() {
+        std::lock_guard<std::mutex> lk(mu);
+        for (u64 id : outstanding) discard.insert(id);
         results.clear();
     }
     void stop() {
@@ -167,7 +172,7 @@ static bool load_state(const char *path, u64 r, u64 s, u64 &k,
 // ---------------------------------------------------------------------------
 struct ScanParams {
     u64 k0 = 0, maxd = 0;
-    u64 L0 = 32, Lmax = 4096;
+    u64 L0 = 64, Lmax = 4096;
     int verbose = 1;
     const char *state_path = nullptr;
 };
@@ -177,68 +182,70 @@ struct ScanResult {
     u64 d = 0;
     std::vector<u64> mask;   // valid iff mask_ok
     bool mask_ok = false;
-    std::vector<u64> g;      // gcd(F_{k*} + x, T); dump when !mask_ok
+    std::vector<u64> g;      // interval gcd; dump when !mask_ok
     u64 gdeg = 0;
-    u64 n_gcd = 0;
+    bool range_only = false; // pathological: factor exists in [rlo, rhi]
+    u64 rlo = 0, rhi = 0;    // but g was not capturable for resolution
 };
 
-// Binary-search localization inside the first hit interval (lo, hi].
-// dCkpt holds F at lo on entry and is not modified; dLoc is scratch.
-// Returns k* and the final gcd g = gcd(F_{k*} + x, T).
-static u64 localize(TrinGPU &G, GcdPool &pool, const u64 *dCkpt, u64 *dLoc,
-                    u64 lo, u64 hi, u64 &seq, std::vector<u64> &g, u64 &gdeg,
-                    int verbose) {
-    size_t nb = G.nw * sizeof(u64);
-    CUCHK(cudaMemcpy(dLoc, dCkpt, nb, cudaMemcpyDeviceToDevice));
-    std::vector<u64> host(G.nw);
-    while (hi - lo > 1) {
-        u64 mid = lo + (hi - lo) / 2;
-        CUCHK(cudaMemcpy(G.dA, dLoc, nb, cudaMemcpyDeviceToDevice));
-        G.reset_acc();
-        for (u64 k = lo + 1; k <= mid; k++) {
-            G.square_A();
-            G.accumulate();
-        }
-        CUCHK(cudaMemcpy(host.data(), G.dACC, nb, cudaMemcpyDeviceToHost));
-        u64 id = seq++;
-        pool.submit(id, host);
-        GcdRes R = pool.wait_get(id);
-        if (R.gdeg > 0) hi = mid;
-        else {
-            lo = mid;
-            CUCHK(cudaMemcpy(dLoc, G.dA, nb, cudaMemcpyDeviceToDevice));
-        }
-        if (verbose >= 2)
-            fprintf(stderr, "    localize -> (%" PRIu64 ", %" PRIu64 "]\n",
-                    lo, hi);
+// Resolving a hit no longer touches T or the GPU at all: the interval
+// gcd g is small and every irreducible factor of g has degree inside
+// the hit interval (deep_scan_handoff.md C2), so one factorization of
+// g yields the least degree AND its lexicographically least mask.
+// This fallback (used without NTL, i.e. selftests / small r) finds the
+// least degree by squaring mod g and the mask by enumeration when the
+// degree is small enough; with NTL, factor_min_degree_ntl does both
+// via a single CanZass.
+static void poly_rem_inplace(std::vector<u64> &A, const std::vector<u64> &g) {
+    int64_t dg = poly_deg_v(g), da = poly_deg_v(A);
+    while (da >= dg && da >= 0) {
+        poly_xor_shift(A, g, dg, (u64)(da - dg));
+        da = poly_deg_v(A);
     }
-    // k* = hi; F at lo = hi - 1 is in dLoc
-    CUCHK(cudaMemcpy(G.dA, dLoc, nb, cudaMemcpyDeviceToDevice));
-    G.square_A();
-    k_xor_x<<<1, 1>>>(G.dA);
-    CUCHK(cudaMemcpy(host.data(), G.dA, nb, cudaMemcpyDeviceToHost));
-    u64 id = seq++;
-    pool.submit(id, host);
-    GcdRes R = pool.wait_get(id);
-    gdeg = R.gdeg;
-    g = std::move(R.g);
-    return hi;
+}
+
+static bool factor_min_degree_fallback(const std::vector<u64> &g, u64 kmax,
+                                       u64 &min_deg, std::vector<u64> &mask,
+                                       bool &mask_ok) {
+    min_deg = 0;
+    mask_ok = false;
+    int64_t dg = poly_deg_v(g);
+    if (dg <= 0) return false;
+    size_t gw = (size_t)(dg >> 6) + 1;
+    std::vector<u64> h(gw, 0);
+    h[0] = 2;                                   // x mod g
+    for (u64 k = 1; k <= kmax; k++) {
+        std::vector<u64> sq(mul_out_words((u64)dg, (u64)dg));
+        gf2x_naive_mul(h.data(), (u64)dg, h.data(), (u64)dg, sq.data());
+        poly_rem_inplace(sq, g);
+        sq.resize(gw);
+        h = sq;
+        std::vector<u64> hx = h;
+        hx[0] ^= 2ULL;                          // h + x
+        std::vector<u64> gg;
+        u64 gd = poly_gcd_naive(hx.data(), hx.size(), g.data(), g.size(), &gg);
+        if (gd > 0) {
+            min_deg = k;
+            mask_ok = edf_least_enum(gg, k, mask);
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
 // scan one s to first factor or maxd
 static ScanResult scan_one_s(TrinGPU &G, GcdPool &pool, const ScanParams &P,
                              u64 r, u64 s, std::vector<u64 *> &slot,
-                             u64 *dLoc) {
+                             u64 &gseq) {
     ScanResult res;
     G.set_s(s);
     size_t nw = G.nw, nb = nw * sizeof(u64);
 
-    std::vector<u64> T(bits_to_words(r + 1), 0);
-    T[0] |= 1;
-    T[s >> 6] |= 1ULL << (s & 63);
-    T[r >> 6] |= 1ULL << (r & 63);
-    pool.set_modulus(T.data(), T.size());
+    auto T = std::make_shared<std::vector<u64>>(bits_to_words(r + 1), 0);
+    (*T)[0] |= 1;
+    (*T)[s >> 6] |= 1ULL << (s & 63);
+    (*T)[r >> 6] |= 1ULL << (r & 63);
 
     std::vector<int> frees;
     for (int i = 0; i < (int)slot.size(); i++) frees.push_back(i);
@@ -266,37 +273,56 @@ static ScanResult scan_one_s(TrinGPU &G, GcdPool &pool, const ScanParams &P,
     int cur = alloc_slot();
     CUCHK(cudaMemcpy(slot[cur], G.dA, nb, cudaMemcpyDeviceToDevice));
     G.reset_acc();
-    u64 k = frontier, iv_start = frontier, L = P.L0, seqn = 0;
+    u64 k = frontier, iv_start = frontier, L = P.L0;
+    u64 &seqn = gseq;                    // ids unique across all s values
     double last_save = trin_now_s();
     std::vector<u64> hostA(nw);
 
-    auto do_found = [&](const Pend &pv) {
+    auto do_found = [&](const Pend &pv, GcdRes &R) {
         res.found = true;
-        res.d = localize(G, pool, slot[pv.ck], dLoc, pv.a, pv.b, seqn, res.g,
-                         res.gdeg, P.verbose);
-        res.n_gcd = seqn;
-        if (res.gdeg == res.d && !res.g.empty()) {
-            res.mask = res.g;
-            res.mask_ok = true;
-        } else if (!res.g.empty()) {
+        res.gdeg = R.gdeg;
+        u64 dmin = 0;
+        std::vector<u64> mask;
+        bool mask_ok = false, resolved = false;
+        if (!R.g.empty()) {
 #ifdef HAVE_NTL
-            res.mask_ok = edf_least_ntl(res.g.data(), res.g.size(), res.d,
-                                        res.mask);
+            resolved = factor_min_degree_ntl(R.g.data(), R.g.size(), dmin, mask);
+            mask_ok = resolved;
 #else
-            res.mask_ok = edf_least_enum(res.g, res.d, res.mask);
+            resolved = factor_min_degree_fallback(R.g, pv.b, dmin, mask, mask_ok);
 #endif
         }
-        if (res.gdeg == 0 || res.gdeg % res.d != 0)
-            fprintf(stderr,
-                    "  s=%" PRIu64 ": WARNING unexpected gcd degree %" PRIu64
-                    " at k*=%" PRIu64 "\n", s, res.gdeg, res.d);
+        if (resolved) {
+            res.d = dmin;
+            res.mask = mask;
+            res.mask_ok = mask_ok;
+            res.g = std::move(R.g);
+            if (!(res.d > pv.a && res.d <= pv.b))
+                fprintf(stderr,
+                        "  s=%" PRIu64 ": WARNING least degree %" PRIu64
+                        " outside hit interval (%" PRIu64 ",%" PRIu64
+                        "] -- input not a genuine survivor?\n",
+                        s, res.d, pv.a, pv.b);
+            else if (P.verbose >= 2)
+                fprintf(stderr, "  s=%" PRIu64 ": hit in (%" PRIu64
+                        ",%" PRIu64 "], deg(g)=%" PRIu64 ", resolved d=%"
+                        PRIu64 " by factoring g\n",
+                        s, pv.a, pv.b, res.gdeg, res.d);
+        } else {
+            // pathological: interval gcd not capturable/factorable --
+            // report the known degree range for offline processing
+            res.range_only = true;
+            res.rlo = pv.a + 1;
+            res.rhi = pv.b;
+            res.g = std::move(R.g);
+        }
+        pool.forget_all_pending();       // non-blocking; stale jobs dropped
     };
 
     // handle the HEAD verdict (already popped); true if factor found
     auto head_verdict = [&](const Pend &pv, GcdRes &R) -> bool {
         if (R.gdeg > 0) {
-            do_found(pv);
-            pool.drain_discard();
+            do_found(pv, R);
             return true;
         }
         frontier = pv.b;
@@ -337,7 +363,7 @@ static ScanResult scan_one_s(TrinGPU &G, GcdPool &pool, const ScanParams &P,
         G.accumulate();
         if (k - iv_start >= L || k == P.maxd) {
             CUCHK(cudaMemcpy(hostA.data(), G.dACC, nb, cudaMemcpyDeviceToHost));
-            pool.submit(seqn, hostA);
+            pool.submit(seqn, hostA, T);
             pending.push_back({seqn, iv_start, k, cur});
             seqn++;
             cur = alloc_slot();
@@ -467,10 +493,9 @@ static int run_selftest(int gcd_threads) {
         G.init(r);
         std::vector<u64 *> slot(10);
         for (auto &p : slot) CUCHK(cudaMalloc(&p, G.nw * sizeof(u64)));
-        u64 *dLoc;
-        CUCHK(cudaMalloc(&dLoc, G.nw * sizeof(u64)));
         GcdPool pool;
         pool.start(gcd_threads);
+        u64 gseq = 0;
 
         struct Policy { u64 L0, Lmax; const char *name; };
         Policy pols[2] = {{32, 4096, "default intervals"},
@@ -481,7 +506,7 @@ static int run_selftest(int gcd_threads) {
             P.verbose = 0;
             u64 mism = 0;
             for (u64 s : surv) {
-                ScanResult res = scan_one_s(G, pool, P, r, s, slot, dLoc);
+                ScanResult res = scan_one_s(G, pool, P, r, s, slot, gseq);
                 const OracleOut &o = want[s];
                 bool ok = (res.found == o.found);
                 if (ok && res.found) {
@@ -503,7 +528,6 @@ static int run_selftest(int gcd_threads) {
         }
         pool.stop();
         for (auto &p : slot) cudaFree(p);
-        cudaFree(dLoc);
         G.fini();
     }
 
@@ -520,7 +544,8 @@ int main(int argc, char **argv) {
     if (argc < 6) {
         fprintf(stderr,
             "usage: %s <r> <survivors.txt> <k0> <maxd> <out_prefix>\n"
-            "          [--interval L] [--gcd-threads N] [--state FILE]\n"
+            "          [--interval Lmax] [--l0 L0] [--gcd-threads N]\n"
+            "          [--state FILE]\n"
             "          [--verbose 0..3]\n"
             "       %s --selftest\n"
             "k0 must be the depth the coarse sieve actually reached.\n",
@@ -538,6 +563,8 @@ int main(int argc, char **argv) {
     for (int i = 6; i < argc; i++) {
         if (!strcmp(argv[i], "--interval") && i + 1 < argc)
             P.Lmax = strtoull(argv[++i], 0, 10);
+        else if (!strcmp(argv[i], "--l0") && i + 1 < argc)
+            P.L0 = strtoull(argv[++i], 0, 10);
         else if (!strcmp(argv[i], "--gcd-threads") && i + 1 < argc)
             gcd_threads = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--state") && i + 1 < argc)
@@ -610,20 +637,22 @@ int main(int argc, char **argv) {
     G.init(r);
     std::vector<u64 *> slot(10);
     for (auto &p : slot) CUCHK(cudaMalloc(&p, G.nw * sizeof(u64)));
-    u64 *dLoc;
-    CUCHK(cudaMalloc(&dLoc, G.nw * sizeof(u64)));
     GcdPool pool;
     pool.start(gcd_threads);
+    u64 gseq = 0;
 
     u64 nfound = 0, nu = 0;
     double t0 = trin_now_s();
     for (u64 s : surv) {
         if (done.count(s)) continue;
         double ts = trin_now_s();
-        ScanResult res = scan_one_s(G, pool, P, r, s, slot, dLoc);
+        ScanResult res = scan_one_s(G, pool, P, r, s, slot, gseq);
         if (res.found) {
             nfound++;
-            if (res.mask_ok) {
+            if (res.range_only) {
+                fprintf(fres, "%" PRIu64 " r%" PRIu64 "-%" PRIu64 "\n", s,
+                        res.rlo, res.rhi);
+            } else if (res.mask_ok) {
                 fprintf(fres, "%" PRIu64 " %" PRIu64 " p%s\n", s, res.d,
                         poly_hex(res.mask).c_str());
             } else {
@@ -644,7 +673,11 @@ int main(int argc, char **argv) {
         fflush(fres);
         if (P.state_path) remove(P.state_path);
         if (P.verbose >= 1) {
-            if (res.found)
+            if (res.found && res.range_only)
+                fprintf(stderr, "  s=%" PRIu64 ": factor in [%" PRIu64
+                        ",%" PRIu64 "], unresolved (%.1fs)\n", s, res.rlo,
+                        res.rhi, trin_now_s() - ts);
+            else if (res.found)
                 fprintf(stderr, "  s=%" PRIu64 ": d=%" PRIu64 " (%.1fs)\n", s,
                         res.d, trin_now_s() - ts);
             else
@@ -657,7 +690,6 @@ int main(int argc, char **argv) {
     fclose(fres);
     pool.stop();
     for (auto &p : slot) cudaFree(p);
-    cudaFree(dLoc);
     G.fini();
     return 0;
 }

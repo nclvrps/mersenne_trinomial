@@ -18,11 +18,23 @@ vpath %.cpp . sieve cantor
 vpath %.cu  . sieve cantor stage2 scan
 vpath %.h   . common
 
-# NTL (with gf2x for production r) provides the subquadratic GCD backend
-NTL_OK ?= $(shell test -e /usr/include/NTL/GF2X.h && echo 1)
+# NTL provides the subquadratic GCD backend (effectively REQUIRED for
+# production r; build NTL with NTL_GF2X_LIB=on so multiplication uses
+# gf2x, exactly as for factor.cpp).  Detection TRY-LINKS ntl_check.cpp
+# against plausible library sets, which handles /usr/local installs and
+# NTL builds that need -lgf2x pulled in explicitly.  Overrides:
+#   make NTL_OK=0                              (force naive backend)
+#   make NTLLIB="-L/opt/ntl/lib -lntl -lgf2x -lgmp"   (custom paths)
+NTLCHK := $(firstword $(wildcard common/ntl_check.cpp ntl_check.cpp))
+ifeq ($(origin NTLLIB),undefined)
+NTLLIB := $(shell for L in "-lntl -lgmp" "-lntl -lgf2x -lgmp" \
+  "-lntl -lgf2x -lgmp -lpthread"; do \
+  if $(CXX) $(NTLCHK) $$L -o /tmp/ntl_chk_$$$$ >/dev/null 2>&1; \
+  then echo $$L; break; fi; done; rm -f /tmp/ntl_chk_$$$$)
+endif
+NTL_OK ?= $(if $(NTLLIB),1,0)
 ifeq ($(NTL_OK),1)
 NTLDEF = -DHAVE_NTL
-NTLLIB = -lntl -lgmp
 NTLSRC = $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp))
 NTLSRC_EMUL = build_emul/gf2_gcd_ntl.cpp
 endif
