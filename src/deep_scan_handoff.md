@@ -357,3 +357,37 @@ single-core with one GCD per ~210-630-degree interval.
    against product overshoot past d*; break-even ~126 products per GCD
    on this pairing.  Defaults now L0 = 64 doubling to Lmax = 4096
    (--l0 / --interval to tune).
+
+
+---------------------------------------------------------------------------
+## UPDATE 3: Taylor-cascade fusion implemented
+
+Design (gf2_cantor_cuda.h, k_taylor_reg<NS> / k_bfly_reg<NS>): at any
+depth L all cascade op ranges are physically contiguous, so g
+consecutive levels (blocksizes B_hi..B_lo) act inside contiguous
+windows of NS*CH elements, CH = (B_lo/4)<<L, NS = 4*B_hi/B_lo =
+2^(g+1); the g levels are an NS-slot cascade applied elementwise over
+the CH columns of the window.  One thread per (window, column) keeps
+all NS slot values in registers (fully unrolled static indexing),
+applies every level locally, and touches DRAM once each way with
+perfectly coalesced warp accesses (lanes take consecutive columns).
+Butterfly depths fuse identically (NS = 2^g, CH = 2^L_lo); the twiddle
+index t = i1 >> (L+1) is column-independent since e < 2^L_lo <= 2^L.
+No cross-thread dependencies and no __syncthreads, so the sequential
+emulation harness validates the kernels exactly; both paths are kept
+and the cantor_cuda selftest checks LEGACY and FUSED against the host
+engine (all sizes m = 1..20 plus end-to-end multiplies: PASS).
+
+Accounting at m = 24 with 5 levels/group: Taylor passes 276 -> 65,
+butterfly passes 24 -> 5; per-transform traffic ~62 GB -> ~22 GB;
+per-modmul ~190 GB -> ~70 GB.  Predicted product+reduction: ~0.17-0.20
+s on the 2070 SUPER (from 0.492), ~0.26-0.30 s on the T4 (from 0.762),
+i.e. the GPU modmul lands at or below gf2x's measured single-core
+0.183 s while leaving all CPU cores free for GCDs -- the condition
+under which the deep scan starts winning on commodity hardware.
+Pending hardware numbers: cantor_cuda bench vs bench legacy;
+trinomial_stage2 bench; a scan slice re-run.  Tunables: GF2C_TAYLOR_LV
+/ GF2C_BFLY_LV (compile-time; drop to 4 if nvcc spills registers on a
+given architecture -- watch local-memory traffic in the profiler).
+Remaining optimization headroom after fusion: fold/pack/unpack fusion
+(~1.5 GB/modmul), and overlapping the two forward transforms.

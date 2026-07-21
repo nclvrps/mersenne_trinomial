@@ -108,6 +108,9 @@ int main(int argc, char **argv) {
 
     if (!strcmp(mode, "selftest")) {
         int bad = 0;
+        for (int fp = 0; fp <= 1; fp++) {
+        gf2c_use_fused = (fp == 1);
+        printf("--- %s transform path ---\n", fp ? "FUSED" : "LEGACY");
         // stage 1: raw transform vs host engine at many sizes
         for (int m = 1; m <= 20; m += (m < 10 ? 1 : 5)) {
             size_t n = (size_t)1 << m;
@@ -148,12 +151,21 @@ int main(int argc, char **argv) {
                    ok ? "PASS" : "FAIL");
             if (!ok) bad++;
         }
+        }
+        gf2c_use_fused = true;
         printf(bad ? "\nGPU SELFTEST: %d FAILURES\n" : "\nGPU SELFTEST: ALL PASS\n", bad);
         return bad ? 1 : 0;
     }
 
     if (!strcmp(mode, "bench")) {
-        u64 nb = argc > 2 ? strtoull(argv[2], 0, 10) : 136279841ULL;
+        u64 nb = 136279841ULL;
+        for (int i = 2; i < argc; i++) {
+            if (!strcmp(argv[i], "legacy") || !strcmp(argv[i], "--legacy"))
+                gf2c_use_fused = false;     // A/B against per-level kernels
+            else
+                nb = strtoull(argv[i], 0, 10);
+        }
+        printf("transform path: %s\n", gf2c_use_fused ? "FUSED" : "LEGACY");
         std::vector<u64> a, b;
         rand_bits(a, nb); rand_bits(b, nb);
         size_t ow = mul_out_words(nb, nb);

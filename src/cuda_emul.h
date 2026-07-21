@@ -40,3 +40,6 @@ template <class F> struct Launcher {
 };
 template <class F> Launcher<F> make_launcher(unsigned B, unsigned T, F f) { return {B, T, f}; }
 #define EMUL_LAUNCH(fn, B, T) make_launcher((unsigned)(B), (unsigned)(T), fn)
+// templated-kernel launch interception (see GF2C_LAUNCH in gf2_cantor_cuda.h)
+#define GF2C_LAUNCH(kern, B, T, ...) \
+    make_launcher((unsigned)(B), (unsigned)(T), kern)(__VA_ARGS__)

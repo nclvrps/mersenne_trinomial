@@ -244,6 +244,24 @@ Stage 2 primitives standalone (per s):
   cards, while coarse_sieve (d <= 31) remains an unambiguous GPU win.
   Zen 2's slow PDEP/PEXT is irrelevant: nothing in this codebase (or
   gf2x's configuration) uses BMI2.
+- Tesla T4 datapoint: 760.8 ms for the same multiply -- consistent with
+  the bandwidth model (200 GB / ~260 GB/s effective; T4 is 320 GB/s
+  nominal with a 70 W power cap), i.e. the transform is memory-bound
+  everywhere and scales with achievable bandwidth.
+- TAYLOR-CASCADE + BUTTERFLY FUSION is now implemented (register-tile
+  kernels, k_taylor_reg / k_bfly_reg in gf2_cantor_cuda.h): groups of 5
+  consecutive levels run entirely in per-thread registers inside
+  contiguous windows, one coalesced load + store per group instead of
+  one read-modify-write per level.  Passes per transform drop from
+  276+24 to 65+5 (~2.8x less transform traffic; modmul ~190 GB ->
+  ~70 GB), with no __syncthreads anywhere, so the emulation harness
+  validates the kernels exactly; the GPU selftest now exercises BOTH
+  paths against the host engine.  Predicted: ~0.17-0.20 s per modmul on
+  the 2070 SUPER, ~0.26-0.30 s on the T4 (from 0.492 / 0.762).  A/B on
+  hardware:  ./cantor_cuda bench   vs   ./cantor_cuda bench legacy
+  (and ./trinomial_stage2 bench for the fold-inclusive number).  If a
+  target architecture spills registers (profiler shows local memory
+  traffic), rebuild with -DGF2C_TAYLOR_LV=4 / -DGF2C_BFLY_LV=4.
 - Marking order is irrelevant by construction (atomicMin over packed
   keys is commutative/idempotent), so the emulation's serial execution
   does not mask ordering bugs in best[].

@@ -196,6 +196,7 @@ struct ScanResult {
 // least degree by squaring mod g and the mask by enumeration when the
 // degree is small enough; with NTL, factor_min_degree_ntl does both
 // via a single CanZass.
+#ifndef HAVE_NTL
 static void poly_rem_inplace(std::vector<u64> &A, const std::vector<u64> &g) {
     int64_t dg = poly_deg_v(g), da = poly_deg_v(A);
     while (da >= dg && da >= 0) {
@@ -232,6 +233,7 @@ static bool factor_min_degree_fallback(const std::vector<u64> &g, u64 kmax,
     }
     return false;
 }
+#endif // !HAVE_NTL
 
 // ---------------------------------------------------------------------------
 // scan one s to first factor or maxd
