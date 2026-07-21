@@ -1,6 +1,10 @@
 // gf2_small_field.h
-// Arithmetic in GF(2^d) for d <= 31, elements packed as u32 bitmasks
-// (bit i = coefficient of x^i), modulus q given as a (d+1)-bit mask.
+// Arithmetic in GF(2^d) for d <= 32, elements packed as u32 bitmasks
+// (bit i = coefficient of x^i, so a field element has degree <= d-1 <= 31
+// and fits in u32).  The modulus q has degree d and its top term is bit d;
+// at d = 32 that bit is 32, so q itself is carried as a u64.  (For d <= 31
+// q also fits in u32, and every result below is bit-identical to the
+// earlier u32-modulus version -- only the parameter width changed.)
 //
 // This header is compiled both by the CPU reference (where it is
 // validated against independent oracles and against verified factor.cpp
@@ -46,31 +50,35 @@ static inline u64 gf2_clmul32_x86(u32 a, u32 b) {
 #endif
 
 // Reduce a product of degree <= 2d-2 modulo q (degree d, bit d set).
-GF2_HD u32 gf2_reduce(u64 t, u32 q, int d) {
+// q is u64 so the degree-d top term (bit d, = bit 32 at d = 32) is
+// representable; the shifted modulus q << (b-d) reaches bit 2d-2 <= 62,
+// which still fits in u64.  The reduced result has degree < d <= 32 and
+// so fits back into u32.
+GF2_HD u32 gf2_reduce(u64 t, u64 q, int d) {
     for (int b = 2 * d - 2; b >= d; b--) {
         // branch-free: xor (q << (b-d)) iff bit b of t is set
         u64 have = (t >> b) & 1u;
-        t ^= ((u64)q << (b - d)) * have;
+        t ^= (q << (b - d)) * have;
     }
     return (u32)t;
 }
 
 // Field multiply in GF(2)[x]/q
-GF2_HD u32 gf_mul(u32 a, u32 b, u32 q, int d) {
+GF2_HD u32 gf_mul(u32 a, u32 b, u64 q, int d) {
     return gf2_reduce(GF2_CLMUL32(a, b), q, d);
 }
 
-GF2_HD u32 gf_sqr(u32 a, u32 q, int d) { return gf_mul(a, a, q, d); }
+GF2_HD u32 gf_sqr(u32 a, u64 q, int d) { return gf_mul(a, a, q, d); }
 
 // Multiply by x (used for the antilog chain when the generator is x)
-GF2_HD u32 gf_mulx(u32 a, u32 q, int d) {
+GF2_HD u32 gf_mulx(u32 a, u64 q, int d) {
     u64 t = (u64)a << 1;
     u64 have = (t >> d) & 1u;
-    return (u32)(t ^ (u64)q * have);
+    return (u32)(t ^ q * have);
 }
 
 // x^e mod q by left-to-right binary exponentiation (element base)
-GF2_HD u32 gf_pow(u32 base, u64 e, u32 q, int d) {
+GF2_HD u32 gf_pow(u32 base, u64 e, u64 q, int d) {
     u32 result = 1;
     for (int b = 63; b >= 0; b--) {
         result = gf_sqr(result, q, d);
@@ -106,7 +114,7 @@ GF2_HD u64 inv_mod(u64 a, u64 m) {
 // table A (A[i] = g^i).  Returns the (d+1)-bit mask, or 0 on internal
 // inconsistency (coefficients not landing in GF(2) => caller bug).
 // P is caller-provided scratch of at least d+1 u32s.
-GF2_HD u64 minpoly_mask(u32 j, int d, u32 M, u32 q, const u32 *A, u32 *P) {
+GF2_HD u64 minpoly_mask(u32 j, int d, u32 M, u64 q, const u32 *A, u32 *P) {
     for (int k = 0; k <= d; k++) P[k] = 0;
     P[0] = 1;
     u32 rt = j;

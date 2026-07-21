@@ -22,7 +22,7 @@ static inline std::vector<u64> factor_u64(u64 m) {
 
 // irreducibility of q (degree d): x^(2^d) == x mod q, and
 // x^(2^(d/p)) != x for each prime p | d
-static inline bool is_irreducible(u32 q, int d) {
+static inline bool is_irreducible(u64 q, int d) {
     std::vector<u32> chain(d + 1);
     u32 t = 2; // x
     chain[0] = t;
@@ -34,25 +34,25 @@ static inline bool is_irreducible(u32 q, int d) {
 }
 
 // is x primitive mod q? (order of x == M)
-static inline bool x_is_primitive(u32 q, int d, u64 M) {
+static inline bool x_is_primitive(u64 q, int d, u64 M) {
     for (u64 p : factor_u64(M))
         if (gf_pow(2, M / p, q, d) == 1) return false;
     return true;
 }
 
-// smallest primitive polynomial of degree d (so that g = x is a generator)
-static inline u32 find_primitive_poly(int d) {
+// smallest primitive polynomial of degree d (so that g = x is a generator).
+// Returns u64: at d = 32 the modulus has its top term at bit 32 and no
+// longer fits in u32.  The candidate range is likewise computed in u64 --
+// at d = 31 the old 32-bit bound (2u << d) overflowed to 0, making the
+// loop empty and triggering a spurious "no primitive polynomial" abort.
+// For d <= 30 the search is bit-identical to the original.
+static inline u64 find_primitive_poly(int d) {
     u64 M = ((u64)1 << d) - 1;
-    // NB: the candidate range is computed in u64.  At d = 31 the old
-    // 32-bit form (2u << d) overflowed to 0, making the loop empty and
-    // triggering a spurious "no primitive polynomial" abort; the field
-    // itself (d <= 31, u32 masks) is fine, only this bound was wrong.
-    // For d <= 30 this is bit-identical to the original.
     u64 lo = ((u64)1 << d) | 1u;
     u64 hi = (u64)2 << d;                 // = 2^(d+1)
     for (u64 q = lo; q < hi; q += 2)
-        if (is_irreducible((u32)q, d) && x_is_primitive((u32)q, d, M))
-            return (u32)q;
+        if (is_irreducible(q, d) && x_is_primitive(q, d, M))
+            return q;
     fprintf(stderr, "no primitive polynomial of degree %d?!\n", d);
     exit(1);
 }
