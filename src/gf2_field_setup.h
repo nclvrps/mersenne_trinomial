@@ -43,8 +43,16 @@ static inline bool x_is_primitive(u32 q, int d, u64 M) {
 // smallest primitive polynomial of degree d (so that g = x is a generator)
 static inline u32 find_primitive_poly(int d) {
     u64 M = ((u64)1 << d) - 1;
-    for (u32 q = (1u << d) | 1u; q < (2u << d); q += 2)
-        if (is_irreducible(q, d) && x_is_primitive(q, d, M)) return q;
+    // NB: the candidate range is computed in u64.  At d = 31 the old
+    // 32-bit form (2u << d) overflowed to 0, making the loop empty and
+    // triggering a spurious "no primitive polynomial" abort; the field
+    // itself (d <= 31, u32 masks) is fine, only this bound was wrong.
+    // For d <= 30 this is bit-identical to the original.
+    u64 lo = ((u64)1 << d) | 1u;
+    u64 hi = (u64)2 << d;                 // = 2^(d+1)
+    for (u64 q = lo; q < hi; q += 2)
+        if (is_irreducible((u32)q, d) && x_is_primitive((u32)q, d, M))
+            return (u32)q;
     fprintf(stderr, "no primitive polynomial of degree %d?!\n", d);
     exit(1);
 }
