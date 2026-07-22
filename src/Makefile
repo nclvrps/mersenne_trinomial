@@ -40,9 +40,9 @@ NTLSRC_EMUL = build_emul/gf2_gcd_ntl.cpp
 endif
 
 CPU  = sieve_ref cantor_ref
-CUDA = coarse_sieve cantor_cuda trinomial_stage2 trinomial_scan
+CUDA = coarse_sieve coarse_sieve_wide cantor_cuda trinomial_stage2 trinomial_scan
 
-all: cpu
+all: cpu cuda
 cpu: $(CPU)
 cuda: $(CUDA)
 
@@ -54,6 +54,9 @@ cantor_ref: cantor_ref.cpp gf2_cantor_core.h gf2_cantor_engine.h
 
 coarse_sieve: coarse_sieve.cu gf2_small_field.h gf2_field_setup.h
 	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
+
+coarse_sieve_wide: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h
+	$(NVCC) $(NVFLAGS) -DWIDE_FIELD $(INC) -o $@ $<
 
 cantor_cuda: cantor_cuda.cu gf2_cantor_cuda.h gf2_cantor_core.h gf2_cantor_engine.h
 	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<

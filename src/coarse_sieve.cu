@@ -42,7 +42,18 @@
 //          no longer fit in 32 bits.  Use the narrow binary for d <= 32.)
 // Run:    ./coarse_sieve <r> <depth> <smax> <out_prefix>
 //                        [--found] [--no-survivors]
+//                        [--load <file.found.bin>] [--min-depth <D>]
 //                        [--selftest] [--selftest-lowmem [nbuckets]]
+// Extend: --load seeds best[] from a prior run's .found.bin and --min-depth
+//         starts the sieve at degree D, so you compute only the new
+//         degrees.  Recommended for d>=33: run the FAST narrow binary to
+//         depth 32 with --found, then run the wide binary for just d=33:
+//           ./coarse_sieve      <r> 32 <smax> out32 --found
+//           ./coarse_sieve_wide <r> 33 <smax> out33 --found \
+//                               --load out32.found.bin --min-depth 33
+//         This avoids re-doing d<=32 in the slow u64 build (a degree-d
+//         factor only ever improves an s with no smaller-degree factor, so
+//         seeding from the depth-32 result and adding d=33 is exact).
 // Degrees: narrow build supports d <= 32 (elements fit u32, modulus u64);
 //         the -DWIDE_FIELD build supports d <= 63 (u64 elements, 128-bit
 //         products).  The survivor list uses a 32-bit counter, so d <= 37
@@ -644,7 +655,8 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
 }
 
 static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
-                    int force_lowmem_buckets = 0) {
+                    int force_lowmem_buckets = 0, int min_depth = 2,
+                    const std::vector<ull> *preload = nullptr) {
     ull *d_best;
     Heavy *d_heavy;
     unsigned *d_nheavy, *d_overflow;
@@ -652,11 +664,20 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
     CUCHK(cudaMalloc(&d_heavy, HEAVY_CAP * sizeof(Heavy)));
     CUCHK(cudaMalloc(&d_nheavy, 4));
     CUCHK(cudaMalloc(&d_overflow, 4));
-    int blocks, threads;
-    launch_dims(smax + 1, blocks, threads);
-    k_fill<<<blocks, threads>>>(d_best, smax + 1, ~0ULL);
+    if (preload) {
+        // Resume/extend: seed best[] with results from a prior run (its
+        // .found.bin) so we only sieve the new degrees.  A degree-d factor
+        // can only improve an s that has no smaller-degree factor, so
+        // atomicMin against the loaded state is exactly correct.
+        CUCHK(cudaMemcpy(d_best, preload->data(), (smax + 1) * sizeof(ull),
+                         cudaMemcpyHostToDevice));
+    } else {
+        int blocks, threads;
+        launch_dims(smax + 1, blocks, threads);
+        k_fill<<<blocks, threads>>>(d_best, smax + 1, ~0ULL);
+    }
 
-    for (int d = 2; d <= depth; d++) {
+    for (int d = min_depth; d <= depth; d++) {
         // dense path keeps two 2^d-element tables (A and L), each sizeof(fw)
         // bytes/element: 8*2^d in the narrow build, 16*2^d in the wide build.
         size_t need = (((size_t)2 * sizeof(fw)) << d) + 16;
@@ -782,13 +803,23 @@ int main(int argc, char **argv) {
     if (argc < 5) {
         fprintf(stderr, "usage: %s <r> <depth> <smax> <out_prefix> "
                         "[--found] [--no-survivors]\n"
+                        "                 [--load <file.found.bin>] "
+                        "[--min-depth <D>]\n"
                         "       %s --selftest\n"
                         "       %s --selftest-lowmem [nbuckets]\n"
                         "  <out_prefix>.survivors.txt is written by default; "
                         "--no-survivors suppresses it\n"
                         "  (every s absent from <out_prefix>.found.bin is a "
-                        "survivor, so the list is reconstructible from --found)\n",
-                        argv[0], argv[0], argv[0]);
+                        "survivor, so the list is reconstructible from --found)\n"
+                        "  --load seeds best[] from a prior run's .found.bin and "
+                        "--min-depth <D> starts\n"
+                        "  the sieve at degree D, so you can extend an existing "
+                        "depth-(D-1) result by\n"
+                        "  computing only the new degree(s) -- e.g. build the fast "
+                        "narrow binary to\n"
+                        "  depth 32, then: %s <r> 33 <smax> out33 --found "
+                        "--load out32.found.bin --min-depth 33\n",
+                        argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
     u64 r = strtoull(argv[1], 0, 10);
@@ -796,15 +827,53 @@ int main(int argc, char **argv) {
     u64 smax = strtoull(argv[3], 0, 10);
     const char *prefix = argv[4];
     bool write_found = false, write_survivors = true;   // survivors default on
+    const char *load_path = nullptr;
+    int min_depth = 2;
     for (int a = 5; a < argc; a++) {
         if (!strcmp(argv[a], "--found")) write_found = true;
         else if (!strcmp(argv[a], "--no-survivors")) write_survivors = false;
+        else if (!strcmp(argv[a], "--load") && a + 1 < argc) load_path = argv[++a];
+        else if (!strcmp(argv[a], "--min-depth") && a + 1 < argc) min_depth = atoi(argv[++a]);
         else fprintf(stderr, "warning: ignoring unknown argument '%s'\n", argv[a]);
+    }
+    if (min_depth < 2) min_depth = 2;
+
+    // Optional preload: read a prior run's packed keys (one ull per s,
+    // s = 1..smax) into best[] so only the new degrees need sieving.
+    std::vector<ull> preload;
+    if (load_path) {
+        FILE *lf = fopen(load_path, "rb");
+        if (!lf) { perror(load_path); return 1; }
+        fseek(lf, 0, SEEK_END);
+        long bytes = ftell(lf);
+        fseek(lf, 0, SEEK_SET);
+        if ((u64)bytes != smax * sizeof(ull)) {
+            fprintf(stderr, "--load %s: file has %ld bytes but smax=%" PRIu64
+                    " expects %" PRIu64 " (smax must match the prior run)\n",
+                    load_path, bytes, smax, (u64)(smax * sizeof(ull)));
+            fclose(lf); return 1;
+        }
+        preload.assign(smax + 1, ~0ULL);          // index 0 unused
+        if (fread(preload.data() + 1, sizeof(ull), smax, lf) != smax) {
+            fprintf(stderr, "--load %s: short read\n", load_path);
+            fclose(lf); return 1;
+        }
+        fclose(lf);
+        u64 pre_surv = 0;
+        for (u64 s = 1; s <= smax; s++) if (preload[s] == ~0ULL) pre_surv++;
+        fprintf(stderr, "loaded %s: %" PRIu64 " survivors carried in; "
+                "sieving degrees %d..%d only\n",
+                load_path, pre_surv, min_depth, depth);
+    } else if (min_depth > 2) {
+        fprintf(stderr, "warning: --min-depth %d without --load means degrees "
+                "2..%d are not computed; survivors/keys below depth %d will be "
+                "missing\n", min_depth, min_depth - 1, min_depth);
     }
 
     double t0 = now_s();
     std::vector<ull> best;
-    run_gpu(r, depth, smax, best);
+    run_gpu(r, depth, smax, best, 0, min_depth,
+            load_path ? &preload : nullptr);
     fprintf(stderr, "total sieve time: %.2fs\n", now_s() - t0);
 
     char path[1024];
