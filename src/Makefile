@@ -67,6 +67,9 @@ trinomial_stage2: trinomial_stage2.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2
 trinomial_scan: trinomial_scan.cu gf2_trinomial_cuda.h gf2_gcd.h
 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
+check_ref: check_ref.cpp
+	g++ -O2 -std=c++17 -o $@ $<
+
 # Functional single-threaded CPU emulation of the CUDA programs (no GPU
 # needed): kernel launches become sequential loops via cuda_emul.h.
 # Useful for validating changes before spending GPU time.

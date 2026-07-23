@@ -1,0 +1,3 @@
+#! /bin/bash
+
+./check_ref --ref <(grep -E --no-filename ' 3[01234] ' ../../136279841_0[01]M.log) --dmin 30 --dmax 34 --cert <(cat ../coarse_sieve_DATA/out3[01234].found.cert) --survivors ../coarse_sieve_DATA/out34.survivors.txt --smax 68139920

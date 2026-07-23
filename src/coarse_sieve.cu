@@ -40,7 +40,7 @@
 //         (u64 field via gf2_wide_field.h, depths d <= 63; slower per op,
 //          and needed for any d >= 33 since field elements and log values
 //          no longer fit in 32 bits.  Use the narrow binary for d <= 32.)
-// Run:    ./coarse_sieve <r> <depth> <smax> <out_prefix>
+// Run:    ./coarse_sieve <r> <depth> <out_prefix>   (smax defaults to floor(r/2))
 //                        [--found] [--no-survivors]
 //                        [--load <file.found.bin>] [--min-depth <D>]
 //                        [--checkpoint <file>] [--checkpoint-mins <N>]
@@ -1220,44 +1220,74 @@ int main(int argc, char **argv) {
         return bad ? 1 : 0;
     }
 
-    if (argc < 5) {
-        fprintf(stderr, "usage: %s <r> <depth> <smax> <out_prefix> "
-                        "[--found] [--no-survivors]\n"
-                        "                 [--load <file.found.bin> | "
-                        "--load-survivors <file.survivors.txt>]\n"
-                        "                 [--min-depth <D>]\n"
-                        "                 [--checkpoint <file>] "
-                        "[--checkpoint-mins <N>] [--checkpoint-keep <G>]\n"
-                        "                 [--resume <file>]\n"
+    if (argc < 4) {
+        fprintf(stderr, "usage: %s <r> <depth> <out_prefix> [options]\n"
                         "       %s --selftest\n"
                         "       %s --selftest-lowmem [nbuckets]\n"
-                        "  <out_prefix>.survivors.txt is written by default; "
-                        "--no-survivors suppresses it\n"
-                        "  --load seeds best[] from a prior run's .found.bin and "
-                        "--min-depth <D> starts\n"
-                        "  the sieve at degree D (compute only new degrees):\n"
-                        "     %s <r> 33 <smax> out33 --found --load out32.found.bin "
-                        "--min-depth 33\n"
-                        "  --checkpoint <file> saves progress on SIGTERM/SIGINT (and "
-                        "every N minutes if\n"
-                        "  --checkpoint-mins given), mid-degree, one save per bucket "
-                        "boundary; --resume <file>\n"
-                        "  continues from such a checkpoint. Long low-memory runs "
-                        "show a per-bucket progress bar.\n",
+                        "options:\n"
+                        "  --smax <S>          highest s to sieve "
+                        "(default floor(r/2))\n"
+                        "  --no-cert           suppress <out_prefix>.found.cert "
+                        "(written by default)\n"
+                        "  --no-survivors      suppress <out_prefix>.survivors.txt "
+                        "(written by default)\n"
+                        "  --found             also write the raw binary "
+                        "<out_prefix>.found.bin\n"
+                        "  --load <f.found.bin>        seed best[] from a prior "
+                        "run's binary image\n"
+                        "  --load-survivors <f.txt>    seed from a prior run's "
+                        "survivors list instead\n"
+                        "  --min-depth <D>     start the sieve at degree D "
+                        "(compute only new degrees)\n"
+                        "  --checkpoint <file> save progress on SIGTERM/SIGINT, "
+                        "mid-degree\n"
+                        "  --checkpoint-mins <N>       also save every N minutes\n"
+                        "  --checkpoint-keep <G>       keep G checkpoint "
+                        "generations (default 3)\n"
+                        "  --resume <file>     continue from a checkpoint\n"
+                        "\n"
+                        "  <out_prefix>.found.cert lists one line per s that has a "
+                        "factor, in the same\n"
+                        "  's d p<hexmask>' format as GF2X factor.cpp, so per-degree "
+                        "certs simply\n"
+                        "  concatenate into a full record.  Example incremental run:\n"
+                        "     %s <r> 35 out35 --load-survivors out34.survivors.txt "
+                        "--min-depth 35 \\\n"
+                        "         --checkpoint out35.ckpt --checkpoint-mins 20\n"
+                        "  (the legacy form '<r> <depth> <smax> <out_prefix>' is "
+                        "still accepted)\n",
                         argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
     u64 r = strtoull(argv[1], 0, 10);
     int depth = atoi(argv[2]);
-    u64 smax = strtoull(argv[3], 0, 10);
-    const char *prefix = argv[4];
+    // Positional smax is legacy: '<r> <depth> <smax> <out_prefix>'.  Detect it
+    // by argv[3] being a pure integer (an out_prefix never is).
+    bool legacy_smax = false;
+    {
+        const char *p = argv[3];
+        bool alldig = *p != '\0';
+        for (const char *c = p; *c; c++) if (*c < '0' || *c > '9') { alldig = false; break; }
+        if (alldig && argc >= 5) legacy_smax = true;
+    }
+    u64 smax = legacy_smax ? strtoull(argv[3], 0, 10) : (r / 2);
+    const char *prefix = legacy_smax ? argv[4] : argv[3];
+    int first_flag = legacy_smax ? 5 : 4;
+    if (legacy_smax)
+        fprintf(stderr, "note: positional <smax> is deprecated; --smax <S> "
+                "(default floor(r/2) = %" PRIu64 ") is preferred\n", r / 2);
+
     bool write_found = false, write_survivors = true;   // survivors default on
+    bool write_cert = true;                             // cert default on
     const char *load_path = nullptr, *ckpt_path = nullptr, *resume_path = nullptr;
     const char *loadsurv_path = nullptr;
     int min_depth = 2, ckpt_keep = 3;
     double ckpt_mins = -1;                       // <0 = not given on command line
-    for (int a = 5; a < argc; a++) {
+    for (int a = first_flag; a < argc; a++) {
         if (!strcmp(argv[a], "--found")) write_found = true;
+        else if (!strcmp(argv[a], "--smax") && a + 1 < argc) smax = strtoull(argv[++a], 0, 10);
+        else if (!strcmp(argv[a], "--cert")) write_cert = true;
+        else if (!strcmp(argv[a], "--no-cert")) write_cert = false;
         else if (!strcmp(argv[a], "--no-survivors")) write_survivors = false;
         else if (!strcmp(argv[a], "--load") && a + 1 < argc) load_path = argv[++a];
         else if (!strcmp(argv[a], "--load-survivors") && a + 1 < argc) loadsurv_path = argv[++a];
@@ -1390,6 +1420,29 @@ int main(int argc, char **argv) {
         for (u64 s = 1; s <= smax; s++) if (best[s] == ~0ULL) nsurv++;
         fprintf(stderr, "%" PRIu64 " survivors (no factor of degree <= %d) "
                 "[survivors file suppressed via --no-survivors]\n", nsurv, depth);
+    }
+
+    if (write_cert) {
+        // Text certificate in GF2X factor.cpp's own format: one line per s
+        // that has a factor, "s d p<hexmask>", ascending in s.  Entries that
+        // are survivors (~0) or dummies carried in by --load-survivors (0)
+        // are skipped, so an incremental run's cert holds exactly the factors
+        // that run discovered.  Concatenating per-degree certs (or sorting
+        // them with `sort -n`) reconstitutes a complete record.
+        snprintf(path, sizeof path, "%s.found.cert", prefix);
+        FILE *fc = fopen(path, "w");
+        if (!fc) { perror(path); return 1; }
+        u64 ncert = 0;
+        for (u64 s = 1; s <= smax; s++) {
+            ull b = best[s];
+            if (b == ~0ULL || b == 0ULL) continue;      // survivor / not ours
+            unsigned dd = (unsigned)(b >> 48);
+            u64 mask = (u64)b & 0xFFFFFFFFFFFFULL;
+            fprintf(fc, "%" PRIu64 " %u p%" PRIx64 "\n", s, dd, mask);
+            ncert++;
+        }
+        fclose(fc);
+        fprintf(stderr, "%" PRIu64 " factors -> %s\n", ncert, path);
     }
 
     if (write_found) {

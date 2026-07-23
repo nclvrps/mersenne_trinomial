@@ -1,0 +1,72 @@
+
+=============================
+NVIDIA GeForce RTX 2070 SUPER
+=============================
+
+./coarse_sieve 136279841 29 out29
+d= 2 done: 1 heavy progressions, 0.02s
+d= 3 done: 2 heavy progressions, 0.01s
+d= 4 done: 2 heavy progressions, 0.01s
+d= 5 done: 6 heavy progressions, 0.00s
+d= 6 done: 6 heavy progressions, 0.00s
+d= 7 done: 18 heavy progressions, 0.00s
+d= 8 done: 18 heavy progressions, 0.00s
+d= 9 done: 50 heavy progressions, 0.01s
+d=10 done: 68 heavy progressions, 0.01s
+d=11 done: 176 heavy progressions, 0.01s
+d=12 done: 170 heavy progressions, 0.01s
+d=13 done: 630 heavy progressions, 0.01s
+d=14 done: 876 heavy progressions, 0.01s
+d=15 done: 1840 heavy progressions, 0.01s
+d=16 done: 2504 heavy progressions, 0.01s
+d=17 done: 0 heavy progressions, 0.01s
+d=18 done: 334 heavy progressions, 0.01s
+d=19 done: 0 heavy progressions, 0.01s
+d=20 done: 106 heavy progressions, 0.01s
+d=21 done: 66 heavy progressions, 0.01s
+d=22 done: 110 heavy progressions, 0.02s
+d=23 done: 0 heavy progressions, 0.05s
+d=24 done: 28 heavy progressions, 0.08s
+d=25 done: 0 heavy progressions, 0.17s
+d=26 done: 0 heavy progressions, 0.37s
+d=27 done: 0 heavy progressions, 0.79s
+d=28 done: 0 heavy progressions, 1.63s
+d=29 done: 0 heavy progressions, 3.39s
+total sieve time: 7.52s
+4110974 survivors (no factor of degree <= 29) -> out29.survivors.txt
+64028946 factors -> out29.found.cert
+
+./coarse_sieve_wide 136279841 30 out30 --load-survivors ../coarse_sieve_DATA/out29.survivors.txt --min-depth 30 --checkpoint out30.ckpt --checkpoint-mins 20
+d=30 done (lowmem, 2 buckets): 35790267 survivors, 4 heavy progressions, 14.05s
+total sieve time: 15.11s
+3976134 survivors (no factor of degree <= 30) -> out30.survivors.txt
+134840 factors -> out30.found.cert
+
+./coarse_sieve_wide 136279841 31 out31 --load-survivors ../coarse_sieve_DATA/out30.survivors.txt --min-depth 31 --checkpoint out31.ckpt --checkpoint-mins 20
+d=31 done (lowmem, 4 buckets): 69273666 survivors, 0 heavy progressions, 37.76s
+total sieve time: 38.77s
+3849633 survivors (no factor of degree <= 31) -> out31.survivors.txt
+126501 factors -> out31.found.cert
+
+./coarse_sieve_wide 136279841 32 out32 --load-survivors ../coarse_sieve_DATA/out31.survivors.txt --min-depth 32 --checkpoint out32.ckpt --checkpoint-mins 20
+d=32 done (lowmem, 8 buckets): 134215680 survivors, 0 heavy progressions, 162.86s
+total sieve time: 163.77s
+3731849 survivors (no factor of degree <= 32) -> out32.survivors.txt
+117784 factors -> out32.found.cert
+
+./coarse_sieve_wide 136279841 33 out33 --load-survivors ../coarse_sieve_DATA/out32.survivors.txt --min-depth 33 --checkpoint out33.ckpt --checkpoint-mins 20
+d=33 done (lowmem, 32 buckets): 260300986 survivors, 0 heavy progressions, 1270.01s
+total sieve time: 1271.52s
+3620029 survivors (no factor of degree <= 33) -> out33.survivors.txt
+111820 factors -> out33.found.cert
+
+
+==================
+T4 on Google Cloud
+==================
+
+[older version of the program]
+d=34 done (lowmem, 32 buckets): 505286415 survivors, 0 heavy progressions, 3644.12s
+total sieve time: 3645.30s
+3515197 survivors (no factor of degree <= 34) -> out34.survivors.txt
+packed keys for s=1..68139920 -> out34.found.bin
