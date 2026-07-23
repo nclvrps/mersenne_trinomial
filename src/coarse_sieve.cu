@@ -43,6 +43,8 @@
 // Run:    ./coarse_sieve <r> <depth> <smax> <out_prefix>
 //                        [--found] [--no-survivors]
 //                        [--load <file.found.bin>] [--min-depth <D>]
+//                        [--checkpoint <file>] [--checkpoint-mins <N>]
+//                        [--resume <file>]
 //                        [--selftest] [--selftest-lowmem [nbuckets]]
 // Extend: --load seeds best[] from a prior run's .found.bin and --min-depth
 //         starts the sieve at degree D, so you compute only the new
@@ -54,6 +56,22 @@
 //         This avoids re-doing d<=32 in the slow u64 build (a degree-d
 //         factor only ever improves an s with no smaller-degree factor, so
 //         seeding from the depth-32 result and adding d=33 is exact).
+// Checkpoint/resume: for long runs on reclaimable (spot) instances, add
+//         --checkpoint <file> to save progress on SIGTERM/SIGINT -- and,
+//         with --checkpoint-mins <N>, every N minutes.  In low-memory mode
+//         the save happens at bucket boundaries (mid-degree), so at most one
+//         bucket is redone; on SIGTERM the in-flight bucket is abandoned
+//         within ~100ms so the ~30s reclaim budget is met.  Resume with
+//         --resume <file> (which keeps checkpointing to the same file):
+//           ./coarse_sieve_wide <r> 34 <smax> out34 --found \
+//               --load out33.found.bin --min-depth 34 \
+//               --checkpoint out34.ckpt --checkpoint-mins 20
+//           # on reclaim, just:
+//           ./coarse_sieve_wide <r> 34 <smax> out34 --found --resume out34.ckpt
+//         Low-memory runs print a per-bucket progress bar ('=' for buckets
+//         already done on resume, '.' as each new bucket completes).
+// Env:    COARSE_FORCE_BUCKETS=N forces the bucketed path with N buckets for
+//         every degree (manual override / testing).
 // Degrees: narrow build supports d <= 32 (elements fit u32, modulus u64);
 //         the -DWIDE_FIELD build supports d <= 63 (u64 elements, 128-bit
 //         products).  The survivor list uses a 32-bit counter, so d <= 37
@@ -136,6 +154,9 @@
 #include <cinttypes>
 #include <vector>
 #include <chrono>
+#include <csignal>
+#include <ctime>
+#include <unistd.h>
 
 // fw ("field word") is the type of everything sized like a field element
 // or an index into the 2^d-element group: field elements, antilog/log
@@ -427,6 +448,147 @@ static void launch_dims(u64 work, int &blocks, int &threads) {
     blocks = (int)(b > 65535 ? 65535 : (b ? b : 1));
 }
 
+// ---------------------------------------------------------------------------
+// CHECKPOINT / RESUME
+//
+// Long low-memory runs (d >= 33 can take hours over `nbuckets` passes) need
+// to survive a spot-instance reclaim (SIGTERM, ~30s notice) or a manual
+// Ctrl-C (SIGINT), and resume without losing the buckets already done.
+//
+// The checkpoint records best[] plus (degree d, next_bucket): "all degrees
+// < d are complete in best[], and for degree d buckets [0, next_bucket) are
+// done." A host copy of best[] is refreshed after every completed bucket, so
+// on a signal we can persist the last clean bucket boundary immediately and
+// abandon the in-flight bucket (it re-runs on resume). The survivor list is
+// NOT saved (it can be 4 GB); Phase A is simply recomputed on resume, which
+// is deterministic and cheap relative to the bucket passes.
+//
+// The signal handler only sets a flag. All device queries and file writes
+// happen on the main thread at poll points (every ~100 ms during a bucket,
+// via cudaStreamQuery), so response is well under the 30s SIGTERM budget
+// even though a single d=33 bucket runs a couple of minutes.
+struct CkptCtx {
+    bool     enabled   = false;
+    const char *path   = nullptr;
+    double   period_s  = 0;          // periodic write interval (0 = signal-only)
+    double   last_write = 0;
+    u64      r = 0, smax = 0;
+    int      depth = 0;
+    ull     *d_best = nullptr;       // device best[] (source for snapshots)
+    std::vector<ull> snap;           // host snapshot as of last completed bucket
+    int      snap_d = 0, snap_next_bucket = 0, snap_nbuckets = 0;
+    volatile sig_atomic_t stop = 0;  // set by signal handler
+    // test hook: force a stop after this many completed buckets (0 = off)
+    long     test_stop_after = 0, test_buckets_done = 0;
+};
+static CkptCtx g_ckpt;
+
+extern "C" void ckpt_signal_handler(int) { g_ckpt.stop = 1; }
+
+static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','1'};
+
+// Copy device best[] into the host snapshot and tag it with (d, next_bucket).
+static void ckpt_snapshot(int d, int next_bucket, int nbuckets) {
+    if (!g_ckpt.enabled) return;
+    if (g_ckpt.snap.size() != g_ckpt.smax + 1) g_ckpt.snap.resize(g_ckpt.smax + 1);
+    CUCHK(cudaMemcpy(g_ckpt.snap.data(), g_ckpt.d_best,
+                     (g_ckpt.smax + 1) * sizeof(ull), cudaMemcpyDeviceToHost));
+    g_ckpt.snap_d = d;
+    g_ckpt.snap_next_bucket = next_bucket;
+    g_ckpt.snap_nbuckets = nbuckets;
+}
+
+// Write the current snapshot atomically (tmp + rename) so a crash mid-write
+// can never corrupt a good checkpoint.
+static void ckpt_write() {
+    if (!g_ckpt.enabled || g_ckpt.snap.size() != g_ckpt.smax + 1) return;
+    char tmp[1088];
+    snprintf(tmp, sizeof tmp, "%s.tmp", g_ckpt.path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) { perror(tmp); return; }
+    u32 hdr32[4] = { (u32)1 /*version*/, (u32)g_ckpt.snap_d,
+                     (u32)g_ckpt.snap_next_bucket, (u32)g_ckpt.snap_nbuckets };
+    u64 hdr64[4] = { g_ckpt.r, g_ckpt.smax, (u64)g_ckpt.depth, 0 };
+    bool ok = fwrite(CKPT_MAGIC, 1, 8, f) == 8
+           && fwrite(hdr32, sizeof(u32), 4, f) == 4
+           && fwrite(hdr64, sizeof(u64), 4, f) == 4
+           && fwrite(g_ckpt.snap.data() + 1, sizeof(ull), g_ckpt.smax, f)
+                == g_ckpt.smax;
+    if (fflush(f) != 0) ok = false;
+    fclose(f);
+    if (!ok) { fprintf(stderr, "checkpoint write failed (%s)\n", tmp); return; }
+    if (rename(tmp, g_ckpt.path) != 0) { perror("rename checkpoint"); return; }
+    g_ckpt.last_write = now_s();
+    fprintf(stderr, "[checkpoint: d=%d bucket %d/%d -> %s]\n",
+            g_ckpt.snap_d, g_ckpt.snap_next_bucket, g_ckpt.snap_nbuckets,
+            g_ckpt.path);
+}
+
+static bool ckpt_periodic_due() {
+    return g_ckpt.enabled && g_ckpt.period_s > 0
+        && (now_s() - g_ckpt.last_write) >= g_ckpt.period_s;
+}
+static bool ckpt_stop_requested() { return g_ckpt.stop != 0; }
+
+// Persist and exit cleanly after a stop signal (or test stop).
+static void ckpt_stop_and_exit() {
+    ckpt_write();
+    fprintf(stderr, "stopping on request; resume with "
+                    "--resume %s\n", g_ckpt.path ? g_ckpt.path : "<file>");
+    exit(0);
+}
+
+// Read a checkpoint header + best[] into `best`; returns resume coordinates.
+// Returns true on success.
+static bool ckpt_read(const char *path, u64 r, u64 smax,
+                      std::vector<ull> &best, int &resume_d,
+                      int &resume_bucket, int &resume_nbuckets) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); return false; }
+    char magic[8];
+    u32 hdr32[4]; u64 hdr64[4];
+    if (fread(magic, 1, 8, f) != 8 || memcmp(magic, CKPT_MAGIC, 8) != 0) {
+        fprintf(stderr, "--resume %s: not a checkpoint file\n", path);
+        fclose(f); return false;
+    }
+    if (fread(hdr32, sizeof(u32), 4, f) != 4 ||
+        fread(hdr64, sizeof(u64), 4, f) != 4) {
+        fprintf(stderr, "--resume %s: truncated header\n", path); fclose(f); return false;
+    }
+    if (hdr64[0] != r || hdr64[1] != smax) {
+        fprintf(stderr, "--resume %s: r/smax (%" PRIu64 "/%" PRIu64 ") do not "
+                "match this run (%" PRIu64 "/%" PRIu64 ")\n", path,
+                hdr64[0], hdr64[1], r, smax);
+        fclose(f); return false;
+    }
+    best.assign(smax + 1, ~0ULL);
+    if (fread(best.data() + 1, sizeof(ull), smax, f) != smax) {
+        fprintf(stderr, "--resume %s: short read\n", path); fclose(f); return false;
+    }
+    fclose(f);
+    resume_d        = (int)hdr32[1];
+    resume_bucket   = (int)hdr32[2];
+    resume_nbuckets = (int)hdr32[3];
+    // normalize: a completed degree resumes at the next one
+    if (resume_bucket >= resume_nbuckets && resume_nbuckets > 0) {
+        resume_d += 1; resume_bucket = 0; resume_nbuckets = 0;
+    }
+    return true;
+}
+
+// Poll the default stream to completion, checking the stop flag every ~100 ms
+// so a signal during a long kernel is noticed promptly. Returns false if a
+// stop was requested before completion.
+static bool poll_until_done() {
+    for (;;) {
+        if (ckpt_stop_requested()) return false;
+        cudaError_t st = cudaStreamQuery(0);
+        if (st == cudaSuccess) return true;
+        if (st != cudaErrorNotReady) CUCHK(st);
+        usleep(100000); // 100 ms
+    }
+}
+
 // run the sieve for one degree; best[] stays resident on device
 static void sieve_degree_gpu(int d, u64 r, u64 smax, ull *d_best,
                              Heavy *d_heavy, unsigned *d_nheavy,
@@ -537,7 +699,8 @@ static int pick_buckets(u64 M64, int d, size_t freeb) {
 // file for the derivation.
 static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
                                     ull *d_best, Heavy *d_heavy,
-                                    unsigned *d_nheavy, unsigned *d_overflow) {
+                                    unsigned *d_nheavy, unsigned *d_overflow,
+                                    int start_bucket = 0) {
     const u64 M64 = ((u64)1 << d) - 1;
     const u64 q = find_primitive_poly(d);
     const u64 rmod = r % M64;
@@ -587,11 +750,17 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
     CUCHK(cudaMemcpy(d_nsurv, &zero, 4, cudaMemcpyHostToDevice));
     CUCHK(cudaMemcpy(d_sovf, &zero, 4, cudaMemcpyHostToDevice));
 
+    // Baseline snapshot for this degree: best[] currently holds all degrees
+    // < d (and, on resume, buckets [0, start_bucket) of degree d). A signal
+    // during Phase A or the first bucket persists this state.
+    ckpt_snapshot(d, start_bucket, nbuckets);
+
     int blocks, threads;
     launch_dims(M64, blocks, threads);
     k_survivors<<<blocks, threads>>>(d, M64, q, rmod, dgp, dsub,
                                      (int)subq.size(), dsurv, survcap,
                                      d_nsurv, d_sovf);
+    if (!poll_until_done()) ckpt_stop_and_exit();   // signal during Phase A
     unsigned nsurv = 0, sovf = 0;
     CUCHK(cudaMemcpy(&nsurv, d_nsurv, 4, cudaMemcpyDeviceToHost));
     CUCHK(cudaMemcpy(&sovf, d_sovf, 4, cudaMemcpyDeviceToHost));
@@ -610,9 +779,24 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
     int rblocks, rthreads;
     launch_dims(nsurv, rblocks, rthreads);
 
+    // progress bar: one dot per completed bucket (dots for buckets already
+    // done on resume are shown up front so the bar length always matches
+    // nbuckets)
+    fprintf(stderr, "d=%2d lowmem %d buckets, %u survivors: ", d, nbuckets, nsurv);
+    for (int b = 0; b < start_bucket; b++) fputc('=', stderr);
+    fflush(stderr);
+
     const fw LSLICE_EMPTY = (fw)~(fw)0;   // all-ones sentinel (u32 or u64)
     unsigned total_heavy = 0;
-    for (int b = 0; b < nbuckets; b++) {
+    for (int b = start_bucket; b < nbuckets; b++) {
+        // bucket boundary: snap holds buckets [0,b) -> safe to persist here
+        if (ckpt_stop_requested() || (g_ckpt.test_stop_after &&
+                g_ckpt.test_buckets_done >= g_ckpt.test_stop_after)) {
+            fprintf(stderr, "\n");
+            ckpt_stop_and_exit();
+        }
+        if (ckpt_periodic_due()) ckpt_write();
+
         u64 lo = (u64)b * chunk;
         u64 hi = lo + chunk; if (hi > domain) hi = domain;
         if (lo >= hi) continue;
@@ -628,20 +812,32 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
                                                 dlslice, dgp, dsurv, nsurv,
                                                 d_best, d_heavy, d_nheavy,
                                                 d_overflow);
+        // wait with ~100ms polling so a signal mid-bucket is caught quickly;
+        // on stop, snap still holds buckets [0,b) and this bucket re-runs
+        if (!poll_until_done()) { fprintf(stderr, "\n"); ckpt_stop_and_exit(); }
+
         unsigned nheavy = 0, overflow = 0;
         CUCHK(cudaMemcpy(&nheavy, d_nheavy, 4, cudaMemcpyDeviceToHost));
         CUCHK(cudaMemcpy(&overflow, d_overflow, 4, cudaMemcpyDeviceToHost));
         if (overflow) {
-            fprintf(stderr, "d=%d: heavy queue overflow (%u); raise "
+            fprintf(stderr, "\nd=%d: heavy queue overflow (%u); raise "
                     "HEAVY_CAP\n", d, overflow);
             exit(1);
         }
         if (nheavy) {
             unsigned use = nheavy > HEAVY_CAP ? HEAVY_CAP : nheavy;
             k_mark_heavy<<<use, 256>>>(d_heavy, use, smax, d_best);
+            if (!poll_until_done()) { fprintf(stderr, "\n"); ckpt_stop_and_exit(); }
         }
         total_heavy += nheavy;
+
+        // bucket b fully done (inline + heavy marks): refresh snapshot to
+        // (d, b+1) and tick the progress bar
+        ckpt_snapshot(d, b + 1, nbuckets);
+        g_ckpt.test_buckets_done++;
+        fputc('.', stderr); fflush(stderr);
     }
+    fprintf(stderr, "\n");
     CUCHK(cudaDeviceSynchronize());
     CUCHK(cudaGetLastError());
 
@@ -656,7 +852,8 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
 
 static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
                     int force_lowmem_buckets = 0, int min_depth = 2,
-                    const std::vector<ull> *preload = nullptr) {
+                    const std::vector<ull> *preload = nullptr,
+                    int resume_bucket = 0, int resume_nbuckets = 0) {
     ull *d_best;
     Heavy *d_heavy;
     unsigned *d_nheavy, *d_overflow;
@@ -664,11 +861,12 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
     CUCHK(cudaMalloc(&d_heavy, HEAVY_CAP * sizeof(Heavy)));
     CUCHK(cudaMalloc(&d_nheavy, 4));
     CUCHK(cudaMalloc(&d_overflow, 4));
+    g_ckpt.d_best = d_best;          // checkpoints snapshot from here
     if (preload) {
         // Resume/extend: seed best[] with results from a prior run (its
-        // .found.bin) so we only sieve the new degrees.  A degree-d factor
-        // can only improve an s that has no smaller-degree factor, so
-        // atomicMin against the loaded state is exactly correct.
+        // .found.bin or checkpoint) so we only sieve the new degrees.  A
+        // degree-d factor can only improve an s that has no smaller-degree
+        // factor, so atomicMin against the loaded state is exactly correct.
         CUCHK(cudaMemcpy(d_best, preload->data(), (smax + 1) * sizeof(ull),
                          cudaMemcpyHostToDevice));
     } else {
@@ -678,6 +876,13 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
     }
 
     for (int d = min_depth; d <= depth; d++) {
+        // On a mid-degree resume, the first degree processed continues from
+        // resume_bucket using the exact nbuckets the checkpoint was made
+        // with (bucket value-ranges depend on nbuckets); later degrees start
+        // fresh with the auto-picked count.
+        int start_bucket = (d == min_depth) ? resume_bucket : 0;
+        int forced_nb    = (d == min_depth) ? resume_nbuckets : 0;
+
         // dense path keeps two 2^d-element tables (A and L), each sizeof(fw)
         // bytes/element: 8*2^d in the narrow build, 16*2^d in the wide build.
         size_t need = (((size_t)2 * sizeof(fw)) << d) + 16;
@@ -686,33 +891,46 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
 
         if (force_lowmem_buckets > 0) {
             sieve_degree_gpu_lowmem(d, r, smax, force_lowmem_buckets, d_best,
-                                    d_heavy, d_nheavy, d_overflow);
-            continue;
-        }
-        if (need <= freeb) {
+                                    d_heavy, d_nheavy, d_overflow, start_bucket);
+        } else if (forced_nb > 0) {
+            // resuming mid-degree: reuse the checkpoint's bucket count
+            fprintf(stderr, "d=%d: resuming at bucket %d/%d\n", d,
+                    start_bucket, forced_nb);
+            sieve_degree_gpu_lowmem(d, r, smax, forced_nb, d_best, d_heavy,
+                                    d_nheavy, d_overflow, start_bucket);
+        } else if (need <= freeb) {
             sieve_degree_gpu(d, r, smax, d_best, d_heavy, d_nheavy, d_overflow);
-            continue;
+        } else {
+            // dense tables don't fit; fall back to the bucketed low-memory
+            // path (see "LOW-MEMORY MODE" at the top of the file) instead of
+            // giving up outright.
+            u64 M64 = ((u64)1 << d) - 1;
+            int nbuckets = pick_buckets(M64, d, freeb);
+            if (nbuckets == 0) {
+                fprintf(stderr, "d=%d needs %.2f GB tables but only %.2f GB"
+                        " free, and even the low-memory bucketed path doesn't"
+                        " fit (survivor list alone needs %.2f GB); stopping at"
+                        " depth %d\n", d, need / 1073741824.0,
+                        freeb / 1073741824.0,
+                        (lowmem_surv_cap(M64, d) * sizeof(Surv)) / 1073741824.0,
+                        d - 1);
+                break;
+            }
+            fprintf(stderr, "d=%d: dense tables need %.2f GB but only %.2f GB"
+                    " free; switching to low-memory mode (%d buckets)\n", d,
+                    need / 1073741824.0, freeb / 1073741824.0, nbuckets);
+            sieve_degree_gpu_lowmem(d, r, smax, nbuckets, d_best, d_heavy,
+                                    d_nheavy, d_overflow, start_bucket);
         }
-        // dense tables don't fit; fall back to the bucketed low-memory
-        // path (see "LOW-MEMORY MODE" at the top of the file) instead of
-        // giving up outright.
-        u64 M64 = ((u64)1 << d) - 1;
-        int nbuckets = pick_buckets(M64, d, freeb);
-        if (nbuckets == 0) {
-            fprintf(stderr, "d=%d needs %.2f GB tables but only %.2f GB free,"
-                    " and even the low-memory bucketed path doesn't fit"
-                    " (survivor list alone needs %.2f GB); stopping at"
-                    " depth %d\n", d, need / 1073741824.0,
-                    freeb / 1073741824.0,
-                    (lowmem_surv_cap(M64, d) * sizeof(Surv)) / 1073741824.0,
-                    d - 1);
-            break;
+
+        // Degree boundary: a stop during a dense degree (which can't
+        // checkpoint mid-way) is honored here, and periodic saves land here
+        // too. best[] is a clean "degrees <= d done" state.
+        if (ckpt_stop_requested()) {
+            ckpt_snapshot(d + 1, 0, 0);   // next degree, no buckets done
+            ckpt_stop_and_exit();
         }
-        fprintf(stderr, "d=%d: dense tables need %.2f GB but only %.2f GB"
-                " free; switching to low-memory mode (%d buckets)\n", d,
-                need / 1073741824.0, freeb / 1073741824.0, nbuckets);
-        sieve_degree_gpu_lowmem(d, r, smax, nbuckets, d_best, d_heavy,
-                                d_nheavy, d_overflow);
+        if (ckpt_periodic_due()) { ckpt_snapshot(d + 1, 0, 0); ckpt_write(); }
     }
 
     best.resize(smax + 1);
@@ -805,20 +1023,23 @@ int main(int argc, char **argv) {
                         "[--found] [--no-survivors]\n"
                         "                 [--load <file.found.bin>] "
                         "[--min-depth <D>]\n"
+                        "                 [--checkpoint <file>] "
+                        "[--checkpoint-mins <N>] [--resume <file>]\n"
                         "       %s --selftest\n"
                         "       %s --selftest-lowmem [nbuckets]\n"
                         "  <out_prefix>.survivors.txt is written by default; "
                         "--no-survivors suppresses it\n"
-                        "  (every s absent from <out_prefix>.found.bin is a "
-                        "survivor, so the list is reconstructible from --found)\n"
                         "  --load seeds best[] from a prior run's .found.bin and "
                         "--min-depth <D> starts\n"
-                        "  the sieve at degree D, so you can extend an existing "
-                        "depth-(D-1) result by\n"
-                        "  computing only the new degree(s) -- e.g. build the fast "
-                        "narrow binary to\n"
-                        "  depth 32, then: %s <r> 33 <smax> out33 --found "
-                        "--load out32.found.bin --min-depth 33\n",
+                        "  the sieve at degree D (compute only new degrees):\n"
+                        "     %s <r> 33 <smax> out33 --found --load out32.found.bin "
+                        "--min-depth 33\n"
+                        "  --checkpoint <file> saves progress on SIGTERM/SIGINT (and "
+                        "every N minutes if\n"
+                        "  --checkpoint-mins given), mid-degree, one save per bucket "
+                        "boundary; --resume <file>\n"
+                        "  continues from such a checkpoint. Long low-memory runs "
+                        "show a per-bucket progress bar.\n",
                         argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
@@ -827,21 +1048,44 @@ int main(int argc, char **argv) {
     u64 smax = strtoull(argv[3], 0, 10);
     const char *prefix = argv[4];
     bool write_found = false, write_survivors = true;   // survivors default on
-    const char *load_path = nullptr;
+    const char *load_path = nullptr, *ckpt_path = nullptr, *resume_path = nullptr;
     int min_depth = 2;
+    double ckpt_mins = 0;
     for (int a = 5; a < argc; a++) {
         if (!strcmp(argv[a], "--found")) write_found = true;
         else if (!strcmp(argv[a], "--no-survivors")) write_survivors = false;
         else if (!strcmp(argv[a], "--load") && a + 1 < argc) load_path = argv[++a];
         else if (!strcmp(argv[a], "--min-depth") && a + 1 < argc) min_depth = atoi(argv[++a]);
+        else if (!strcmp(argv[a], "--checkpoint") && a + 1 < argc) ckpt_path = argv[++a];
+        else if (!strcmp(argv[a], "--checkpoint-mins") && a + 1 < argc) ckpt_mins = atof(argv[++a]);
+        else if (!strcmp(argv[a], "--resume") && a + 1 < argc) resume_path = argv[++a];
         else fprintf(stderr, "warning: ignoring unknown argument '%s'\n", argv[a]);
     }
     if (min_depth < 2) min_depth = 2;
 
-    // Optional preload: read a prior run's packed keys (one ull per s,
-    // s = 1..smax) into best[] so only the new degrees need sieving.
+    // test hook (deterministic checkpoint testing without a real signal):
+    // COARSE_TEST_STOP_AFTER_BUCKETS=N sets the stop flag after N buckets.
+    if (const char *e = getenv("COARSE_TEST_STOP_AFTER_BUCKETS"))
+        g_ckpt.test_stop_after = atol(e);
+
     std::vector<ull> preload;
-    if (load_path) {
+    bool have_preload = false;
+    int resume_bucket = 0, resume_nbuckets = 0;
+
+    if (resume_path) {
+        // Mid-degree resume: read best[] + (degree, bucket, nbuckets).
+        if (!ckpt_read(resume_path, r, smax, preload, min_depth,
+                       resume_bucket, resume_nbuckets))
+            return 1;
+        have_preload = true;
+        u64 pre_surv = 0;
+        for (u64 s = 1; s <= smax; s++) if (preload[s] == ~0ULL) pre_surv++;
+        fprintf(stderr, "resumed %s: %" PRIu64 " survivors carried in; "
+                "continuing at degree %d, bucket %d/%d, up to depth %d\n",
+                resume_path, pre_surv, min_depth, resume_bucket,
+                resume_nbuckets, depth);
+    } else if (load_path) {
+        // Degree-boundary extend from a prior .found.bin.
         FILE *lf = fopen(load_path, "rb");
         if (!lf) { perror(load_path); return 1; }
         fseek(lf, 0, SEEK_END);
@@ -859,21 +1103,41 @@ int main(int argc, char **argv) {
             fclose(lf); return 1;
         }
         fclose(lf);
+        have_preload = true;
         u64 pre_surv = 0;
         for (u64 s = 1; s <= smax; s++) if (preload[s] == ~0ULL) pre_surv++;
         fprintf(stderr, "loaded %s: %" PRIu64 " survivors carried in; "
                 "sieving degrees %d..%d only\n",
                 load_path, pre_surv, min_depth, depth);
     } else if (min_depth > 2) {
-        fprintf(stderr, "warning: --min-depth %d without --load means degrees "
-                "2..%d are not computed; survivors/keys below depth %d will be "
-                "missing\n", min_depth, min_depth - 1, min_depth);
+        fprintf(stderr, "warning: --min-depth %d without --load/--resume means "
+                "degrees 2..%d are not computed\n", min_depth, min_depth - 1);
+    }
+
+    // Configure checkpointing and install signal handlers.  A --resume run
+    // keeps checkpointing to the same file (so it survives repeated spot
+    // reclaims) unless --checkpoint names a different destination.
+    if (resume_path && !ckpt_path) ckpt_path = resume_path;
+    if (ckpt_path) {
+        g_ckpt.enabled  = true;
+        g_ckpt.path     = ckpt_path;
+        g_ckpt.period_s = ckpt_mins * 60.0;
+        g_ckpt.last_write = now_s();
+        g_ckpt.r = r; g_ckpt.smax = smax; g_ckpt.depth = depth;
+        struct sigaction sa; memset(&sa, 0, sizeof sa);
+        sa.sa_handler = ckpt_signal_handler;
+        sigaction(SIGTERM, &sa, nullptr);
+        sigaction(SIGINT,  &sa, nullptr);
+        fprintf(stderr, "checkpointing to %s%s; SIGTERM/SIGINT will save and exit\n",
+                ckpt_path, g_ckpt.period_s > 0 ? " (and periodically)" : "");
     }
 
     double t0 = now_s();
     std::vector<ull> best;
-    run_gpu(r, depth, smax, best, 0, min_depth,
-            load_path ? &preload : nullptr);
+    int force_buckets = 0;
+    if (const char *e = getenv("COARSE_FORCE_BUCKETS")) force_buckets = atoi(e);
+    run_gpu(r, depth, smax, best, force_buckets, min_depth,
+            have_preload ? &preload : nullptr, resume_bucket, resume_nbuckets);
     fprintf(stderr, "total sieve time: %.2fs\n", now_s() - t0);
 
     char path[1024];
@@ -902,5 +1166,8 @@ int main(int argc, char **argv) {
         fclose(ff);
         fprintf(stderr, "packed keys for s=1..%" PRIu64 " -> %s\n", smax, path);
     }
+    // Run finished normally: drop the checkpoint so it can't be resumed by
+    // mistake later.
+    if (g_ckpt.enabled && g_ckpt.path) remove(g_ckpt.path);
     return 0;
 }
