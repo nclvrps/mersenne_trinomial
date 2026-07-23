@@ -153,6 +153,7 @@
 #include <cstring>
 #include <cinttypes>
 #include <vector>
+#include <string>
 #include <chrono>
 #include <csignal>
 #include <ctime>
@@ -424,12 +425,15 @@ __global__ void k_resolve_bucket(int d, u64 M64, u64 q, u64 smax,
         u64 n = M64 / gg;
         u64 s0 = MULMOD(inv_mod(j64 / gg, n), (u64)v / gg, n);
 
+        // Cheap range test BEFORE the O(d) minpoly: classes whose smallest
+        // hit is out of range contribute nothing, so don't pay for them.
+        u64 s = (s0 == 0 ? n : s0);
+        if (s > smax) continue;
+
         fw seed = d_antilog(j64, q, d, gpow2);            // = A[j]
         u64 mask = d_minpoly_seeded(seed, d, q, P);
         u64 packed = ((u64)d << 48) | mask;
 
-        u64 s = (s0 == 0 ? n : s0);
-        if (s > smax) continue;
         u64 count = (smax - s) / n + 1;
         if (count <= INLINE_MARKS) {
             for (; s <= smax; s += n) atomicMin(&best[s], (ull)packed);
@@ -467,6 +471,15 @@ static void launch_dims(u64 work, int &blocks, int &threads) {
 // happen on the main thread at poll points (every ~100 ms during a bucket,
 // via cudaStreamQuery), so response is well under the 30s SIGTERM budget
 // even though a single d=33 bucket runs a couple of minutes.
+// DELTA CHECKPOINTS.  Writing all of best[] is 545 MB at smax=68139920,
+// which on network-backed cloud storage took ~110 s -- far beyond the ~30 s
+// spot-reclaim budget.  But a high-degree run started with --load changes
+// almost nothing: at d=33 only ~112k of 68.1M entries became non-survivors.
+// So the checkpoint stores the BASELINE FILE IDENTITY plus just the entries
+// that differ from it -- a couple of MB, written in well under a second.
+// If the delta ever grows past a quarter of the range (e.g. a from-scratch
+// run over many degrees) the writer falls back to a full image
+// automatically, so correctness never depends on the delta staying small.
 struct CkptCtx {
     bool     enabled   = false;
     const char *path   = nullptr;
@@ -474,9 +487,15 @@ struct CkptCtx {
     double   last_write = 0;
     u64      r = 0, smax = 0;
     int      depth = 0;
+    int      keep = 3;               // checkpoint generations to retain
     ull     *d_best = nullptr;       // device best[] (source for snapshots)
     std::vector<ull> snap;           // host snapshot as of last completed bucket
     int      snap_d = 0, snap_next_bucket = 0, snap_nbuckets = 0;
+    // baseline for delta encoding (the --load image), empty if none
+    std::vector<ull> base;
+    std::string base_path;
+    int      base_kind = 0;          // 1 = .found.bin image, 2 = survivors list
+    u64      base_hash = 0;
     volatile sig_atomic_t stop = 0;  // set by signal handler
     // test hook: force a stop after this many completed buckets (0 = off)
     long     test_stop_after = 0, test_buckets_done = 0;
@@ -485,7 +504,14 @@ static CkptCtx g_ckpt;
 
 extern "C" void ckpt_signal_handler(int) { g_ckpt.stop = 1; }
 
-static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','1'};
+static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','2'};
+
+// cheap 64-bit hash to tie a delta checkpoint to the exact baseline image
+static u64 ckpt_hash(const ull *p, u64 n) {
+    u64 h = 1469598103934665603ULL;                  // FNV-1a offset basis
+    for (u64 i = 0; i < n; i++) { h ^= (u64)p[i]; h *= 1099511628211ULL; }
+    return h;
+}
 
 // Copy device best[] into the host snapshot and tag it with (d, next_bucket).
 static void ckpt_snapshot(int d, int next_bucket, int nbuckets) {
@@ -498,30 +524,85 @@ static void ckpt_snapshot(int d, int next_bucket, int nbuckets) {
     g_ckpt.snap_nbuckets = nbuckets;
 }
 
+// Keep the previous generations: <path> -> <path>.1 -> ... -> <path>.<keep-1>,
+// so a checkpoint corrupted by a hardware/storage glitch is not the only copy.
+static void ckpt_rotate() {
+    char a[1100], b[1100];
+    if (g_ckpt.keep <= 1) return;
+    snprintf(a, sizeof a, "%s.%d", g_ckpt.path, g_ckpt.keep - 1);
+    remove(a);                                   // drop the oldest
+    for (int i = g_ckpt.keep - 1; i >= 1; i--) {
+        if (i == 1) snprintf(b, sizeof b, "%s", g_ckpt.path);
+        else        snprintf(b, sizeof b, "%s.%d", g_ckpt.path, i - 1);
+        snprintf(a, sizeof a, "%s.%d", g_ckpt.path, i);
+        rename(b, a);                            // no-op if b doesn't exist
+    }
+}
+
 // Write the current snapshot atomically (tmp + rename) so a crash mid-write
-// can never corrupt a good checkpoint.
+// can never corrupt a good checkpoint.  Uses a delta against the --load
+// baseline when that is much smaller than a full image.
 static void ckpt_write() {
     if (!g_ckpt.enabled || g_ckpt.snap.size() != g_ckpt.smax + 1) return;
-    char tmp[1088];
+    double t0 = now_s();
+
+    // Build the delta against the baseline, if we have one.
+    std::vector<u64> dsig;                       // interleaved (s, key) pairs
+    bool use_delta = false;
+    if (g_ckpt.base.size() == g_ckpt.smax + 1) {
+        const u64 cap = g_ckpt.smax / 4 + 1;     // fall back to full beyond this
+        dsig.reserve(4096);
+        use_delta = true;
+        for (u64 s = 1; s <= g_ckpt.smax; s++) {
+            if (g_ckpt.snap[s] != g_ckpt.base[s]) {
+                if ((u64)(dsig.size() / 2) >= cap) { use_delta = false; break; }
+                dsig.push_back(s); dsig.push_back((u64)g_ckpt.snap[s]);
+            }
+        }
+    }
+
+    char tmp[1100];
     snprintf(tmp, sizeof tmp, "%s.tmp", g_ckpt.path);
     FILE *f = fopen(tmp, "wb");
     if (!f) { perror(tmp); return; }
-    u32 hdr32[4] = { (u32)1 /*version*/, (u32)g_ckpt.snap_d,
-                     (u32)g_ckpt.snap_next_bucket, (u32)g_ckpt.snap_nbuckets };
-    u64 hdr64[4] = { g_ckpt.r, g_ckpt.smax, (u64)g_ckpt.depth, 0 };
+    u32 bplen = use_delta ? (u32)g_ckpt.base_path.size() : 0;
+    u32 hdr32[6] = { (u32)2 /*version*/, (u32)g_ckpt.snap_d,
+                     (u32)g_ckpt.snap_next_bucket, (u32)g_ckpt.snap_nbuckets,
+                     (u32)(use_delta ? g_ckpt.base_kind : 0), bplen };
+    u64 ndelta = use_delta ? (u64)(dsig.size() / 2) : 0;
+    u64 hdr64[6] = { g_ckpt.r, g_ckpt.smax, (u64)g_ckpt.depth,
+                     (u64)(g_ckpt.period_s + 0.5),
+                     use_delta ? g_ckpt.base_hash : 0, ndelta };
     bool ok = fwrite(CKPT_MAGIC, 1, 8, f) == 8
-           && fwrite(hdr32, sizeof(u32), 4, f) == 4
-           && fwrite(hdr64, sizeof(u64), 4, f) == 4
-           && fwrite(g_ckpt.snap.data() + 1, sizeof(ull), g_ckpt.smax, f)
-                == g_ckpt.smax;
+           && fwrite(hdr32, sizeof(u32), 6, f) == 6
+           && fwrite(hdr64, sizeof(u64), 6, f) == 6;
+    if (ok && bplen)
+        ok = fwrite(g_ckpt.base_path.data(), 1, bplen, f) == bplen;
+    if (ok) {
+        if (use_delta)
+            ok = dsig.empty() ||
+                 fwrite(dsig.data(), sizeof(u64), dsig.size(), f) == dsig.size();
+        else
+            ok = fwrite(g_ckpt.snap.data() + 1, sizeof(ull), g_ckpt.smax, f)
+                   == g_ckpt.smax;
+    }
     if (fflush(f) != 0) ok = false;
     fclose(f);
     if (!ok) { fprintf(stderr, "checkpoint write failed (%s)\n", tmp); return; }
+    ckpt_rotate();
     if (rename(tmp, g_ckpt.path) != 0) { perror("rename checkpoint"); return; }
     g_ckpt.last_write = now_s();
-    fprintf(stderr, "[checkpoint: d=%d bucket %d/%d -> %s]\n",
-            g_ckpt.snap_d, g_ckpt.snap_next_bucket, g_ckpt.snap_nbuckets,
-            g_ckpt.path);
+    if (use_delta)
+        fprintf(stderr, "[checkpoint: d=%d bucket %d/%d, delta %" PRIu64
+                " entries (%.2f MB) -> %s, %.2fs]\n",
+                g_ckpt.snap_d, g_ckpt.snap_next_bucket, g_ckpt.snap_nbuckets,
+                ndelta, (ndelta * 16 + 128) / 1048576.0, g_ckpt.path,
+                now_s() - t0);
+    else
+        fprintf(stderr, "[checkpoint: d=%d bucket %d/%d, full image (%.0f MB)"
+                " -> %s, %.2fs]\n", g_ckpt.snap_d, g_ckpt.snap_next_bucket,
+                g_ckpt.snap_nbuckets, g_ckpt.smax * 8 / 1048576.0,
+                g_ckpt.path, now_s() - t0);
 }
 
 static bool ckpt_periodic_due() {
@@ -538,32 +619,128 @@ static void ckpt_stop_and_exit() {
     exit(0);
 }
 
-// Read a checkpoint header + best[] into `best`; returns resume coordinates.
-// Returns true on success.
-static bool ckpt_read(const char *path, u64 r, u64 smax,
-                      std::vector<ull> &best, int &resume_d,
-                      int &resume_bucket, int &resume_nbuckets) {
+// Read a whole .found.bin image (one ull per s, s = 1..smax) into `v`.
+static bool read_found_image(const char *path, u64 smax, std::vector<ull> &v) {
+    FILE *lf = fopen(path, "rb");
+    if (!lf) { perror(path); return false; }
+    fseek(lf, 0, SEEK_END);
+    long bytes = ftell(lf);
+    fseek(lf, 0, SEEK_SET);
+    if ((u64)bytes != smax * sizeof(ull)) {
+        fprintf(stderr, "%s: file has %ld bytes but smax=%" PRIu64 " expects %"
+                PRIu64 " (smax must match the prior run)\n",
+                path, bytes, smax, (u64)(smax * sizeof(ull)));
+        fclose(lf); return false;
+    }
+    v.assign(smax + 1, ~0ULL);                   // index 0 unused
+    bool ok = fread(v.data() + 1, sizeof(ull), smax, lf) == smax;
+    fclose(lf);
+    if (!ok) { fprintf(stderr, "%s: short read\n", path); return false; }
+    return true;
+}
+
+// Build a best[] image from a survivors list (one s per line).  Listed s are
+// open (~0); everything else gets sentinel 0, meaning "already has a factor of
+// some smaller degree" -- which is all the sieve needs, since it only ever
+// compares with atomicMin.
+static bool read_survivors_image(const char *path, u64 smax,
+                                 std::vector<ull> &v, u64 *nsurv_out,
+                                 u64 *nline_out, u64 *noor_out) {
+    FILE *sf = fopen(path, "r");
+    if (!sf) { perror(path); return false; }
+    v.assign(smax + 1, 0ULL);
+    u64 nsurv = 0, line = 0, oor = 0;
+    char buf[128];
+    while (fgets(buf, sizeof buf, sf)) {
+        line++;
+        char *end = nullptr;
+        u64 s = strtoull(buf, &end, 10);
+        if (end == buf) continue;                 // blank/garbage line
+        if (s < 1 || s > smax) { oor++; continue; }
+        v[s] = ~0ULL; nsurv++;
+    }
+    fclose(sf);
+    if (nsurv_out) *nsurv_out = nsurv;
+    if (nline_out) *nline_out = line;
+    if (noor_out)  *noor_out  = oor;
+    return true;
+}
+
+// Read a checkpoint (delta or full) into `best`; returns resume coordinates.
+// A delta checkpoint reloads its recorded baseline file and applies the diff.
+static bool ckpt_read_one(const char *path, u64 r, u64 smax,
+                          std::vector<ull> &best, int &resume_d,
+                          int &resume_bucket, int &resume_nbuckets,
+                          double &stored_period_s) {
     FILE *f = fopen(path, "rb");
-    if (!f) { perror(path); return false; }
+    if (!f) return false;
     char magic[8];
-    u32 hdr32[4]; u64 hdr64[4];
+    u32 hdr32[6]; u64 hdr64[6];
     if (fread(magic, 1, 8, f) != 8 || memcmp(magic, CKPT_MAGIC, 8) != 0) {
-        fprintf(stderr, "--resume %s: not a checkpoint file\n", path);
+        fprintf(stderr, "%s: not a v2 checkpoint file\n", path);
         fclose(f); return false;
     }
-    if (fread(hdr32, sizeof(u32), 4, f) != 4 ||
-        fread(hdr64, sizeof(u64), 4, f) != 4) {
-        fprintf(stderr, "--resume %s: truncated header\n", path); fclose(f); return false;
+    if (fread(hdr32, sizeof(u32), 6, f) != 6 ||
+        fread(hdr64, sizeof(u64), 6, f) != 6) {
+        fprintf(stderr, "%s: truncated header\n", path); fclose(f); return false;
     }
     if (hdr64[0] != r || hdr64[1] != smax) {
-        fprintf(stderr, "--resume %s: r/smax (%" PRIu64 "/%" PRIu64 ") do not "
-                "match this run (%" PRIu64 "/%" PRIu64 ")\n", path,
-                hdr64[0], hdr64[1], r, smax);
+        fprintf(stderr, "%s: r/smax (%" PRIu64 "/%" PRIu64 ") do not match this "
+                "run (%" PRIu64 "/%" PRIu64 ")\n", path, hdr64[0], hdr64[1],
+                r, smax);
         fclose(f); return false;
     }
-    best.assign(smax + 1, ~0ULL);
-    if (fread(best.data() + 1, sizeof(ull), smax, f) != smax) {
-        fprintf(stderr, "--resume %s: short read\n", path); fclose(f); return false;
+    int  base_kind = (int)hdr32[4];              // 0 none, 1 found.bin, 2 survivors
+    bool is_delta = (base_kind != 0);
+    u32  bplen    = hdr32[5];
+    stored_period_s = (double)hdr64[3];
+    std::string bpath(bplen, '\0');
+    if (bplen && fread(&bpath[0], 1, bplen, f) != bplen) {
+        fprintf(stderr, "%s: truncated baseline path\n", path);
+        fclose(f); return false;
+    }
+    if (is_delta) {
+        bool okbase = (base_kind == 1)
+            ? read_found_image(bpath.c_str(), smax, best)
+            : read_survivors_image(bpath.c_str(), smax, best, nullptr, nullptr, nullptr);
+        if (!okbase) {
+            fprintf(stderr, "%s: needs its baseline file '%s' (keep that file "
+                    "alongside the checkpoint)\n", path, bpath.c_str());
+            fclose(f); return false;
+        }
+        u64 h = ckpt_hash(best.data() + 1, smax);
+        if (h != hdr64[4]) {
+            fprintf(stderr, "%s: baseline '%s' does not match the one this "
+                    "checkpoint was built from\n", path, bpath.c_str());
+            fclose(f); return false;
+        }
+        u64 nd = hdr64[5];
+        for (u64 k = 0; k < nd; k++) {
+            u64 pair[2];
+            if (fread(pair, sizeof(u64), 2, f) != 2) {
+                fprintf(stderr, "%s: truncated delta\n", path);
+                fclose(f); return false;
+            }
+            if (pair[0] < 1 || pair[0] > smax) {
+                fprintf(stderr, "%s: delta index out of range\n", path);
+                fclose(f); return false;
+            }
+            best[pair[0]] = (ull)pair[1];
+        }
+        // keep the baseline available so this run can write deltas too
+        g_ckpt.base_path = bpath;
+        g_ckpt.base_hash = hdr64[4];
+        g_ckpt.base_kind = base_kind;
+        bool okb = (base_kind == 1)
+            ? read_found_image(bpath.c_str(), smax, g_ckpt.base)
+            : read_survivors_image(bpath.c_str(), smax, g_ckpt.base, nullptr,
+                                   nullptr, nullptr);
+        if (!okb) g_ckpt.base.clear();
+    } else {
+        best.assign(smax + 1, ~0ULL);
+        if (fread(best.data() + 1, sizeof(ull), smax, f) != smax) {
+            fprintf(stderr, "%s: short read\n", path); fclose(f); return false;
+        }
     }
     fclose(f);
     resume_d        = (int)hdr32[1];
@@ -574,6 +751,31 @@ static bool ckpt_read(const char *path, u64 r, u64 smax,
         resume_d += 1; resume_bucket = 0; resume_nbuckets = 0;
     }
     return true;
+}
+
+// Try the newest checkpoint, then successively older generations, so a
+// corrupted or truncated newest copy is not fatal.
+static bool ckpt_read(const char *path, u64 r, u64 smax,
+                      std::vector<ull> &best, int &resume_d,
+                      int &resume_bucket, int &resume_nbuckets,
+                      double &stored_period_s) {
+    char gen[1100];
+    for (int i = 0; i < 8; i++) {
+        if (i == 0) snprintf(gen, sizeof gen, "%s", path);
+        else        snprintf(gen, sizeof gen, "%s.%d", path, i);
+        FILE *probe = fopen(gen, "rb");
+        if (!probe) { if (i == 0) continue; else break; }
+        fclose(probe);
+        if (ckpt_read_one(gen, r, smax, best, resume_d, resume_bucket,
+                          resume_nbuckets, stored_period_s)) {
+            if (i) fprintf(stderr, "note: newest checkpoint unusable; fell back "
+                           "to generation %s\n", gen);
+            return true;
+        }
+        fprintf(stderr, "checkpoint %s unusable; trying an older generation\n", gen);
+    }
+    fprintf(stderr, "--resume %s: no usable checkpoint generation found\n", path);
+    return false;
 }
 
 // Poll the default stream to completion, checking the stop flag every ~100 ms
@@ -1021,10 +1223,12 @@ int main(int argc, char **argv) {
     if (argc < 5) {
         fprintf(stderr, "usage: %s <r> <depth> <smax> <out_prefix> "
                         "[--found] [--no-survivors]\n"
-                        "                 [--load <file.found.bin>] "
-                        "[--min-depth <D>]\n"
+                        "                 [--load <file.found.bin> | "
+                        "--load-survivors <file.survivors.txt>]\n"
+                        "                 [--min-depth <D>]\n"
                         "                 [--checkpoint <file>] "
-                        "[--checkpoint-mins <N>] [--resume <file>]\n"
+                        "[--checkpoint-mins <N>] [--checkpoint-keep <G>]\n"
+                        "                 [--resume <file>]\n"
                         "       %s --selftest\n"
                         "       %s --selftest-lowmem [nbuckets]\n"
                         "  <out_prefix>.survivors.txt is written by default; "
@@ -1049,19 +1253,24 @@ int main(int argc, char **argv) {
     const char *prefix = argv[4];
     bool write_found = false, write_survivors = true;   // survivors default on
     const char *load_path = nullptr, *ckpt_path = nullptr, *resume_path = nullptr;
-    int min_depth = 2;
-    double ckpt_mins = 0;
+    const char *loadsurv_path = nullptr;
+    int min_depth = 2, ckpt_keep = 3;
+    double ckpt_mins = -1;                       // <0 = not given on command line
     for (int a = 5; a < argc; a++) {
         if (!strcmp(argv[a], "--found")) write_found = true;
         else if (!strcmp(argv[a], "--no-survivors")) write_survivors = false;
         else if (!strcmp(argv[a], "--load") && a + 1 < argc) load_path = argv[++a];
+        else if (!strcmp(argv[a], "--load-survivors") && a + 1 < argc) loadsurv_path = argv[++a];
         else if (!strcmp(argv[a], "--min-depth") && a + 1 < argc) min_depth = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--checkpoint") && a + 1 < argc) ckpt_path = argv[++a];
         else if (!strcmp(argv[a], "--checkpoint-mins") && a + 1 < argc) ckpt_mins = atof(argv[++a]);
+        else if (!strcmp(argv[a], "--checkpoint-keep") && a + 1 < argc) ckpt_keep = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--resume") && a + 1 < argc) resume_path = argv[++a];
         else fprintf(stderr, "warning: ignoring unknown argument '%s'\n", argv[a]);
     }
     if (min_depth < 2) min_depth = 2;
+    if (ckpt_keep < 1) ckpt_keep = 1;
+    g_ckpt.keep = ckpt_keep;
 
     // test hook (deterministic checkpoint testing without a real signal):
     // COARSE_TEST_STOP_AFTER_BUCKETS=N sets the stop flag after N buckets.
@@ -1072,10 +1281,11 @@ int main(int argc, char **argv) {
     bool have_preload = false;
     int resume_bucket = 0, resume_nbuckets = 0;
 
+    double stored_period_s = 0;
     if (resume_path) {
         // Mid-degree resume: read best[] + (degree, bucket, nbuckets).
         if (!ckpt_read(resume_path, r, smax, preload, min_depth,
-                       resume_bucket, resume_nbuckets))
+                       resume_bucket, resume_nbuckets, stored_period_s))
             return 1;
         have_preload = true;
         u64 pre_surv = 0;
@@ -1086,29 +1296,41 @@ int main(int argc, char **argv) {
                 resume_nbuckets, depth);
     } else if (load_path) {
         // Degree-boundary extend from a prior .found.bin.
-        FILE *lf = fopen(load_path, "rb");
-        if (!lf) { perror(load_path); return 1; }
-        fseek(lf, 0, SEEK_END);
-        long bytes = ftell(lf);
-        fseek(lf, 0, SEEK_SET);
-        if ((u64)bytes != smax * sizeof(ull)) {
-            fprintf(stderr, "--load %s: file has %ld bytes but smax=%" PRIu64
-                    " expects %" PRIu64 " (smax must match the prior run)\n",
-                    load_path, bytes, smax, (u64)(smax * sizeof(ull)));
-            fclose(lf); return 1;
-        }
-        preload.assign(smax + 1, ~0ULL);          // index 0 unused
-        if (fread(preload.data() + 1, sizeof(ull), smax, lf) != smax) {
-            fprintf(stderr, "--load %s: short read\n", load_path);
-            fclose(lf); return 1;
-        }
-        fclose(lf);
+        if (!read_found_image(load_path, smax, preload)) return 1;
         have_preload = true;
+        // This image is also the baseline for delta checkpoints.
+        g_ckpt.base = preload;
+        g_ckpt.base_path = load_path;
+        g_ckpt.base_kind = 1;
+        g_ckpt.base_hash = ckpt_hash(preload.data() + 1, smax);
         u64 pre_surv = 0;
         for (u64 s = 1; s <= smax; s++) if (preload[s] == ~0ULL) pre_surv++;
         fprintf(stderr, "loaded %s: %" PRIu64 " survivors carried in; "
                 "sieving degrees %d..%d only\n",
                 load_path, pre_surv, min_depth, depth);
+    } else if (loadsurv_path) {
+        // Seed from a survivors list instead of a full .found.bin.  Only the
+        // *degrees* in best[] matter for correctness when sieving degrees
+        // >= min_depth: every s not listed already has a factor of degree
+        // < min_depth, so any sentinel below (min_depth << 48) blocks all new
+        // writes exactly as the real key would.  The polynomial data in a
+        // .found.bin is never read by the sieve -- only compared against.
+        u64 pre_surv = 0, line = 0, oor = 0;
+        if (!read_survivors_image(loadsurv_path, smax, preload, &pre_surv,
+                                  &line, &oor)) return 1;
+        if (oor) fprintf(stderr, "warning: %" PRIu64 " survivor entries outside "
+                         "1..%" PRIu64 " ignored\n", oor, smax);
+        have_preload = true;
+        g_ckpt.base = preload;                    // baseline for delta checkpoints
+        g_ckpt.base_path = loadsurv_path;
+        g_ckpt.base_kind = 2;
+        g_ckpt.base_hash = ckpt_hash(preload.data() + 1, smax);
+        fprintf(stderr, "loaded %s: %" PRIu64 " survivors carried in (%" PRIu64
+                " lines); sieving degrees %d..%d only\n",
+                loadsurv_path, pre_surv, line, min_depth, depth);
+        fprintf(stderr, "note: with --load-survivors the output .found.bin "
+                "records only the newly found degree-%d..%d factors; keep the "
+                "earlier run's file for the lower degrees\n", min_depth, depth);
     } else if (min_depth > 2) {
         fprintf(stderr, "warning: --min-depth %d without --load/--resume means "
                 "degrees 2..%d are not computed\n", min_depth, min_depth - 1);
@@ -1121,15 +1343,27 @@ int main(int argc, char **argv) {
     if (ckpt_path) {
         g_ckpt.enabled  = true;
         g_ckpt.path     = ckpt_path;
-        g_ckpt.period_s = ckpt_mins * 60.0;
+        // --checkpoint-mins on the command line wins; otherwise a resumed run
+        // inherits the interval the checkpoint was written with, so you don't
+        // silently lose periodic saves by omitting the flag on resume.
+        g_ckpt.period_s = (ckpt_mins >= 0) ? ckpt_mins * 60.0 : stored_period_s;
         g_ckpt.last_write = now_s();
         g_ckpt.r = r; g_ckpt.smax = smax; g_ckpt.depth = depth;
         struct sigaction sa; memset(&sa, 0, sizeof sa);
         sa.sa_handler = ckpt_signal_handler;
         sigaction(SIGTERM, &sa, nullptr);
         sigaction(SIGINT,  &sa, nullptr);
-        fprintf(stderr, "checkpointing to %s%s; SIGTERM/SIGINT will save and exit\n",
-                ckpt_path, g_ckpt.period_s > 0 ? " (and periodically)" : "");
+        bool delta_ok = (g_ckpt.base.size() == smax + 1);
+        fprintf(stderr, "checkpointing to %s (%s, keeping %d generation%s)",
+                ckpt_path, delta_ok ? "delta vs baseline" : "full image",
+                g_ckpt.keep, g_ckpt.keep == 1 ? "" : "s");
+        if (g_ckpt.period_s > 0)
+            fprintf(stderr, ", every %.1f min", g_ckpt.period_s / 60.0);
+        fprintf(stderr, "; SIGTERM/SIGINT saves and exits\n");
+        if (!delta_ok && !loadsurv_path)
+            fprintf(stderr, "note: no --load baseline, so checkpoints write a "
+                    "full %.0f MB image; on slow storage prefer --load\n",
+                    smax * 8 / 1048576.0);
     }
 
     double t0 = now_s();
