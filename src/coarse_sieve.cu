@@ -111,32 +111,38 @@
 //     already uses internally), and the per-class minimal-polynomial
 //     root sequence A[j], A[2j mod M], A[4j mod M], ... is just
 //     repeated squaring of a single seed value g^j (Frobenius: squaring
-//     a field element doubles its discrete log). So k_survivors and
-//     k_build_lslice below compute antilogs on the fly from gpow2[]
+//     a field element doubles its discrete log). So k_build_lslice
+//     and k_resolve_slice below compute antilogs on the fly from gpow2[]
 //     (tiny, O(d) bytes) and never store dA at all.
 //
 //  2. dL is only read once per surviving class (the single Zech-log
 //     lookup). That means it doesn't need to exist all at once: the
 //     value range of L can be split into `nbuckets` slices, and each
 //     slice built and consumed in its own pass:
-//       Phase A (k_survivors, run once): filter classes exactly as
-//         the dense k_classes does, and for each survivor stash the
-//         pair (j, x) -- no L access needed yet. The number of
-//         survivors is at most M/d (every element outside every
-//         proper subfield has a full-degree, size-d Frobenius orbit),
-//         so this list is much smaller than 2^d.
-//       Phase B (k_build_lslice + k_resolve_bucket, run `nbuckets`
-//         times): for bucket b covering value range [lo, hi), build
-//         only dL's slice over that range, then resolve whichever
-//         stashed survivors have x in [lo, hi) against it (Zech log,
-//         gcd/inv_mod, minimal polynomial, progression marking).
+//       For bucket b covering value range [lo, hi): build only dL's
+//       slice over that range (k_build_lslice), then resolve exactly
+//       the survivors belonging to that slice (k_resolve_slice).
 //
-// Peak memory drops from 8*2^d bytes to roughly
-//     4*ceil(2^d / nbuckets)                (one L-slice)
-//   + 8*(2^d / d)                            (survivor list, worst case)
-// so memory now scales with 2^d/d rather than 2^d once nbuckets is
-// large enough, at the cost of `nbuckets` extra full-domain passes to
-// rebuild each L-slice (runtime scales roughly linearly in nbuckets).
+//  3. The survivor list need not be stored at all, because the L slice
+//     already indexes its own bucket's survivors. A class j targets
+//     x(j) = antilog(j*rmod mod M) ^ 1, and each slice is forced
+//     even-aligned, hence closed under XOR 1, so x(j) is in [lo,hi)
+//     exactly when antilog(j*rmod mod M) is -- which is exactly the
+//     condition under which lslice holds that element's log. Walking
+//     the slice slots and mapping each stored log u back through
+//     j = u * rmod^-1 mod M therefore enumerates this bucket's
+//     survivors precisely: every survivor of the degree lands in
+//     exactly one bucket, and each class is filtered exactly once
+//     across all buckets. Total filter work is what the old separate
+//     survivor pass cost, but nothing survivor-sized stays resident,
+//     so peak memory now depends only on nbuckets -- and any degree
+//     can be made to fit by using more buckets.
+//
+// Peak memory drops from 8*2^d bytes to just
+//     sizeof(fw)*ceil(2^d / nbuckets)       (one L-slice, nothing else)
+// so peak memory is bounded solely by the bucket count, at the cost of
+// `nbuckets` full-domain passes to rebuild each L-slice (runtime scales
+// roughly linearly in nbuckets, so use the fewest buckets that fit).
 // run_gpu() picks the smallest nbuckets that fits free device memory
 // automatically; --selftest-lowmem lets you force a specific value.
 
@@ -312,7 +318,6 @@ __global__ void k_fill_fw(fw *p, u64 n, fw v) {
 // one surviving class: its index j and its Zech-log query key x = A[u]^1.
 // fw is u32 in the narrow build (8 bytes/survivor) and u64 in the wide
 // build (16 bytes/survivor, since j and x range up to 2^d-1 for d up to 63).
-struct Surv { fw j, x; };
 
 // g^idx computed on the fly from the (tiny, size-d) gpow2 chain, i.e.
 // gpow2[t] = g^(2^t). Identical arithmetic to k_antilog's inner loop,
@@ -356,38 +361,6 @@ GF2_HD u64 d_minpoly_seeded(fw seed, int d, u64 q, fw *P) {
 // coset minimality), but stops at computing the Zech-log query key --
 // no L table exists yet, and no A table is ever stored. One thread per
 // candidate j; survivors are stream-compacted into `surv` via atomicAdd.
-__global__ void k_survivors(int d, u64 M64, u64 q, u64 rmod,
-                            const fw *gpow2, const u64 *subq, int nsub,
-                            Surv *surv, unsigned cap,
-                            unsigned *nsurv, unsigned *overflow) {
-    const fw M = (fw)M64;
-    u64 j64 = (u64)blockIdx.x * blockDim.x + threadIdx.x + 1;
-    u64 stride = (u64)gridDim.x * blockDim.x;
-
-    for (; j64 < M64; j64 += stride) {
-        fw j = (fw)j64;
-        bool skip = false;
-        for (int k = 0; k < nsub; k++)
-            if (j64 % subq[k] == 0) { skip = true; break; }
-        if (skip) continue;
-        fw jj = j;
-        bool minimal = true;
-        for (int i = 1; i < d; i++) {
-            jj = rotl_d(jj, d, M);
-            if (jj < j) { minimal = false; break; }
-        }
-        if (!minimal) continue;
-
-        u64 u = MULMOD(j64, rmod, M64);
-        if (u == 0) continue;
-        fw Au = d_antilog(u, q, d, gpow2);
-        fw x = Au ^ 1u;
-
-        unsigned idx = atomicAdd(nsurv, 1u);
-        if (idx < cap) surv[idx] = {j, x};
-        else atomicAdd(overflow, 1u);
-    }
-}
 
 // Phase B, step 1: build only the L slice covering value range [lo, hi).
 // Same computation as k_antilog+k_logscatter fused together, just
@@ -405,28 +378,64 @@ __global__ void k_build_lslice(int d, u64 M64, u64 q, const fw *gpow2,
 // Phase B, step 2: resolve whichever stashed survivors have their query
 // key x in the current bucket's range against this slice, then continue
 // exactly as k_classes' tail does (gcd/inv_mod/minpoly/progression mark).
-__global__ void k_resolve_bucket(int d, u64 M64, u64 q, u64 smax,
-                                 u64 lo, u64 hi, const fw *lslice,
-                                 const fw *gpow2, const Surv *surv,
-                                 unsigned nsurv, ull *best, Heavy *heavy,
-                                 unsigned *nheavy, unsigned *overflow) {
-    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+// Fused survivor-enumeration + resolve for one bucket.  This replaces both
+// the stored survivor list and the old k_resolve_bucket scan.
+//
+// The key observation is that the L slice already IS the survivor index for
+// its own bucket.  A class j is a survivor when it passes the subfield and
+// coset-minimality filters, and its target is
+//        x(j) = antilog(j * rmod mod M) ^ 1.
+// Because every slice [lo,hi) is even-aligned (chunk is forced even), the
+// range is closed under XOR 1, so x(j) lands in this bucket exactly when
+// antilog(j * rmod mod M) does.  After k_build_lslice, that condition is
+// precisely "lslice[e - lo] holds the log of e" for e in [lo,hi).
+//
+// So we can walk the slots instead of a list: slot t corresponds to element
+// e = lo + t, u = lslice[t] is its discrete log, and j = u * rmod^-1 mod M
+// recovers the unique class that could target this slot.  Testing that j
+// reproduces exactly this bucket's survivors -- each survivor of the degree
+// belongs to exactly one bucket, and each class is tested exactly once
+// across all buckets, so total filter work is unchanged while the survivor
+// list disappears completely.  x's own log, needed below, is the sibling
+// slot t^1, since lo is even.
+__global__ void k_resolve_slice(int d, u64 M64, u64 q, u64 rmodinv,
+                                const u64 *subq, int nsub, const fw *gpow2,
+                                u64 lo, u64 hi, u64 smax, const fw *lslice,
+                                ull *best, Heavy *heavy, unsigned *nheavy,
+                                unsigned *overflow, unsigned long long *nsurv) {
+    const fw M = (fw)M64;
+    const fw EMPTY = (fw)~(fw)0;
+    u64 span = hi - lo;
+    u64 t = (u64)blockIdx.x * blockDim.x + threadIdx.x;
     u64 stride = (u64)gridDim.x * blockDim.x;
     fw P[64];
 
-    for (; i < (u64)nsurv; i += stride) {
-        u64 x = surv[i].x;
-        if (x < lo || x >= hi) continue;
-        u64 j64 = surv[i].j;
-        fw v = lslice[x - lo];
+    for (; t < span; t += stride) {
+        fw vu = lslice[t];
+        if (vu == EMPTY) continue;            // element 0 has no discrete log
+        u64 j64 = MULMOD((u64)vu, rmodinv, M64);
+        if (j64 == 0) continue;               // u == 0 <-> j == 0, not a class
 
+        bool skip = false;
+        for (int k = 0; k < nsub; k++)
+            if (j64 % subq[k] == 0) { skip = true; break; }
+        if (skip) continue;
+        fw j = (fw)j64;
+        fw jj = j;
+        bool minimal = true;
+        for (int i = 1; i < d; i++) {
+            jj = rotl_d(jj, d, M);
+            if (jj < j) { minimal = false; break; }
+        }
+        if (!minimal) continue;
+        atomicAdd(nsurv, 1ULL);               // counted where Phase A used to
+
+        fw v = lslice[t ^ 1ULL];              // log of x = (lo+t)^1
         u64 gg = gcd_u64(j64, M64);
         if ((u64)v % gg != 0) continue;
         u64 n = M64 / gg;
         u64 s0 = MULMOD(inv_mod(j64 / gg, n), (u64)v / gg, n);
 
-        // Cheap range test BEFORE the O(d) minpoly: classes whose smallest
-        // hit is out of range contribute nothing, so don't pay for them.
         u64 s = (s0 == 0 ? n : s0);
         if (s > smax) continue;
 
@@ -444,6 +453,7 @@ __global__ void k_resolve_bucket(int d, u64 M64, u64 q, u64 smax,
         }
     }
 }
+
 
 // ---------------------------------------------------------------------------
 static void launch_dims(u64 work, int &blocks, int &threads) {
@@ -868,24 +878,27 @@ static void sieve_degree_gpu(int d, u64 r, u64 smax, ull *d_best,
 // size d (that's precisely what the subfield-skip + coset-minimality
 // filters leave behind), so there are at most (2^d - 1)/d minimal coset
 // representatives. Padded for safety margin.
-static inline u64 lowmem_surv_cap(u64 M64, int d) {
-    return M64 / (u64)d + 64;
-}
 
-// bytes needed for one degree's low-memory tables at a given bucket count
-static inline size_t lowmem_need_bytes(u64 M64, int d, int nbuckets) {
+
+// bytes needed for one degree's low-memory tables at a given bucket count.
+// Only the L slice remains: survivors are reconstructed from the slice
+// itself (see k_resolve_slice), so nothing here is independent of nbuckets
+// and every degree can be made to fit by using more buckets.
+static inline u64 lowmem_chunk(u64 M64, int nbuckets) {
     u64 domain = M64 + 1;
     u64 chunk = (domain + (u64)nbuckets - 1) / (u64)nbuckets;
-    u64 survcap = lowmem_surv_cap(M64, d);
-    return (size_t)chunk * sizeof(fw) + (size_t)survcap * sizeof(Surv)
+    return (chunk + 1) & ~1ULL;      // even: each slice is closed under XOR 1
+}
+
+static inline size_t lowmem_need_bytes(u64 M64, int d, int nbuckets) {
+    (void)d;
+    return (size_t)lowmem_chunk(M64, nbuckets) * sizeof(fw)
          + 4096; // gpow2[]/subq[] etc., negligible
 }
 
 #define GPU_MEM_RESERVE (256ull << 20) // headroom for allocator/context overhead
 
-// smallest power-of-two bucket count whose tables fit in `freeb` bytes;
-// 0 if even the largest tried bucket count doesn't fit (survivor list
-// itself, which doesn't shrink with more buckets, is then the wall).
+// smallest power-of-two bucket count whose slice fits in `freeb` bytes.
 static int pick_buckets(u64 M64, int d, size_t freeb) {
     size_t budget = freeb > GPU_MEM_RESERVE ? freeb - GPU_MEM_RESERVE : 0;
     for (int nb = 1; nb <= (1 << 20); nb <<= 1)
@@ -893,12 +906,12 @@ static int pick_buckets(u64 M64, int d, size_t freeb) {
     return 0;
 }
 
-// run the sieve for one degree using the bucketed low-memory path:
-// Phase A (k_survivors) filters classes once with no A/L tables at all;
-// Phase B runs `nbuckets` times, each building only a slice of L
-// (k_build_lslice) and resolving the survivors that fall in it
-// (k_resolve_bucket). See the "LOW-MEMORY MODE" note at the top of the
-// file for the derivation.
+// run the sieve for one degree using the bucketed low-memory path.
+// There is no separate survivor pass any more: each of the `nbuckets`
+// passes builds one slice of L (k_build_lslice) and then reads its own
+// survivors straight back out of that slice (k_resolve_slice). Nothing
+// resident is independent of nbuckets, so any degree can be made to fit by
+// raising the bucket count. See "LOW-MEMORY MODE" at the top of the file.
 static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
                                     ull *d_best, Heavy *d_heavy,
                                     unsigned *d_nheavy, unsigned *d_overflow,
@@ -910,6 +923,9 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
         fprintf(stderr, "d=%d: gcd(r, 2^d-1) != 1; unsupported r\n", d);
         exit(1);
     }
+    // rmod is invertible mod M64 (checked above); the inverse lets each
+    // bucket recover the class j from a discrete log read out of its slice.
+    const u64 rmodinv = inv_mod(rmod, M64);
 
     std::vector<u64> subq;
     for (u64 p : factor_u64((u64)d)) {
@@ -931,60 +947,29 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
         CUCHK(cudaMemcpy(dsub, subq.data(), subq.size() * sizeof(u64),
                          cudaMemcpyHostToDevice));
     }
-
-    // --- Phase A: filter classes once, stash (j, x) survivors ---
-    u64 survcap64 = lowmem_surv_cap(M64, d);
-    // The survivor counter/index is a 32-bit atomic, so the count must fit
-    // in unsigned.  survivor count ~ 2^d/d, which stays < 2^32 up to d=37;
-    // beyond that the counter would need to be u64 (a small future change).
-    if (survcap64 > 0xFFFFFFFFull) {
-        fprintf(stderr, "d=%d: survivor count exceeds 32-bit range; the "
-                "survivor counter needs widening to u64 for this degree\n", d);
-        exit(1);
-    }
-    unsigned survcap = (unsigned)survcap64;
-    Surv *dsurv;
-    unsigned *d_nsurv, *d_sovf;
-    CUCHK(cudaMalloc(&dsurv, (size_t)survcap * sizeof(Surv)));
-    CUCHK(cudaMalloc(&d_nsurv, 4));
-    CUCHK(cudaMalloc(&d_sovf, 4));
     unsigned zero = 0;
-    CUCHK(cudaMemcpy(d_nsurv, &zero, 4, cudaMemcpyHostToDevice));
-    CUCHK(cudaMemcpy(d_sovf, &zero, 4, cudaMemcpyHostToDevice));
 
     // Baseline snapshot for this degree: best[] currently holds all degrees
-    // < d (and, on resume, buckets [0, start_bucket) of degree d). A signal
-    // during Phase A or the first bucket persists this state.
+    // < d (and, on resume, buckets [0, start_bucket) of degree d).
     ckpt_snapshot(d, start_bucket, nbuckets);
+
+    // --- nbuckets passes, each building and then consuming one L slice ---
+    u64 domain = M64 + 1;
+    u64 chunk = lowmem_chunk(M64, nbuckets);   // even, so slices close under ^1
+    fw *dlslice;
+    CUCHK(cudaMalloc(&dlslice, (size_t)chunk * sizeof(fw)));
+    unsigned long long *d_nsurv;
+    CUCHK(cudaMalloc(&d_nsurv, 8));
+    unsigned long long zero64 = 0;
+    CUCHK(cudaMemcpy(d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
 
     int blocks, threads;
     launch_dims(M64, blocks, threads);
-    k_survivors<<<blocks, threads>>>(d, M64, q, rmod, dgp, dsub,
-                                     (int)subq.size(), dsurv, survcap,
-                                     d_nsurv, d_sovf);
-    if (!poll_until_done()) ckpt_stop_and_exit();   // signal during Phase A
-    unsigned nsurv = 0, sovf = 0;
-    CUCHK(cudaMemcpy(&nsurv, d_nsurv, 4, cudaMemcpyDeviceToHost));
-    CUCHK(cudaMemcpy(&sovf, d_sovf, 4, cudaMemcpyDeviceToHost));
-    if (sovf) {
-        fprintf(stderr, "d=%d: survivor list overflow (%u); raise the "
-                "margin in lowmem_surv_cap()\n", d, sovf);
-        exit(1);
-    }
-
-    // --- Phase B: nbuckets passes, each building+consuming one L slice ---
-    u64 domain = M64 + 1;
-    u64 chunk = (domain + (u64)nbuckets - 1) / (u64)nbuckets;
-    fw *dlslice;
-    CUCHK(cudaMalloc(&dlslice, (size_t)chunk * sizeof(fw)));
-
-    int rblocks, rthreads;
-    launch_dims(nsurv, rblocks, rthreads);
 
     // progress bar: one dot per completed bucket (dots for buckets already
     // done on resume are shown up front so the bar length always matches
     // nbuckets)
-    fprintf(stderr, "d=%2d lowmem %d buckets, %u survivors: ", d, nbuckets, nsurv);
+    fprintf(stderr, "d=%2d lowmem %d buckets: ", d, nbuckets);
     for (int b = 0; b < start_bucket; b++) fputc('=', stderr);
     fflush(stderr);
 
@@ -1010,10 +995,12 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
 
         CUCHK(cudaMemcpy(d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
         CUCHK(cudaMemcpy(d_overflow, &zero, 4, cudaMemcpyHostToDevice));
-        k_resolve_bucket<<<rblocks, rthreads>>>(d, M64, q, smax, lo, hi,
-                                                dlslice, dgp, dsurv, nsurv,
-                                                d_best, d_heavy, d_nheavy,
-                                                d_overflow);
+        int sblocks, sthreads;
+        launch_dims(hi - lo, sblocks, sthreads);
+        k_resolve_slice<<<sblocks, sthreads>>>(d, M64, q, rmodinv, dsub,
+                                               (int)subq.size(), dgp, lo, hi,
+                                               smax, dlslice, d_best, d_heavy,
+                                               d_nheavy, d_overflow, d_nsurv);
         // wait with ~100ms polling so a signal mid-bucket is caught quickly;
         // on stop, snap still holds buckets [0,b) and this bucket re-runs
         if (!poll_until_done()) { fprintf(stderr, "\n"); ckpt_stop_and_exit(); }
@@ -1043,11 +1030,13 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
     CUCHK(cudaDeviceSynchronize());
     CUCHK(cudaGetLastError());
 
+    unsigned long long nsurv = 0;
+    CUCHK(cudaMemcpy(&nsurv, d_nsurv, 8, cudaMemcpyDeviceToHost));
     cudaFree(dgp);
     if (dsub) cudaFree(dsub);
-    cudaFree(dsurv); cudaFree(d_nsurv); cudaFree(d_sovf);
+    cudaFree(d_nsurv);
     cudaFree(dlslice);
-    fprintf(stderr, "d=%2d done (lowmem, %d buckets): %u survivors, "
+    fprintf(stderr, "d=%2d done (lowmem, %d buckets): %llu survivors, "
             "%u heavy progressions, %.2fs\n", d, nbuckets, nsurv,
             total_heavy, now_s() - t0);
 }
@@ -1110,12 +1099,9 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
             int nbuckets = pick_buckets(M64, d, freeb);
             if (nbuckets == 0) {
                 fprintf(stderr, "d=%d needs %.2f GB tables but only %.2f GB"
-                        " free, and even the low-memory bucketed path doesn't"
-                        " fit (survivor list alone needs %.2f GB); stopping at"
-                        " depth %d\n", d, need / 1073741824.0,
-                        freeb / 1073741824.0,
-                        (lowmem_surv_cap(M64, d) * sizeof(Surv)) / 1073741824.0,
-                        d - 1);
+                        " free, and even 2^20 buckets does not fit; stopping"
+                        " at depth %d\n", d, need / 1073741824.0,
+                        freeb / 1073741824.0, d - 1);
                 break;
             }
             fprintf(stderr, "d=%d: dense tables need %.2f GB but only %.2f GB"

@@ -1,3 +1,6 @@
+Note: resume is done with:
+./coarse_sieve_wide 136279841 35 out35 --resume out35.ckpt
+
 
 =============================
 NVIDIA GeForce RTX 2070 SUPER
@@ -37,36 +40,84 @@ total sieve time: 7.52s
 64028946 factors -> out29.found.cert
 
 ./coarse_sieve_wide 136279841 30 out30 --load-survivors ../coarse_sieve_DATA/out29.survivors.txt --min-depth 30 --checkpoint out30.ckpt --checkpoint-mins 20
+d=30: dense tables need 16.00 GB but only 6.35 GB free; switching to low-memory mode (2 buckets)
+d=30 lowmem 2 buckets, 35790267 survivors: ..
 d=30 done (lowmem, 2 buckets): 35790267 survivors, 4 heavy progressions, 14.05s
 total sieve time: 15.11s
 3976134 survivors (no factor of degree <= 30) -> out30.survivors.txt
 134840 factors -> out30.found.cert
 
 ./coarse_sieve_wide 136279841 31 out31 --load-survivors ../coarse_sieve_DATA/out30.survivors.txt --min-depth 31 --checkpoint out31.ckpt --checkpoint-mins 20
+d=31: dense tables need 32.00 GB but only 6.35 GB free; switching to low-memory mode (4 buckets)
+d=31 lowmem 4 buckets, 69273666 survivors: ....
 d=31 done (lowmem, 4 buckets): 69273666 survivors, 0 heavy progressions, 37.76s
 total sieve time: 38.77s
 3849633 survivors (no factor of degree <= 31) -> out31.survivors.txt
 126501 factors -> out31.found.cert
 
 ./coarse_sieve_wide 136279841 32 out32 --load-survivors ../coarse_sieve_DATA/out31.survivors.txt --min-depth 32 --checkpoint out32.ckpt --checkpoint-mins 20
+d=32: dense tables need 64.00 GB but only 6.35 GB free; switching to low-memory mode (8 buckets)
+d=32 lowmem 8 buckets, 134215680 survivors: ........
 d=32 done (lowmem, 8 buckets): 134215680 survivors, 0 heavy progressions, 162.86s
 total sieve time: 163.77s
 3731849 survivors (no factor of degree <= 32) -> out32.survivors.txt
 117784 factors -> out32.found.cert
 
+OLDER OLDER VERSION
+./coarse_sieve_wide 136279841 33 68139920 out33 --found --load DATA_32/out.found.bin --min-depth 33
+loaded DATA_32/out.found.bin: 3731849 survivors carried in; sieving degrees 33..33 only
+d=33: dense tables need 128.00 GB but only 6.35 GB free; switching to low-memory mode (32 buckets)
+total sieve time: 4044.98s
+3620029 survivors (no factor of degree <= 33) -> out33.survivors.txt
+packed keys for s=1..68139920 -> out33.found.bin
+
+OLDER VERSION
 ./coarse_sieve_wide 136279841 33 out33 --load-survivors ../coarse_sieve_DATA/out32.survivors.txt --min-depth 33 --checkpoint out33.ckpt --checkpoint-mins 20
+d=33: dense tables need 128.00 GB but only 6.35 GB free; switching to low-memory mode (32 buckets)
+d=33 lowmem 32 buckets, 260300986 survivors: ...............................[checkpoint: d=33 bucket 31/32, delta 108397 entries (1.65 MB) -> out33.ckpt, 0.21s]
+.
 d=33 done (lowmem, 32 buckets): 260300986 survivors, 0 heavy progressions, 1270.01s
 total sieve time: 1271.52s
 3620029 survivors (no factor of degree <= 33) -> out33.survivors.txt
 111820 factors -> out33.found.cert
 
+NEWER VERSION (no survivor list)
+./coarse_sieve_wide 136279841 33 out33 --load-survivors ../coarse_sieve_DATA/out32.survivors.txt --min-depth 33 --checkpoint out33.ckpt --checkpoint-mins 20
+d=33: dense tables need 128.00 GB but only 6.35 GB free; switching to low-memory mode (16 buckets)
+d=33 lowmem 16 buckets: ................
+d=33 done (lowmem, 16 buckets): 260300986 survivors, 0 heavy progressions, 593.48s
+total sieve time: 594.78s
+3620029 survivors (no factor of degree <= 33) -> out33.survivors.txt
+111820 factors -> out33.found.cert
+
+./coarse_sieve_wide 136279841 34 out34 --load-survivors ../coarse_sieve_DATA/out33.survivors.txt --min-depth 34 --checkpoint out34.ckpt --checkpoint-mins 20
+d=34: dense tables need 256.00 GB but only 6.35 GB free; switching to low-memory mode (32 buckets)
+d=34 lowmem 32 buckets: ................[checkpoint: d=34 bucket 16/32, delta 52829 entries (0.81 MB) -> out34.ckpt, 0.10s]
+................
+d=34 done (lowmem, 32 buckets): 505286415 survivors, 0 heavy progressions, 2494.17s
+[checkpoint: d=35 bucket 0/0, delta 104832 entries (1.60 MB) -> out34.ckpt, 0.11s]
+total sieve time: 2495.41s
+3515197 survivors (no factor of degree <= 34) -> out34.survivors.txt
+104832 factors -> out34.found.cert
 
 ==================
 T4 on Google Cloud
 ==================
 
-[older version of the program]
+OLDER OLDER VERSION
+d=34: dense tables need 256.00 GB but only 13.86 GB free; switching to low-memory mode (32 buckets)
+d=34 lowmem 32 buckets, 505286415 survivors: ...........[checkpoint: d=34 bucket 11/32, delta 36376 entries (0.56 MB) -> out34.ckpt, 0.11s]
+...........[checkpoint: d=34 bucket 22/32, delta 72456 entries (1.11 MB) -> out34.ckpt, 0.12s]
+..........
 d=34 done (lowmem, 32 buckets): 505286415 survivors, 0 heavy progressions, 3644.12s
 total sieve time: 3645.30s
 3515197 survivors (no factor of degree <= 34) -> out34.survivors.txt
 packed keys for s=1..68139920 -> out34.found.bin
+
+NEWER VERSION (no survivor list)
+./coarse_sieve_wide 136279841 35 out35 --load-survivors ./out34.survivors.txt --min-depth 35 --checkpoint out35.ckpt --checkpoint-mins 10
+loaded ./out34.survivors.txt: 3515197 survivors carried in (3515197 lines); sieving degrees 35..35 only
+note: with --load-survivors the output .found.bin records only the newly found degree-35..35 factors; keep the earlier run's file for the lower degrees
+checkpointing to out35.ckpt (delta vs baseline, keeping 3 generations), every 10.0 min; SIGTERM/SIGINT saves and exits
+d=35: dense tables need 512.00 GB but only 13.86 GB free; switching to low-memory mode (32 buckets)
+
