@@ -463,6 +463,50 @@ static void launch_dims(u64 work, int &blocks, int &threads) {
 }
 
 // ---------------------------------------------------------------------------
+// MULTI-GPU
+//
+// Bucket passes are completely independent: each reads only the tiny gpow2
+// chain plus its own L slice, and writes results into best[] with atomicMin.
+// Since min is associative and commutative, N devices can each keep a
+// PRIVATE best[] and the elementwise minimum of those arrays at the end is
+// bit-identical to a single-device run.  So there is no inter-device traffic
+// during compute at all -- no peer access, no NVLink requirement -- and the
+// only communication is one best[] readback per device when a checkpoint or
+// the final result is needed.
+//
+// Buckets are handed out in rounds: round k gives bucket start+k*NG+g to
+// device g.  Rounds end with every device synchronized, so the completed
+// set is always a contiguous prefix [start, start+(k+1)*NG) -- which is what
+// the checkpoint format records and what resume needs.
+struct GpuCtx {
+    int dev = 0;
+    ull *d_best = nullptr;
+    Heavy *d_heavy = nullptr;
+    unsigned *d_nheavy = nullptr, *d_overflow = nullptr;
+    // per-degree scratch
+    fw *dgp = nullptr; u64 *dsub = nullptr; fw *dlslice = nullptr;
+    unsigned long long *d_nsurv = nullptr;
+};
+static std::vector<GpuCtx> g_gpus;
+static std::vector<ull> g_gather_tmp;
+
+// Merge every device's best[] into `out` by elementwise minimum.
+static void gather_best(ull *out, u64 n) {
+    CUCHK(cudaSetDevice(g_gpus[0].dev));
+    CUCHK(cudaMemcpy(out, g_gpus[0].d_best, n * sizeof(ull),
+                     cudaMemcpyDeviceToHost));
+    if (g_gpus.size() == 1) return;
+    if (g_gather_tmp.size() != n) g_gather_tmp.resize(n);
+    for (size_t g = 1; g < g_gpus.size(); g++) {
+        CUCHK(cudaSetDevice(g_gpus[g].dev));
+        CUCHK(cudaMemcpy(g_gather_tmp.data(), g_gpus[g].d_best,
+                         n * sizeof(ull), cudaMemcpyDeviceToHost));
+        for (u64 i = 0; i < n; i++)
+            if (g_gather_tmp[i] < out[i]) out[i] = g_gather_tmp[i];
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CHECKPOINT / RESUME
 //
 // Long low-memory runs (d >= 33 can take hours over `nbuckets` passes) need
@@ -498,7 +542,6 @@ struct CkptCtx {
     u64      r = 0, smax = 0;
     int      depth = 0;
     int      keep = 3;               // checkpoint generations to retain
-    ull     *d_best = nullptr;       // device best[] (source for snapshots)
     std::vector<ull> snap;           // host snapshot as of last completed bucket
     int      snap_d = 0, snap_next_bucket = 0, snap_nbuckets = 0;
     // baseline for delta encoding (the --load image), empty if none
@@ -527,8 +570,7 @@ static u64 ckpt_hash(const ull *p, u64 n) {
 static void ckpt_snapshot(int d, int next_bucket, int nbuckets) {
     if (!g_ckpt.enabled) return;
     if (g_ckpt.snap.size() != g_ckpt.smax + 1) g_ckpt.snap.resize(g_ckpt.smax + 1);
-    CUCHK(cudaMemcpy(g_ckpt.snap.data(), g_ckpt.d_best,
-                     (g_ckpt.smax + 1) * sizeof(ull), cudaMemcpyDeviceToHost));
+    gather_best(g_ckpt.snap.data(), g_ckpt.smax + 1);
     g_ckpt.snap_d = d;
     g_ckpt.snap_next_bucket = next_bucket;
     g_ckpt.snap_nbuckets = nbuckets;
@@ -794,9 +836,14 @@ static bool ckpt_read(const char *path, u64 r, u64 smax,
 static bool poll_until_done() {
     for (;;) {
         if (ckpt_stop_requested()) return false;
-        cudaError_t st = cudaStreamQuery(0);
-        if (st == cudaSuccess) return true;
-        if (st != cudaErrorNotReady) CUCHK(st);
+        bool all_done = true;
+        for (size_t g = 0; g < g_gpus.size(); g++) {
+            CUCHK(cudaSetDevice(g_gpus[g].dev));
+            cudaError_t st = cudaStreamQuery(0);
+            if (st == cudaErrorNotReady) { all_done = false; break; }
+            if (st != cudaSuccess) CUCHK(st);
+        }
+        if (all_done) return true;
         usleep(100000); // 100 ms
     }
 }
@@ -913,8 +960,6 @@ static int pick_buckets(u64 M64, int d, size_t freeb) {
 // resident is independent of nbuckets, so any degree can be made to fit by
 // raising the bucket count. See "LOW-MEMORY MODE" at the top of the file.
 static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
-                                    ull *d_best, Heavy *d_heavy,
-                                    unsigned *d_nheavy, unsigned *d_overflow,
                                     int start_bucket = 0) {
     const u64 M64 = ((u64)1 << d) - 1;
     const u64 q = find_primitive_poly(d);
@@ -926,6 +971,7 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
     // rmod is invertible mod M64 (checked above); the inverse lets each
     // bucket recover the class j from a discrete log read out of its slice.
     const u64 rmodinv = inv_mod(rmod, M64);
+    const int NG = (int)g_gpus.size();
 
     std::vector<u64> subq;
     for (u64 p : factor_u64((u64)d)) {
@@ -938,30 +984,31 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
     for (int t = 1; t < d; t++) gpow2[t] = gf_sqr(gpow2[t - 1], q, d);
 
     double t0 = now_s();
-    fw *dgp;
-    u64 *dsub = nullptr;
-    CUCHK(cudaMalloc(&dgp, d * sizeof(fw)));
-    CUCHK(cudaMemcpy(dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
-    if (!subq.empty()) {
-        CUCHK(cudaMalloc(&dsub, subq.size() * sizeof(u64)));
-        CUCHK(cudaMemcpy(dsub, subq.data(), subq.size() * sizeof(u64),
-                         cudaMemcpyHostToDevice));
-    }
+    u64 domain = M64 + 1;
+    u64 chunk = lowmem_chunk(M64, nbuckets);   // even, so slices close under ^1
     unsigned zero = 0;
+    unsigned long long zero64 = 0;
+
+    // per-device scratch for this degree
+    for (int g = 0; g < NG; g++) {
+        GpuCtx &G = g_gpus[g];
+        CUCHK(cudaSetDevice(G.dev));
+        CUCHK(cudaMalloc(&G.dgp, d * sizeof(fw)));
+        CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
+        G.dsub = nullptr;
+        if (!subq.empty()) {
+            CUCHK(cudaMalloc(&G.dsub, subq.size() * sizeof(u64)));
+            CUCHK(cudaMemcpy(G.dsub, subq.data(), subq.size() * sizeof(u64),
+                             cudaMemcpyHostToDevice));
+        }
+        CUCHK(cudaMalloc(&G.dlslice, (size_t)chunk * sizeof(fw)));
+        CUCHK(cudaMalloc(&G.d_nsurv, 8));
+        CUCHK(cudaMemcpy(G.d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
+    }
 
     // Baseline snapshot for this degree: best[] currently holds all degrees
     // < d (and, on resume, buckets [0, start_bucket) of degree d).
     ckpt_snapshot(d, start_bucket, nbuckets);
-
-    // --- nbuckets passes, each building and then consuming one L slice ---
-    u64 domain = M64 + 1;
-    u64 chunk = lowmem_chunk(M64, nbuckets);   // even, so slices close under ^1
-    fw *dlslice;
-    CUCHK(cudaMalloc(&dlslice, (size_t)chunk * sizeof(fw)));
-    unsigned long long *d_nsurv;
-    CUCHK(cudaMalloc(&d_nsurv, 8));
-    unsigned long long zero64 = 0;
-    CUCHK(cudaMemcpy(d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
 
     int blocks, threads;
     launch_dims(M64, blocks, threads);
@@ -969,14 +1016,19 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
     // progress bar: one dot per completed bucket (dots for buckets already
     // done on resume are shown up front so the bar length always matches
     // nbuckets)
-    fprintf(stderr, "d=%2d lowmem %d buckets: ", d, nbuckets);
+    fprintf(stderr, "d=%2d lowmem %d buckets", d, nbuckets);
+    if (NG > 1) fprintf(stderr, " on %d GPUs", NG);
+    fprintf(stderr, ": ");
     for (int b = 0; b < start_bucket; b++) fputc('=', stderr);
     fflush(stderr);
 
     const fw LSLICE_EMPTY = (fw)~(fw)0;   // all-ones sentinel (u32 or u64)
-    unsigned total_heavy = 0;
-    for (int b = start_bucket; b < nbuckets; b++) {
-        // bucket boundary: snap holds buckets [0,b) -> safe to persist here
+    unsigned long long total_heavy = 0;
+
+    // Buckets are issued in rounds of NG, so after every round the completed
+    // set is the contiguous prefix the checkpoint format expects.
+    for (int base = start_bucket; base < nbuckets; base += NG) {
+        // round boundary: snap holds buckets [0,base) -> safe to persist here
         if (ckpt_stop_requested() || (g_ckpt.test_stop_after &&
                 g_ckpt.test_buckets_done >= g_ckpt.test_stop_after)) {
             fprintf(stderr, "\n");
@@ -984,60 +1036,83 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
         }
         if (ckpt_periodic_due()) ckpt_write();
 
-        u64 lo = (u64)b * chunk;
-        u64 hi = lo + chunk; if (hi > domain) hi = domain;
-        if (lo >= hi) continue;
+        int used = 0;
+        for (int g = 0; g < NG; g++) {
+            int b = base + g;
+            if (b >= nbuckets) break;
+            u64 lo = (u64)b * chunk;
+            u64 hi = lo + chunk; if (hi > domain) hi = domain;
+            if (lo >= hi) continue;
+            GpuCtx &G = g_gpus[g];
+            CUCHK(cudaSetDevice(G.dev));
 
-        int fblocks, fthreads;
-        launch_dims(hi - lo, fblocks, fthreads);
-        k_fill_fw<<<fblocks, fthreads>>>(dlslice, hi - lo, LSLICE_EMPTY);
-        k_build_lslice<<<blocks, threads>>>(d, M64, q, dgp, lo, hi, dlslice);
-
-        CUCHK(cudaMemcpy(d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
-        CUCHK(cudaMemcpy(d_overflow, &zero, 4, cudaMemcpyHostToDevice));
-        int sblocks, sthreads;
-        launch_dims(hi - lo, sblocks, sthreads);
-        k_resolve_slice<<<sblocks, sthreads>>>(d, M64, q, rmodinv, dsub,
-                                               (int)subq.size(), dgp, lo, hi,
-                                               smax, dlslice, d_best, d_heavy,
-                                               d_nheavy, d_overflow, d_nsurv);
-        // wait with ~100ms polling so a signal mid-bucket is caught quickly;
-        // on stop, snap still holds buckets [0,b) and this bucket re-runs
+            int fblocks, fthreads;
+            launch_dims(hi - lo, fblocks, fthreads);
+            k_fill_fw<<<fblocks, fthreads>>>(G.dlslice, hi - lo, LSLICE_EMPTY);
+            k_build_lslice<<<blocks, threads>>>(d, M64, q, G.dgp, lo, hi,
+                                                G.dlslice);
+            CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
+            CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
+            int sblocks, sthreads;
+            launch_dims(hi - lo, sblocks, sthreads);
+            k_resolve_slice<<<sblocks, sthreads>>>(d, M64, q, rmodinv, G.dsub,
+                                                   (int)subq.size(), G.dgp,
+                                                   lo, hi, smax, G.dlslice,
+                                                   G.d_best, G.d_heavy,
+                                                   G.d_nheavy, G.d_overflow,
+                                                   G.d_nsurv);
+            used++;
+        }
+        // wait with ~100ms polling so a signal mid-round is caught quickly;
+        // on stop, snap still holds buckets [0,base) and this round re-runs
         if (!poll_until_done()) { fprintf(stderr, "\n"); ckpt_stop_and_exit(); }
 
-        unsigned nheavy = 0, overflow = 0;
-        CUCHK(cudaMemcpy(&nheavy, d_nheavy, 4, cudaMemcpyDeviceToHost));
-        CUCHK(cudaMemcpy(&overflow, d_overflow, 4, cudaMemcpyDeviceToHost));
-        if (overflow) {
-            fprintf(stderr, "\nd=%d: heavy queue overflow (%u); raise "
-                    "HEAVY_CAP\n", d, overflow);
-            exit(1);
+        // drain each device's heavy queue
+        for (int g = 0; g < used; g++) {
+            GpuCtx &G = g_gpus[g];
+            CUCHK(cudaSetDevice(G.dev));
+            unsigned nheavy = 0, overflow = 0;
+            CUCHK(cudaMemcpy(&nheavy, G.d_nheavy, 4, cudaMemcpyDeviceToHost));
+            CUCHK(cudaMemcpy(&overflow, G.d_overflow, 4, cudaMemcpyDeviceToHost));
+            if (overflow) {
+                fprintf(stderr, "\nd=%d: heavy queue overflow (%u); raise "
+                        "HEAVY_CAP\n", d, overflow);
+                exit(1);
+            }
+            if (nheavy) {
+                unsigned use = nheavy > HEAVY_CAP ? HEAVY_CAP : nheavy;
+                k_mark_heavy<<<use, 256>>>(G.d_heavy, use, smax, G.d_best);
+            }
+            total_heavy += nheavy;
         }
-        if (nheavy) {
-            unsigned use = nheavy > HEAVY_CAP ? HEAVY_CAP : nheavy;
-            k_mark_heavy<<<use, 256>>>(d_heavy, use, smax, d_best);
-            if (!poll_until_done()) { fprintf(stderr, "\n"); ckpt_stop_and_exit(); }
-        }
-        total_heavy += nheavy;
+        if (!poll_until_done()) { fprintf(stderr, "\n"); ckpt_stop_and_exit(); }
 
-        // bucket b fully done (inline + heavy marks): refresh snapshot to
-        // (d, b+1) and tick the progress bar
-        ckpt_snapshot(d, b + 1, nbuckets);
-        g_ckpt.test_buckets_done++;
-        fputc('.', stderr); fflush(stderr);
+        // round complete (inline + heavy marks on every device): refresh the
+        // snapshot to the new contiguous prefix and tick the progress bar
+        int done_to = base + used; if (done_to > nbuckets) done_to = nbuckets;
+        ckpt_snapshot(d, done_to, nbuckets);
+        g_ckpt.test_buckets_done += used;
+        for (int k = 0; k < used; k++) fputc('.', stderr);
+        fflush(stderr);
     }
     fprintf(stderr, "\n");
     CUCHK(cudaDeviceSynchronize());
     CUCHK(cudaGetLastError());
 
     unsigned long long nsurv = 0;
-    CUCHK(cudaMemcpy(&nsurv, d_nsurv, 8, cudaMemcpyDeviceToHost));
-    cudaFree(dgp);
-    if (dsub) cudaFree(dsub);
-    cudaFree(d_nsurv);
-    cudaFree(dlslice);
+    for (int g = 0; g < NG; g++) {
+        GpuCtx &G = g_gpus[g];
+        CUCHK(cudaSetDevice(G.dev));
+        unsigned long long c = 0;
+        CUCHK(cudaMemcpy(&c, G.d_nsurv, 8, cudaMemcpyDeviceToHost));
+        nsurv += c;
+        cudaFree(G.dgp);   G.dgp = nullptr;
+        if (G.dsub) { cudaFree(G.dsub); G.dsub = nullptr; }
+        cudaFree(G.dlslice); G.dlslice = nullptr;
+        cudaFree(G.d_nsurv); G.d_nsurv = nullptr;
+    }
     fprintf(stderr, "d=%2d done (lowmem, %d buckets): %llu survivors, "
-            "%u heavy progressions, %.2fs\n", d, nbuckets, nsurv,
+            "%llu heavy progressions, %.2fs\n", d, nbuckets, nsurv,
             total_heavy, now_s() - t0);
 }
 
@@ -1045,26 +1120,33 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
                     int force_lowmem_buckets = 0, int min_depth = 2,
                     const std::vector<ull> *preload = nullptr,
                     int resume_bucket = 0, int resume_nbuckets = 0) {
-    ull *d_best;
-    Heavy *d_heavy;
-    unsigned *d_nheavy, *d_overflow;
-    CUCHK(cudaMalloc(&d_best, (smax + 1) * sizeof(ull)));
-    CUCHK(cudaMalloc(&d_heavy, HEAVY_CAP * sizeof(Heavy)));
-    CUCHK(cudaMalloc(&d_nheavy, 4));
-    CUCHK(cudaMalloc(&d_overflow, 4));
-    g_ckpt.d_best = d_best;          // checkpoints snapshot from here
-    if (preload) {
-        // Resume/extend: seed best[] with results from a prior run (its
-        // .found.bin or checkpoint) so we only sieve the new degrees.  A
-        // degree-d factor can only improve an s that has no smaller-degree
-        // factor, so atomicMin against the loaded state is exactly correct.
-        CUCHK(cudaMemcpy(d_best, preload->data(), (smax + 1) * sizeof(ull),
-                         cudaMemcpyHostToDevice));
-    } else {
-        int blocks, threads;
-        launch_dims(smax + 1, blocks, threads);
-        k_fill<<<blocks, threads>>>(d_best, smax + 1, ~0ULL);
+    // Every device gets a private best[]; the elementwise min across them is
+    // the answer (see the MULTI-GPU note above).  Seeding each with the same
+    // preload keeps that identity true from the start.
+    for (size_t g = 0; g < g_gpus.size(); g++) {
+        GpuCtx &G = g_gpus[g];
+        CUCHK(cudaSetDevice(G.dev));
+        CUCHK(cudaMalloc(&G.d_best, (smax + 1) * sizeof(ull)));
+        CUCHK(cudaMalloc(&G.d_heavy, HEAVY_CAP * sizeof(Heavy)));
+        CUCHK(cudaMalloc(&G.d_nheavy, 4));
+        CUCHK(cudaMalloc(&G.d_overflow, 4));
+        if (preload) {
+            // Resume/extend: seed best[] with results from a prior run so we
+            // only sieve the new degrees.  A degree-d factor can only improve
+            // an s that has no smaller-degree factor, so atomicMin against
+            // the loaded state is exactly correct.
+            CUCHK(cudaMemcpy(G.d_best, preload->data(),
+                             (smax + 1) * sizeof(ull), cudaMemcpyHostToDevice));
+        } else {
+            int blocks, threads;
+            launch_dims(smax + 1, blocks, threads);
+            k_fill<<<blocks, threads>>>(G.d_best, smax + 1, ~0ULL);
+        }
     }
+    CUCHK(cudaSetDevice(g_gpus[0].dev));
+    ull *d_best = g_gpus[0].d_best;              // dense path runs on device 0
+    Heavy *d_heavy = g_gpus[0].d_heavy;
+    unsigned *d_nheavy = g_gpus[0].d_nheavy, *d_overflow = g_gpus[0].d_overflow;
 
     for (int d = min_depth; d <= depth; d++) {
         // On a mid-degree resume, the first degree processed continues from
@@ -1077,18 +1159,24 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
         // dense path keeps two 2^d-element tables (A and L), each sizeof(fw)
         // bytes/element: 8*2^d in the narrow build, 16*2^d in the wide build.
         size_t need = (((size_t)2 * sizeof(fw)) << d) + 16;
-        size_t freeb = 0, totb = 0;
-        cudaMemGetInfo(&freeb, &totb);
+        // size for the most constrained device so every device fits
+        size_t freeb = (size_t)-1, totb = 0;
+        for (size_t g = 0; g < g_gpus.size(); g++) {
+            size_t f = 0, t = 0;
+            CUCHK(cudaSetDevice(g_gpus[g].dev));
+            cudaMemGetInfo(&f, &t);
+            if (f < freeb) { freeb = f; totb = t; }
+        }
+        CUCHK(cudaSetDevice(g_gpus[0].dev));
 
         if (force_lowmem_buckets > 0) {
-            sieve_degree_gpu_lowmem(d, r, smax, force_lowmem_buckets, d_best,
-                                    d_heavy, d_nheavy, d_overflow, start_bucket);
+            sieve_degree_gpu_lowmem(d, r, smax, force_lowmem_buckets,
+                                    start_bucket);
         } else if (forced_nb > 0) {
             // resuming mid-degree: reuse the checkpoint's bucket count
             fprintf(stderr, "d=%d: resuming at bucket %d/%d\n", d,
                     start_bucket, forced_nb);
-            sieve_degree_gpu_lowmem(d, r, smax, forced_nb, d_best, d_heavy,
-                                    d_nheavy, d_overflow, start_bucket);
+            sieve_degree_gpu_lowmem(d, r, smax, forced_nb, start_bucket);
         } else if (need <= freeb) {
             sieve_degree_gpu(d, r, smax, d_best, d_heavy, d_nheavy, d_overflow);
         } else {
@@ -1107,8 +1195,7 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
             fprintf(stderr, "d=%d: dense tables need %.2f GB but only %.2f GB"
                     " free; switching to low-memory mode (%d buckets)\n", d,
                     need / 1073741824.0, freeb / 1073741824.0, nbuckets);
-            sieve_degree_gpu_lowmem(d, r, smax, nbuckets, d_best, d_heavy,
-                                    d_nheavy, d_overflow, start_bucket);
+            sieve_degree_gpu_lowmem(d, r, smax, nbuckets, start_bucket);
         }
 
         // Degree boundary: a stop during a dense degree (which can't
@@ -1118,14 +1205,23 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
             ckpt_snapshot(d + 1, 0, 0);   // next degree, no buckets done
             ckpt_stop_and_exit();
         }
-        if (ckpt_periodic_due()) { ckpt_snapshot(d + 1, 0, 0); ckpt_write(); }
+        // Only worth a periodic save if more degrees remain; after the last
+        // one the run is about to write its real output anyway.
+        if (d < depth && ckpt_periodic_due()) {
+            ckpt_snapshot(d + 1, 0, 0); ckpt_write();
+        }
     }
 
     best.resize(smax + 1);
-    CUCHK(cudaMemcpy(best.data(), d_best, (smax + 1) * sizeof(ull),
-                     cudaMemcpyDeviceToHost));
-    cudaFree(d_best); cudaFree(d_heavy); cudaFree(d_nheavy);
-    cudaFree(d_overflow);
+    gather_best(best.data(), smax + 1);
+    for (size_t g = 0; g < g_gpus.size(); g++) {
+        GpuCtx &G = g_gpus[g];
+        CUCHK(cudaSetDevice(G.dev));
+        cudaFree(G.d_best); cudaFree(G.d_heavy);
+        cudaFree(G.d_nheavy); cudaFree(G.d_overflow);
+        G.d_best = nullptr;
+    }
+    g_gather_tmp.clear(); g_gather_tmp.shrink_to_fit();
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,6 +1271,8 @@ static void sieve_cpu(u64 r, int depth, u64 smax, std::vector<ull> &best) {
 
 // ---------------------------------------------------------------------------
 int main(int argc, char **argv) {
+    // selftests run on a single device
+    g_gpus.assign(1, GpuCtx());
     if (argc >= 2 && (!strcmp(argv[1], "--selftest") ||
                       !strcmp(argv[1], "--selftest-lowmem"))) {
         bool lowmem = !strcmp(argv[1], "--selftest-lowmem");
@@ -1231,6 +1329,10 @@ int main(int argc, char **argv) {
                         "  --checkpoint-keep <G>       keep G checkpoint "
                         "generations (default 3)\n"
                         "  --resume <file>     continue from a checkpoint\n"
+                        "  --gpus <N>          use N GPUs (default: all "
+                        "present; buckets split across\n"
+                        "                      devices, no peer access or "
+                        "NVLink needed)\n"
                         "\n"
                         "  <out_prefix>.found.cert lists one line per s that has a "
                         "factor, in the same\n"
@@ -1267,7 +1369,7 @@ int main(int argc, char **argv) {
     bool write_cert = true;                             // cert default on
     const char *load_path = nullptr, *ckpt_path = nullptr, *resume_path = nullptr;
     const char *loadsurv_path = nullptr;
-    int min_depth = 2, ckpt_keep = 3;
+    int min_depth = 2, ckpt_keep = 3, want_gpus = 0;   // 0 = use every device
     double ckpt_mins = -1;                       // <0 = not given on command line
     for (int a = first_flag; a < argc; a++) {
         if (!strcmp(argv[a], "--found")) write_found = true;
@@ -1282,6 +1384,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[a], "--checkpoint-mins") && a + 1 < argc) ckpt_mins = atof(argv[++a]);
         else if (!strcmp(argv[a], "--checkpoint-keep") && a + 1 < argc) ckpt_keep = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--resume") && a + 1 < argc) resume_path = argv[++a];
+        else if (!strcmp(argv[a], "--gpus") && a + 1 < argc) want_gpus = atoi(argv[++a]);
         else fprintf(stderr, "warning: ignoring unknown argument '%s'\n", argv[a]);
     }
     if (min_depth < 2) min_depth = 2;
@@ -1344,9 +1447,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "loaded %s: %" PRIu64 " survivors carried in (%" PRIu64
                 " lines); sieving degrees %d..%d only\n",
                 loadsurv_path, pre_surv, line, min_depth, depth);
-        fprintf(stderr, "note: with --load-survivors the output .found.bin "
-                "records only the newly found degree-%d..%d factors; keep the "
-                "earlier run's file for the lower degrees\n", min_depth, depth);
+        fprintf(stderr, "note: with --load-survivors the output records only "
+                "the newly found degree-%d..%d factors; keep the earlier "
+                "run's .found.cert for the lower degrees\n", min_depth, depth);
     } else if (min_depth > 2) {
         fprintf(stderr, "warning: --min-depth %d without --load/--resume means "
                 "degrees 2..%d are not computed\n", min_depth, min_depth - 1);
@@ -1381,6 +1484,20 @@ int main(int argc, char **argv) {
                     "full %.0f MB image; on slow storage prefer --load\n",
                     smax * 8 / 1048576.0);
     }
+
+    // ---- select devices ----
+    int ndev = 0;
+    if (cudaGetDeviceCount(&ndev) != cudaSuccess || ndev < 1) ndev = 1;
+    int use = (want_gpus > 0 && want_gpus < ndev) ? want_gpus : ndev;
+    if (want_gpus > ndev)
+        fprintf(stderr, "warning: --gpus %d requested but only %d device%s "
+                "present; using %d\n", want_gpus, ndev, ndev == 1 ? "" : "s",
+                ndev);
+    g_gpus.assign(use, GpuCtx());
+    for (int g = 0; g < use; g++) g_gpus[g].dev = g;
+    if (use > 1)
+        fprintf(stderr, "using %d GPUs (buckets split across devices; results "
+                "merged by minimum)\n", use);
 
     double t0 = now_s();
     std::vector<ull> best;
@@ -1441,6 +1558,13 @@ int main(int argc, char **argv) {
     }
     // Run finished normally: drop the checkpoint so it can't be resumed by
     // mistake later.
-    if (g_ckpt.enabled && g_ckpt.path) remove(g_ckpt.path);
+    if (g_ckpt.enabled && g_ckpt.path) {
+        remove(g_ckpt.path);
+        char gen[1100];
+        for (int i = 1; i < 8; i++) {            // and every rotated generation
+            snprintf(gen, sizeof gen, "%s.%d", g_ckpt.path, i);
+            remove(gen);
+        }
+    }
     return 0;
 }

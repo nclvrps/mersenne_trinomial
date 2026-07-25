@@ -100,6 +100,81 @@ total sieve time: 2495.41s
 3515197 survivors (no factor of degree <= 34) -> out34.survivors.txt
 104832 factors -> out34.found.cert
 
+./coarse_sieve_wide 136279841 36 out36 --load-survivors ../coarse_sieve_DATA/out35.survivors.txt --min-depth 36 --
+checkpoint out36.ckpt --checkpoint-mins 10
+loaded ../coarse_sieve_DATA/out35.survivors.txt: 3415883 survivors carried in (3415883 lines); sieving degrees 36..36 only
+note: with --load-survivors the output records only the newly found degree-36..36 factors; keep the earlier run's .found.cert for the lower degrees
+checkpointing to out36.ckpt (delta vs baseline, keeping 3 generations), every 10.0 min; SIGTERM/SIGINT saves and exits
+d=36: dense tables need 1024.00 GB but only 6.35 GB free; switching to low-memory mode (128 buckets)
+d=36 lowmem 128 buckets: ..[checkpoint: d=36 bucket 2/128, delta 1489 entries (0.02 MB) -> out36.ckpt, 0.26s]
+..[checkpoint: d=36 bucket 4/128, delta 3026 entries (0.05 MB) -> out36.ckpt, 0.14s]
+..[checkpoint: d=36 bucket 6/128, delta 4497 entries (0.07 MB) -> out36.ckpt, 0.16s]
+..[checkpoint: d=36 bucket 8/128, delta 5925 entries (0.09 MB) -> out36.ckpt, 0.20s]
+..[checkpoint: d=36 bucket 10/128, delta 7369 entries (0.11 MB) -> out36.ckpt, 0.20s]
+..[checkpoint: d=36 bucket 12/128, delta 8915 entries (0.14 MB) -> out36.ckpt, 0.14s]
+..[checkpoint: d=36 bucket 14/128, delta 10458 entries (0.16 MB) -> out36.ckpt, 0.08s]
+..[checkpoint: d=36 bucket 16/128, delta 11978 entries (0.18 MB) -> out36.ckpt, 0.14s]
+..[checkpoint: d=36 bucket 18/128, delta 13407 entries (0.20 MB) -> out36.ckpt, 0.16s]
+..[checkpoint: d=36 bucket 20/128, delta 14906 entries (0.23 MB) -> out36.ckpt, 0.11s]
+..[checkpoint: d=36 bucket 22/128, delta 16412 entries (0.25 MB) -> out36.ckpt, 0.11s]
+..[checkpoint: d=36 bucket 24/128, delta 17935 entries (0.27 MB) -> out36.ckpt, 0.11s]
+..[checkpoint: d=36 bucket 26/128, delta 19455 entries (0.30 MB) -> out36.ckpt, 0.27s]
+..[checkpoint: d=36 bucket 28/128, delta 20888 entries (0.32 MB) -> out36.ckpt, 0.19s]
+..[checkpoint: d=36 bucket 30/128, delta 22349 entries (0.34 MB) -> out36.ckpt, 0.47s]
+..[checkpoint: d=36 bucket 32/128, delta 23825 entries (0.36 MB) -> out36.ckpt, 0.19s]
+..[checkpoint: d=36 bucket 34/128, delta 25322 entries (0.39 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 36/128, delta 26744 entries (0.41 MB) -> out36.ckpt, 0.19s]
+..[checkpoint: d=36 bucket 38/128, delta 28213 entries (0.43 MB) -> out36.ckpt, 0.16s]
+..[checkpoint: d=36 bucket 40/128, delta 29701 entries (0.45 MB) -> out36.ckpt, 0.31s]
+..[checkpoint: d=36 bucket 42/128, delta 31200 entries (0.48 MB) -> out36.ckpt, 0.32s]
+..[checkpoint: d=36 bucket 44/128, delta 32681 entries (0.50 MB) -> out36.ckpt, 0.13s]
+..[checkpoint: d=36 bucket 46/128, delta 34160 entries (0.52 MB) -> out36.ckpt, 0.17s]
+..[checkpoint: d=36 bucket 48/128, delta 35596 entries (0.54 MB) -> out36.ckpt, 0.16s]
+..[checkpoint: d=36 bucket 50/128, delta 36964 entries (0.56 MB) -> out36.ckpt, 0.22s]
+..[checkpoint: d=36 bucket 52/128, delta 38416 entries (0.59 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 54/128, delta 39886 entries (0.61 MB) -> out36.ckpt, 0.16s]
+..[checkpoint: d=36 bucket 56/128, delta 41349 entries (0.63 MB) -> out36.ckpt, 0.13s]
+..[checkpoint: d=36 bucket 58/128, delta 42857 entries (0.65 MB) -> out36.ckpt, 0.09s]
+..[checkpoint: d=36 bucket 60/128, delta 44336 entries (0.68 MB) -> out36.ckpt, 0.19s]
+..[checkpoint: d=36 bucket 62/128, delta 45798 entries (0.70 MB) -> out36.ckpt, 0.11s]
+..[checkpoint: d=36 bucket 64/128, delta 47193 entries (0.72 MB) -> out36.ckpt, 0.14s]
+..[checkpoint: d=36 bucket 66/128, delta 48690 entries (0.74 MB) -> out36.ckpt, 0.10s]
+..[checkpoint: d=36 bucket 68/128, delta 50167 entries (0.77 MB) -> out36.ckpt, 0.11s]
+..[checkpoint: d=36 bucket 70/128, delta 51626 entries (0.79 MB) -> out36.ckpt, 0.23s]
+..[checkpoint: d=36 bucket 72/128, delta 53103 entries (0.81 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 74/128, delta 54590 entries (0.83 MB) -> out36.ckpt, 0.26s]
+..[checkpoint: d=36 bucket 76/128, delta 56003 entries (0.85 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 78/128, delta 57485 entries (0.88 MB) -> out36.ckpt, 0.16s]
+..[checkpoint: d=36 bucket 80/128, delta 58937 entries (0.90 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 82/128, delta 60406 entries (0.92 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 84/128, delta 61825 entries (0.94 MB) -> out36.ckpt, 0.26s]
+..[checkpoint: d=36 bucket 86/128, delta 63311 entries (0.97 MB) -> out36.ckpt, 0.28s]
+..[checkpoint: d=36 bucket 88/128, delta 64747 entries (0.99 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 90/128, delta 66188 entries (1.01 MB) -> out36.ckpt, 0.14s]
+..[checkpoint: d=36 bucket 92/128, delta 67623 entries (1.03 MB) -> out36.ckpt, 0.28s]
+..[checkpoint: d=36 bucket 94/128, delta 69084 entries (1.05 MB) -> out36.ckpt, 0.14s]
+..[checkpoint: d=36 bucket 96/128, delta 70537 entries (1.08 MB) -> out36.ckpt, 0.11s]
+..[checkpoint: d=36 bucket 98/128, delta 71965 entries (1.10 MB) -> out36.ckpt, 0.13s]
+..[checkpoint: d=36 bucket 100/128, delta 73351 entries (1.12 MB) -> out36.ckpt, 0.13s]
+..[checkpoint: d=36 bucket 102/128, delta 74839 entries (1.14 MB) -> out36.ckpt, 0.09s]
+..[checkpoint: d=36 bucket 104/128, delta 76240 entries (1.16 MB) -> out36.ckpt, 0.21s]
+..[checkpoint: d=36 bucket 106/128, delta 77716 entries (1.19 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 108/128, delta 79180 entries (1.21 MB) -> out36.ckpt, 0.17s]
+..[checkpoint: d=36 bucket 110/128, delta 80649 entries (1.23 MB) -> out36.ckpt, 0.33s]
+..[checkpoint: d=36 bucket 112/128, delta 82164 entries (1.25 MB) -> out36.ckpt, 0.19s]
+..[checkpoint: d=36 bucket 114/128, delta 83631 entries (1.28 MB) -> out36.ckpt, 0.15s]
+..[checkpoint: d=36 bucket 116/128, delta 85065 entries (1.30 MB) -> out36.ckpt, 0.16s]
+..[checkpoint: d=36 bucket 118/128, delta 86519 entries (1.32 MB) -> out36.ckpt, 0.11s]
+..[checkpoint: d=36 bucket 120/128, delta 87980 entries (1.34 MB) -> out36.ckpt, 0.28s]
+..[checkpoint: d=36 bucket 122/128, delta 89370 entries (1.36 MB) -> out36.ckpt, 0.20s]
+..[checkpoint: d=36 bucket 124/128, delta 90830 entries (1.39 MB) -> out36.ckpt, 0.12s]
+..[checkpoint: d=36 bucket 126/128, delta 92242 entries (1.41 MB) -> out36.ckpt, 0.13s]
+..
+d=36 done (lowmem, 128 buckets): 1908866960 survivors, 2 heavy progressions, 44323.71s
+total sieve time: 44324.83s
+3322198 survivors (no factor of degree <= 36) -> out36.survivors.txt
+93685 factors -> out36.found.cert
+
 ==================
 T4 on Google Cloud
 ==================
