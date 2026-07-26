@@ -13,6 +13,8 @@ static inline cudaError_t cudaMemcpy(void* d, const void* s, size_t n, cudaMemcp
 static inline cudaError_t cudaMemset(void* d, int v, size_t n) { memset(d, v, n); return 0; }
 static inline cudaError_t cudaDeviceSynchronize() { return 0; }
 static inline cudaError_t cudaGetLastError() { return 0; }
+static inline cudaError_t cudaSetDevice(int) { return 0; }
+static inline cudaError_t cudaGetDeviceCount(int* n) { *n = 1; return 0; }
 static inline cudaError_t cudaMemGetInfo(size_t* f, size_t* t) { *f = (size_t)64<<30; *t = (size_t)64<<30; return 0; }
 typedef void* cudaEvent_t;
 static inline cudaError_t cudaEventCreate(cudaEvent_t*) { return 0; }

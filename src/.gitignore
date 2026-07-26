@@ -1,6 +1,7 @@
 bin2cert
 cantor_cuda
 cantor_ref
+cert2bin
 check_ref
 coarse_sieve
 coarse_sieve_wide

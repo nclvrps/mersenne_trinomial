@@ -196,3 +196,8 @@ note: with --load-survivors the output .found.bin records only the newly found d
 checkpointing to out35.ckpt (delta vs baseline, keeping 3 generations), every 10.0 min; SIGTERM/SIGINT saves and exits
 d=35: dense tables need 512.00 GB but only 13.86 GB free; switching to low-memory mode (32 buckets)
 
+./coarse_sieve_wide 136279841 37 out37 --load-survivors out36.survivors.txt --min-depth 37 --checkpoint out37.ckpt --checkpoint-mins 10
+loaded out36.survivors.txt: 3322198 survivors carried in (3322198 lines); sieving degrees 37..37 only
+note: with --load-survivors the output records only the newly found degree-37..37 factors; keep the earlier run's .found.cert for the lower degrees
+checkpointing to out37.ckpt (delta vs baseline, keeping 3 generations), every 10.0 min; SIGTERM/SIGINT saves and exits
+d=37: dense tables need 2048.00 GB but only 13.86 GB free; switching to low-memory mode (128 buckets)
