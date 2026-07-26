@@ -37,6 +37,17 @@ ifeq ($(NTL_OK),1)
 NTLDEF = -DHAVE_NTL
 NTLSRC = $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp))
 NTLSRC_EMUL = build_emul/gf2_gcd_ntl.cpp
+NTLMSG = NTL: FOUND ($(NTLLIB))
+else
+ifneq ($(NTLLIB),)
+NTLMSG = NTL: DISABLED by NTL_OK=0 (the probe itself had succeeded)
+else
+ifeq ($(NTLCHK),)
+NTLMSG = NTL: NOT DETECTED -- ntl_check.cpp is MISSING from this directory, so the try-link probe could not run
+else
+NTLMSG = NTL: NOT DETECTED -- try-link of $(NTLCHK) failed (is libntl-dev installed?)
+endif
+endif
 endif
 
 CPU  = sieve_ref cantor_ref
@@ -68,6 +79,13 @@ trinomial_scan: trinomial_scan.cu gf2_trinomial_cuda.h gf2_gcd.h
 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
 tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h
+	@echo "== $(NTLMSG) =="
+	@if [ "$(NTL_OK)" != "1" ] && [ "$(ALLOW_NO_NTL)" != "1" ]; then \
+	  echo "ERROR: tsfactor needs NTL for factor resolution (CanZass)."; \
+	  echo "  fix: put ntl_check.cpp (shipped with tsfactor) next to this"; \
+	  echo "  Makefile and install libntl-dev; then re-run make."; \
+	  echo "  Kernel-testing-only override: make ALLOW_NO_NTL=1 tsfactor"; \
+	  exit 1; fi
 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
 check_ref: check_ref.cpp
@@ -89,6 +107,7 @@ emul-%:
 	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul -o build_emul/$* build_emul/$*.cpp
 
 emul-tsfactor:
+	@echo "== $(NTLMSG) =="
 	mkdir -p build_emul
 	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h; do \
 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done

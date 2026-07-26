@@ -410,6 +410,15 @@ static u64 ts_gcd(const u64 *a, size_t aw, const u64 *b, size_t bw,
 #endif
 }
 
+static const char *gcd_backend() {
+#ifdef HAVE_NTL
+    return "NTL (HalfGCD + CanZass)";
+#else
+    return "naive fallback -- NO NTL: factor resolution will fail for "
+           "multi-factor interval gcds; NOT fit for production";
+#endif
+}
+
 class GcdPool {
     std::mutex mu;
     std::condition_variable cv_job, cv_res;
@@ -1157,6 +1166,7 @@ static void host_mulx_xor(std::vector<u64> &dst, const std::vector<u64> &src,
 static int selftest(int gcd_threads) {
     int bad = 0;
     printf("tsfactor selftest\n");
+    printf("GCD backend: %s\n", gcd_backend());
 
     // (1) squaring: fused vs legacy vs host, many (r, s) incl. edges
     {
@@ -1281,6 +1291,17 @@ static int selftest(int gcd_threads) {
     }
 
     // (4) end-to-end vs oracle at r = 4423
+#ifndef HAVE_NTL
+    printf("end-to-end vs oracle                               SKIPPED (NTL required)\n");
+    printf("fineDDF bisection path (forced)                    SKIPPED (NTL required)\n");
+    printf("-z gives up / -Z caps and continues                SKIPPED (NTL required)\n");
+    printf("checkpoint kill/resume equivalence                 SKIPPED (NTL required)\n");
+    printf("NOTE: this binary cannot resolve factors from multi-factor\n"
+           "      interval gcds.  Ensure ntl_check.cpp is present next to\n"
+           "      the Makefile and libntl-dev is installed, then rebuild;\n"
+           "      `make tsfactor` prints the NTL detection result.\n");
+    (void)gcd_threads;
+#else
     {
         const u64 rr = 4423, skip = 5, maxd = 200;
         std::vector<u64> surv;
@@ -1452,8 +1473,15 @@ static int selftest(int gcd_threads) {
         }
         pool.stop();
     }
+#endif // HAVE_NTL
 
+#ifdef HAVE_NTL
     printf(bad ? "SELFTEST: %d FAILURE(S)\n" : "SELFTEST: all PASS\n", bad);
+#else
+    printf(bad ? "SELFTEST: %d FAILURE(S)\n"
+               : "SELFTEST: kernel suites PASS; resolution suites SKIPPED "
+                 "(built without NTL)\n", bad);
+#endif
     return bad ? 1 : 0;
 }
 
@@ -1566,7 +1594,7 @@ int main(int argc, char **argv) {
     P.skip = (u64)-1;
     int gcd_threads = 0, device = -1, want_m = 0;
     bool do_selftest = false, do_bench = false, legacy = false,
-         no_ckpt = false;
+         no_ckpt = false, allow_no_ntl = false;
     double f_opt = 1.0;
 
     std::vector<std::string> pos;
@@ -1595,6 +1623,7 @@ int main(int argc, char **argv) {
         else if (a == "--canzass-max")
             P.canzass_max = strtoull(need("--canzass-max"), 0, 10);
         else if (a == "--legacy-sq") legacy = true;
+        else if (a == "--allow-no-ntl") allow_no_ntl = true;
         else if (a == "--pend-max") P.pend_max = atoi(need("--pend-max"));
         else if (a == "--die-after-blocks")
             P.die_after_blocks = atol(need("--die-after-blocks"));
@@ -1638,6 +1667,22 @@ int main(int argc, char **argv) {
         while (r3 * r3 * r3 < r) r3++;
         P.canzass_max = 2 * r3 * r3;
     }
+    fprintf(stderr, "GCD backend: %s\n", gcd_backend());
+#ifndef HAVE_NTL
+    if (!allow_no_ntl) {
+        fprintf(stderr,
+            "ERROR: refusing to scan survivors without NTL.  Every hit\n"
+            "whose interval gcd holds more than one factor would come out\n"
+            "as an unresolved range.  Ensure ntl_check.cpp sits next to\n"
+            "the Makefile and libntl-dev (+libgmp-dev) is installed, then\n"
+            "rebuild -- `make tsfactor` prints the NTL detection result\n"
+            "and refuses silent no-NTL builds.  Override (degrees-only\n"
+            "experiments): --allow-no-ntl.\n");
+        exit(1);
+    }
+#else
+    (void)allow_no_ntl;
+#endif
     if (device >= 0) cudaSetDevice(device);
 
     // survivors

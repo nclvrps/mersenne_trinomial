@@ -346,6 +346,29 @@ NOT yet done / needs Gord:
   threads); if anything misbehaves, --gcd-threads 1.
 - Multi-round: optimization items C1-C4 as measurements dictate.
 
+INCIDENT (round 1a): first hardware selftest FAILED -- every factor
+resolution errored "could not factor interval gcd" while all kernel
+suites passed and every reported gcd degree matched a correct scan.
+Root cause: the binary was built WITHOUT NTL.  The Makefile's NTL
+detection try-links ntl_check.cpp; that file was not among the round-1
+deliverables, so in a build directory assembled from them the probe
+silently failed, NTL_OK=0, and the build proceeded cleanly on the
+naive-GCD fallback, whose mask enumeration cannot handle degrees
+beyond ~24.  Multi-factor interval gcds (the cases needing CanZass)
+then failed while single-factor hits resolved through the
+gdeg < 2*ka shortcut -- which is exactly why -z/-Z passed and why the
+tight-window m=6 config showed only 2 failures.  Proven by rebuilding
+the emulation with NTL_OK=0: all 55 ERROR lines (s, deg) match the
+hardware log exactly.  Hardening now in place: ntl_check.cpp ships
+with the deliverables; `make tsfactor` prints the NTL detection
+result and HARD-FAILS on a no-NTL build unless ALLOW_NO_NTL=1;
+tsfactor prints "GCD backend: ..." in the selftest banner and at scan
+startup; scanning survivors without NTL is refused unless
+--allow-no-ntl; a no-NTL selftest marks resolution suites
+"SKIPPED (NTL required)" instead of FAIL and exits 0 when the kernel
+suites pass.  Conclusion: no GPU bug exists; the device-side pipeline
+is fully validated by his hardware log.
+
 Known judgment calls (flag if you disagree):
 - No flip logic: we always work on the original trinomial (s <= r/2 by
   input contract), so masks print directly; factor-output equivalence
