@@ -20,35 +20,10 @@ vpath %.h   . common
 
 # NTL provides the subquadratic GCD backend (effectively REQUIRED for
 # production r; build NTL with NTL_GF2X_LIB=on so multiplication uses
-# gf2x, exactly as for factor.cpp).  Detection TRY-LINKS ntl_check.cpp
-# against plausible library sets, which handles /usr/local installs and
-# NTL builds that need -lgf2x pulled in explicitly.  Overrides:
-#   make NTL_OK=0                              (force naive backend)
-#   make NTLLIB="-L/opt/ntl/lib -lntl -lgf2x -lgmp"   (custom paths)
-NTLCHK := $(firstword $(wildcard common/ntl_check.cpp ntl_check.cpp))
-ifeq ($(origin NTLLIB),undefined)
-NTLLIB := $(shell for L in "-lntl -lgmp" "-lntl -lgf2x -lgmp" \
-  "-lntl -lgf2x -lgmp -lpthread"; do \
-  if $(CXX) $(NTLCHK) $$L -o /tmp/ntl_chk_$$$$ >/dev/null 2>&1; \
-  then echo $$L; break; fi; done; rm -f /tmp/ntl_chk_$$$$)
-endif
-NTL_OK ?= $(if $(NTLLIB),1,0)
-ifeq ($(NTL_OK),1)
+# gf2x, exactly as for factor.cpp).
+NTLLIB := -lntl -lgf2x -lgmp
 NTLDEF = -DHAVE_NTL
-NTLSRC = $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp))
-NTLSRC_EMUL = build_emul/gf2_gcd_ntl.cpp
-NTLMSG = NTL: FOUND ($(NTLLIB))
-else
-ifneq ($(NTLLIB),)
-NTLMSG = NTL: DISABLED by NTL_OK=0 (the probe itself had succeeded)
-else
-ifeq ($(NTLCHK),)
-NTLMSG = NTL: NOT DETECTED -- ntl_check.cpp is MISSING from this directory, so the try-link probe could not run
-else
-NTLMSG = NTL: NOT DETECTED -- try-link of $(NTLCHK) failed (is libntl-dev installed?)
-endif
-endif
-endif
+NTLSRC = gf2_gcd_ntl.cpp
 
 CPU  = sieve_ref cantor_ref
 CUDA = coarse_sieve coarse_sieve_wide cantor_cuda trinomial_stage2 trinomial_scan tsfactor
@@ -79,13 +54,6 @@ trinomial_scan: trinomial_scan.cu gf2_trinomial_cuda.h gf2_gcd.h
 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
 tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h
-	@echo "== $(NTLMSG) =="
-	@if [ "$(NTL_OK)" != "1" ] && [ "$(ALLOW_NO_NTL)" != "1" ]; then \
-	  echo "ERROR: tsfactor needs NTL for factor resolution (CanZass)."; \
-	  echo "  fix: put ntl_check.cpp (shipped with tsfactor) next to this"; \
-	  echo "  Makefile and install libntl-dev; then re-run make."; \
-	  echo "  Kernel-testing-only override: make ALLOW_NO_NTL=1 tsfactor"; \
-	  exit 1; fi
 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
 check_ref: check_ref.cpp
