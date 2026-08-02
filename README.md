@@ -1,12 +1,12 @@
 ## Overview ##
 
-This repository contains programs (mostly written by AI) that find polynomial factors for trinomials over GF(2).
+This repository contains programs (mostly written by AI) that find (smallest) polynomial factors for trinomials over GF(2).
 
 These programs use CUDA to run on GPUs with greater throughput than the longstanding CPU-based **factor** program that has been used so far for this purpose.
 
 (Note: **factor** should not be confused with the GNU coreutils utility of the same name)
 
-The programs in this repository, as well as the **factor** program itself, make use of the NTL and GF2X and GMP libraries, except as noted otherwise.
+The programs in this repository, as well as the **factor** program itself, make use of the NTL and GF2X libraries (which in turn rely on the GMP library) except as noted otherwise.
 
 ## Background ##
 
@@ -23,21 +23,21 @@ We focus on *r*&nbsp;=&nbsp;136279841 because trinomials corresponding to all sm
 by Brent et al. for the entire range of *s* values. See for example:
 [arXiv:1605.09213 [math.NT]](https://arxiv.org/abs/1605.09213)
 
+## Theory and empirical observations ##
+
 For any given&nbsp;*r*, Brent et al. found between zero to five values of&nbsp;*s* that produce primitive trinomials.
 
-## Theory and empirical observations ##
+By symmetry between x<sup>r</sup>&nbsp;+ x<sup>s</sup>&nbsp;+&nbsp;1 and x<sup>r</sup>&nbsp;+ x<sup>r−s</sup>&nbsp;+&nbsp;1,
+we (and they) only consider the range 1&nbsp;&le; *s*&nbsp;&le; floor(*r*/2)&nbsp;=&nbsp;68139920
 
 By Swan's theorem, if *r*&nbsp;≠&nbsp;±1&nbsp;(mod&nbsp;8), then the only value of *s* that could produce a primitive trinomial is *s*&nbsp;=&nbsp;2,
 and the search is trivial.
-
-By symmetry between x<sup>r</sup>&nbsp;+ x<sup>s</sup>&nbsp;+&nbsp;1 and x<sup>r</sup>&nbsp;+ x<sup>r−s</sup>&nbsp;+&nbsp;1,
-we only consider the range 1&nbsp;&le; *s*&nbsp;&le; floor(*r*/2)&nbsp;=&nbsp;68139920
 
 By Swan's theorem, polynomial factors can only have degree 2&nbsp;&le;&nbsp;*d*&nbsp;&le;&nbsp;floor(*r*/3)&nbsp;=&nbsp;45426613
 
 In practice, pathologically large factors are extremely rare, and factors of small degree are very common.
 
-When *r* is a Mersenne prime exponent smaller than 136279841, we empirically observe the following histogram probabilities for small values of&nbsp;*d* as tallied over the full range of *s* for non-irreducible trinomials:
+When *r* is a Mersenne prime exponent smaller than 136279841, and only considering the polynomial factor of smallest degree for each trinomial, we empirically observe the following histogram probabilities for small values of&nbsp;*d* as tallied over the full range of *s* for non-irreducible trinomials:
 * p(2) = 1/3 = 3255/9765
 * p(3) = 4/21 = 1860/9765
 * p(4) = 2/21 = 930/9765
@@ -59,11 +59,11 @@ where &lt;bitmask&gt; is a string of lowercase hexadecimal digits that represent
 
 For example, for *r*&nbsp;=&nbsp;136279841, the line<br>
 `2 5 p29`<br>
-means that x<sup>136279841</sup>&nbsp;+ x<sup>2</sup>&nbsp;+&nbsp;1 has a degree-5 factor
+means that x<sup>136279841</sup>&nbsp;+ x<sup>2</sup>&nbsp;+&nbsp;1 over GF(2) has a degree-5 factor
 whose coefficients are given by hexadecimal 29 or the binary string 101001 of length 5+1,
 namely x<sup>5</sup>&nbsp;+&nbsp;x<sup>3</sup>&nbsp;+&nbsp;1
 
-A small number of lines will instead have the format:<br>
+A very small number of lines will instead have the format:<br>
 s `primitive`<br>
 when there are no factors, or:<br>
 s `u`<br>
@@ -71,18 +71,20 @@ when a search was terminated prior to finding a factor, but it has not been conf
 
 Brent's website contains a link to an FTP repository containing certificate files for all Mersenne exponents *r*&nbsp;≡&nbsp;±1&nbsp;(mod&nbsp;8) less than 136279841
 
-These certificates can be verified by the C program **check-ntl** that is also linked at Brent's website, proving that the factors found are valid.
+For each *s*, only the polynomial factor of smallest degree is recorded. If there are two or more of the same degree, then tiebreaks are settled by lexicographically comparing the hexadecimal bitmask strings.
+
+These certificates can be verified by the C program **check-ntl** that is linked at Brent's website, proving that the factors found are valid.
 This program uses the NTL and GF2X libraries to verify all the millions of lines of a certificate file very quickly.
 
-This repository also contains **verify_gf2_trinomial.py**, a Python script that uses only GMP via the gmpy2 package, but does not use NTL or GF2X libraries.
+This repository also contains **verify_gf2_trinomial.py**, a Python script that uses only GMP via the gmpy2 package, but does not use the NTL or GF2X libraries.
 It does an independent double-check that the factors in a certificate file are indeed valid, using slow but "obviously correct" algorithms.
 It generally takes a couple of days to do what **check-ntl** does in a couple of minutes.
 
 ## Programs ##
 
 The longstanding **factor** program in [the apps subdirectory of the GF2X library repository](https://gitlab.inria.fr/gf2x/gf2x/-/tree/master/apps?ref_type=heads)
-(not to be confused with the GNU coreutils utilty of the same name) has been used for this purpose, but it is a CPU-based program.
-These new AI-written programs use CUDA to run on GPUs with greater throughput.
+(not to be confused with the GNU coreutils utility of the same name) has been used for this purpose, but it is a CPU-based program.
+These newer AI-written programs use CUDA to run on GPUs with greater throughput.
 
 These programs are used as follows:
 * **coarse_sieve_wide** finds all factors of degree M or less globally across the entire range of s in a single run.
