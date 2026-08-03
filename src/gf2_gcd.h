@@ -144,4 +144,37 @@ static inline bool edf_least_enum(const std::vector<u64> &g, u64 target,
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Hybrid HGCD gcd with pluggable large-multiplication offload (C4).
+// The engine lives in gf2_gcd_ntl.cpp (needs NTL for CPU-side mults and
+// the finishing gcd); callers provide a GpuMulHook whose mul() computes
+// the full carry-less product out = a * b over GF(2)[x] -- typically on
+// a GPU -- and return false to decline (engine then multiplies on the
+// CPU).  All sizes in bits; word arrays are little-endian u64 as
+// elsewhere in this codebase.
+struct GpuMulHook {
+    virtual bool mul(const u64 *a, size_t aw, u64 abits,
+                     const u64 *b, size_t bw, u64 bbits,
+                     std::vector<u64> &out) = 0;
+    virtual ~GpuMulHook() {}
+};
+
+#ifdef HAVE_NTL
+// gcd(a, b) with the same result/capture contract as poly_gcd_ntl.
+// Degrees are reduced by recursive HGCD (multiplications >=
+// hyb_gpu_min_bits offloaded through gm when non-null) until both fall
+// to <= hyb_ntl_finish_bits, then NTL finishes and captures.  Any
+// postcondition violation or lack of progress falls back to plain
+// poly_gcd_ntl on the ORIGINAL inputs: the failure mode is slower,
+// never wrong.
+u64 poly_gcd_hybrid(const u64 *a, size_t aw, const u64 *b, size_t bw,
+                    std::vector<u64> *gout, u64 keep_max_bits,
+                    GpuMulHook *gm);
+extern u64 hyb_gpu_min_bits;     // offload mults with an operand >= this
+extern u64 hyb_ntl_finish_bits;  // hand the pair to NTL below this
+void hyb_get_stats(u64 &gpu_mults, u64 &cpu_mults, u64 &fallbacks);
+void hyb_reset_stats();
+bool ntl_gf2x_backed();          // NTL built with NTL_GF2X_LIB?
+#endif
+
 #endif // GF2_GCD_H

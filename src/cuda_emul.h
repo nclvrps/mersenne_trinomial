@@ -22,7 +22,7 @@ static inline cudaError_t cudaEventRecord(cudaEvent_t) { return 0; }
 static inline cudaError_t cudaEventSynchronize(cudaEvent_t) { return 0; }
 static inline cudaError_t cudaEventElapsedTime(float* f, cudaEvent_t, cudaEvent_t) { *f = 0; return 0; }
 struct dim3s { unsigned x, y, z; };
-static dim3s blockIdx{0,0,0}, blockDim{1,1,1}, threadIdx{0,0,0}, gridDim{1,1,1};
+static thread_local dim3s blockIdx{0,0,0}, blockDim{1,1,1}, threadIdx{0,0,0}, gridDim{1,1,1};
 #define __global__
 #define __shared__
 static inline unsigned long long atomicMin(unsigned long long* a, unsigned long long v) { auto o=*a; if (v<o) *a=v; return o; }

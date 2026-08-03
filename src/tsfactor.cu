@@ -401,9 +401,35 @@ struct GcdRes {
 // always want it (the 4-Mbit default in gf2_gcd.h would drop deep-tail
 // single-factor gcds that the shortcut in resolve_gcd needs verbatim)
 static u64 g_keep_bits = ((u64)1 << 22);
+static GpuMulHook *g_gm = nullptr;       // set when --gpu-gcd is active
+static bool g_use_hybrid = false;
+static bool g_hyb_xcheck = false;        // selftest: verify hybrid vs NTL
 static u64 ts_gcd(const u64 *a, size_t aw, const u64 *b, size_t bw,
                   std::vector<u64> *gout) {
 #ifdef HAVE_NTL
+    if (g_use_hybrid) {
+        u64 d = poly_gcd_hybrid(a, aw, b, bw, gout, g_keep_bits, g_gm);
+        if (g_hyb_xcheck) {
+            std::vector<u64> gref;
+            u64 dr = poly_gcd_ntl(a, aw, b, bw, &gref, g_keep_bits);
+            if (dr != d || (dr && gout && !gout->empty() && *gout != gref)) {
+                fprintf(stderr, "HYBRID GCD MISMATCH: hyb %" PRIu64
+                        " ntl %" PRIu64 " (aw %zu bw %zu) -- dumping\n",
+                        d, dr, aw, bw);
+                FILE *f = fopen("/tmp/hyb_mismatch.bin", "wb");
+                if (f) {
+                    u64 h[2] = {(u64)aw, (u64)bw};
+                    fwrite(h, 8, 2, f);
+                    fwrite(a, 8, aw, f);
+                    fwrite(b, 8, bw, f);
+                    fclose(f);
+                }
+                if (gout) *gout = gref;   // heal so the run continues
+                d = dr;
+            }
+        }
+        return d;
+    }
     return poly_gcd_ntl(a, aw, b, bw, gout, g_keep_bits);
 #else
     return poly_gcd_naive(a, aw, b, bw, gout);
@@ -412,12 +438,89 @@ static u64 ts_gcd(const u64 *a, size_t aw, const u64 *b, size_t bw,
 
 static const char *gcd_backend() {
 #ifdef HAVE_NTL
-    return "NTL (HalfGCD + CanZass)";
+    if (!ntl_gf2x_backed())
+        return "NTL (HalfGCD + CanZass) -- WARNING: NTL built WITHOUT "
+               "gf2x; large-degree GCDs will be many times slower "
+               "(rebuild NTL with NTL_GF2X_LIB=on)";
+    if (g_use_hybrid)
+        return g_gm ? "hybrid HGCD (GPU-offloaded mults) + NTL finish"
+                    : "hybrid HGCD (CPU mults) + NTL finish";
+    return "NTL gf2x-backed (HalfGCD + CanZass)";
 #else
     return "naive fallback -- NO NTL: factor resolution will fail for "
            "multi-factor interval gcds; NOT fit for production";
 #endif
 }
+
+#ifdef HAVE_NTL
+// GPU multiplication service for the hybrid HGCD: packs both operands
+// into 32-bit chunks, runs the Cantor FFT convolution, and returns the
+// full product.  Owns its device buffers (no sharing with the scan
+// state) and lazily builds one CudaFFT plan per size class; a mutex
+// serializes hook users, and the legacy default CUDA stream serializes
+// device work against the concurrently running scan.
+struct TsGpuMul : GpuMulHook {
+    CantorBasis *Bb = nullptr;
+    std::map<int, CudaFFT *> plans;
+    u64 *dA = nullptr, *dB = nullptr, *dP = nullptr;
+    size_t cap_n = 0;
+    std::mutex mu;
+    void init(CantorBasis *bb, int max_fm) {
+        Bb = bb;
+        cap_n = (size_t)1 << max_fm;
+        CUCHK(cudaMalloc(&dA, cap_n * sizeof(u64)));
+        CUCHK(cudaMalloc(&dB, cap_n * sizeof(u64)));
+        CUCHK(cudaMalloc(&dP, (cap_n / 2 + 2) * sizeof(u64)));
+    }
+    void fini() {
+        for (auto &kv : plans) { kv.second->fini(); delete kv.second; }
+        plans.clear();
+        if (dA) cudaFree(dA);
+        if (dB) cudaFree(dB);
+        if (dP) cudaFree(dP);
+        dA = dB = dP = nullptr;
+    }
+    bool mul(const u64 *a, size_t aw, u64 abits,
+             const u64 *b, size_t bw, u64 bbits,
+             std::vector<u64> &out) override {
+        size_t ca = (size_t)((abits + 31) >> 5);
+        size_t cb = (size_t)((bbits + 31) >> 5);
+        size_t nch = ca + cb - 1;
+        int fm = 5;
+        while (((size_t)1 << fm) < nch + 1) fm++;
+        if (((size_t)1 << fm) > cap_n) return false;   // too big: CPU
+        size_t ow = bits_to_words(abits + bbits - 1);
+        std::lock_guard<std::mutex> lk(mu);
+        CudaFFT *F;
+        {
+            auto it = plans.find(fm);
+            if (it != plans.end()) F = it->second;
+            else {
+                F = new CudaFFT();
+                F->init(fm, *Bb);
+                plans[fm] = F;
+            }
+        }
+        int blocks, threads;
+        CUCHK(cudaMemcpy(dP, a, aw * sizeof(u64), cudaMemcpyHostToDevice));
+        CudaFFT::launch_dims(F->n, blocks, threads);
+        k_pack<<<blocks, threads>>>(dP, aw, dA, ca, F->n);
+        CUCHK(cudaMemcpy(dP, b, bw * sizeof(u64), cudaMemcpyHostToDevice));
+        k_pack<<<blocks, threads>>>(dP, bw, dB, cb, F->n);
+        F->fwd(dA);
+        F->fwd(dB);
+        k_pointwise<<<blocks, threads>>>(dA, dB, F->n);
+        F->inv(dA);
+        CudaFFT::launch_dims(ow, blocks, threads);
+        k_overlap_add<<<blocks, threads>>>(dA, nch, dP, ow);
+        out.resize(ow);
+        CUCHK(cudaMemcpy(out.data(), dP, ow * sizeof(u64),
+                         cudaMemcpyDeviceToHost));
+        return true;
+    }
+};
+static TsGpuMul g_ts_gm;
+#endif // HAVE_NTL
 
 class GcdPool {
     std::mutex mu;
@@ -1471,6 +1574,123 @@ static int selftest(int gcd_threads) {
                    okk ? "PASS" : "FAIL");
             if (!okk) bad++;
         }
+
+        // (8) hybrid HGCD gcd vs NTL gcd: CPU-mult and GPU-hook paths,
+        //     nonlinear and adversarial F2-linear (LFSR) data, planted
+        //     common factors, degenerate shapes
+        {
+            bool okk = true;
+            u64 sv_min = hyb_gpu_min_bits, sv_fin = hyb_ntl_finish_bits;
+            hyb_ntl_finish_bits = 64;    // force deep HGCD recursion
+            hyb_gpu_min_bits = 2048;     // exercise the hook heavily
+            hyb_reset_stats();
+            CantorBasis bb8;
+            bb8.build();
+            TsGpuMul gm8;
+            gm8.init(&bb8, 15);
+            u64 rs8 = 0xC0FFEEULL;
+            auto nl = [&]() { rs8 += 0x9E3779B97F4A7C15ULL; u64 z = rs8;
+                z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+                z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+                return z ^ (z >> 31); };
+            auto lf = [&]() { rs8 ^= rs8 << 13; rs8 ^= rs8 >> 7;
+                rs8 ^= rs8 << 17; return rs8; };
+            auto rvb = [&](u64 bits, bool lin) {
+                std::vector<u64> v((size_t)((bits + 63) / 64));
+                for (auto &w : v) w = lin ? lf() : nl();
+                unsigned tb = (unsigned)((bits - 1) & 63);
+                v.back() &= (tb == 63) ? ~0ULL : ((1ULL << (tb + 1)) - 1);
+                v.back() |= 1ULL << tb;
+                return v;
+            };
+            auto chk = [&](std::vector<u64> a, std::vector<u64> b) {
+                std::vector<u64> g1, g2, g3;
+                u64 d1 = poly_gcd_ntl(a.data(), a.size(), b.data(),
+                                      b.size(), &g1, ~0ULL);
+                u64 d2 = poly_gcd_hybrid(a.data(), a.size(), b.data(),
+                                         b.size(), &g2, ~0ULL, &gm8);
+                u64 d3 = poly_gcd_hybrid(a.data(), a.size(), b.data(),
+                                         b.size(), &g3, ~0ULL, nullptr);
+                bool o = d1 == d2 && d1 == d3 &&
+                         (d1 == 0 || (g1 == g2 && g1 == g3));
+                if (!o) okk = false;
+            };
+            for (u64 bits : std::vector<u64>{600, 5000, 60000}) {
+                for (int lin = 0; lin < 2; lin++) {
+                    chk(rvb(bits, lin), rvb(bits - 1 - nl() % 30, lin));
+                    // planted common factor via the hook itself
+                    u64 gd = 20 + nl() % (bits / 3);
+                    auto g = rvb(gd + 1, false);
+                    auto u = rvb(bits - gd, lin), w = rvb(bits - gd, lin);
+                    std::vector<u64> pa, pb;
+                    gm8.mul(g.data(), g.size(), gd + 1, u.data(), u.size(),
+                            bits - gd, pa);
+                    gm8.mul(g.data(), g.size(), gd + 1, w.data(), w.size(),
+                            bits - gd, pb);
+                    chk(pa, pb);
+                }
+                chk(rvb(bits, false), std::vector<u64>());
+                { auto sa = rvb(bits, false); chk(sa, sa); }
+                chk(rvb(bits, false), std::vector<u64>{1});
+                chk(rvb(bits, false), rvb(9, false));
+            }
+            u64 g8, c8, f8;
+            hyb_get_stats(g8, c8, f8);
+            hyb_gpu_min_bits = sv_min;
+            hyb_ntl_finish_bits = sv_fin;
+            gm8.fini();
+            printf("hybrid HGCD vs NTL (gpu-mults %" PRIu64 ", fb %" PRIu64
+                   ")             %s\n", g8, f8, okk ? "PASS" : "FAIL");
+            if (!okk) bad++;
+        }
+
+        // (9) end-to-end scan with the hybrid GPU gcd forced through the
+        //     pool (thresholds shrunk so 4423-bit gcds take the path)
+        {
+            u64 sv_min = hyb_gpu_min_bits, sv_fin = hyb_ntl_finish_bits;
+            hyb_gpu_min_bits = 512;
+            hyb_ntl_finish_bits = 256;
+            CantorBasis bb9;
+            bb9.build();
+            TsGpuMul gm9;
+            gm9.init(&bb9, 12);
+            g_gm = &gm9;
+            g_use_hybrid = true;
+            g_hyb_xcheck = true;
+            hyb_reset_stats();
+            TsGPU G;
+            G.init(rr);
+            G.set_m(6);
+            SParams P;
+            P.skip = skip; P.maxd = maxd; P.q0 = 3; P.f = 1.0;
+            P.canzass_max = 540;
+            P.verbose = 0;
+            u64 mism = 0;
+            for (size_t i = 0; i < surv.size(); i += 4) {
+                u64 sv = surv[i];
+                ScanOut res = scan_one_s(G, pool, P, rr, sv, gseq, nullptr);
+                const OracleOut &o = want[sv];
+                bool ok9 = o.found ? (res.kind == ScanOut::FOUND &&
+                                      res.d == o.d)
+                                   : (res.kind == ScanOut::GAVE_UP);
+                if (ok9 && o.found && o.mask_ok)
+                    ok9 = res.hex == mask_hex(o.mask);
+                if (!ok9) mism++;
+            }
+            u64 g9, c9, f9;
+            hyb_get_stats(g9, c9, f9);
+            g_gm = nullptr;
+            g_use_hybrid = false;
+            g_hyb_xcheck = false;
+            hyb_gpu_min_bits = sv_min;
+            hyb_ntl_finish_bits = sv_fin;
+            G.fini();
+            gm9.fini();
+            printf("end-to-end, hybrid gcd forced (gpu-mults %" PRIu64
+                   ", fb %" PRIu64 ")   %s\n", g9, f9,
+                   mism ? "FAIL" : "PASS");
+            if (mism) bad++;
+        }
         pool.stop();
     }
 #endif // HAVE_NTL
@@ -1582,6 +1802,10 @@ static void usage() {
         "  --canzass-max D fineDDF threshold (default 2*r^(2/3))\n"
         "  --legacy-sq     use the 3-kernel squaring path\n"
         "  --pend-max N    max speculative intervals in flight (default 4)\n"
+        "  --gpu-gcd       hybrid HGCD gcd: big multiplications on the\n"
+        "                  GPU, CPU load per gcd drops sharply (opt-in)\n"
+        "  --gpu-gcd-min-bits N   offload mults with an operand >= N bits\n"
+        "  --bench-gcd     with --bench: also time one full-size gcd\n"
         "  -v              verbose (repeat for more)\n");
     exit(1);
 }
@@ -1594,7 +1818,9 @@ int main(int argc, char **argv) {
     P.skip = (u64)-1;
     int gcd_threads = 0, device = -1, want_m = 0;
     bool do_selftest = false, do_bench = false, legacy = false,
-         no_ckpt = false, allow_no_ntl = false;
+         no_ckpt = false, allow_no_ntl = false, gpu_gcd = false,
+         bench_gcd = false;
+    u64 gcd_min_bits_opt = 0;
     double f_opt = 1.0;
 
     std::vector<std::string> pos;
@@ -1624,6 +1850,10 @@ int main(int argc, char **argv) {
             P.canzass_max = strtoull(need("--canzass-max"), 0, 10);
         else if (a == "--legacy-sq") legacy = true;
         else if (a == "--allow-no-ntl") allow_no_ntl = true;
+        else if (a == "--gpu-gcd") gpu_gcd = true;
+        else if (a == "--gpu-gcd-min-bits")
+            gcd_min_bits_opt = strtoull(need("--gpu-gcd-min-bits"), 0, 10);
+        else if (a == "--bench-gcd") bench_gcd = true;
         else if (a == "--pend-max") P.pend_max = atoi(need("--pend-max"));
         else if (a == "--die-after-blocks")
             P.die_after_blocks = atol(need("--die-after-blocks"));
@@ -1647,7 +1877,55 @@ int main(int argc, char **argv) {
         r = strtoull(pos[0].c_str(), 0, 10);
         if (pos.size() > 1) s_bench = strtoull(pos[1].c_str(), 0, 10);
         if (device >= 0) cudaSetDevice(device);
-        return bench(r, s_bench);
+        int brc = bench(r, s_bench);
+#ifdef HAVE_NTL
+        if (!brc && bench_gcd) {
+            u64 sb = s_bench ? s_bench : (r >= 5 ? (r - 1) / 2 : 1);
+            fprintf(stderr, "GCD backend: %s\n", gcd_backend());
+            size_t nwt = bits_to_words(r + 1);
+            std::vector<u64> T(nwt, 0), A(bits_to_words(r), 0);
+            T[0] |= 1;
+            T[sb >> 6] |= 1ULL << (sb & 63);
+            T[r >> 6] |= 1ULL << (r & 63);
+            u64 st = 0x1234abcd;
+            for (auto &w : A) {
+                st += 0x9E3779B97F4A7C15ULL;
+                u64 z = st;
+                z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+                z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+                w = z ^ (z >> 31);
+            }
+            A[(r - 1) >> 6] &= (((r - 1) & 63) == 63)
+                ? ~0ULL : ((1ULL << (((r - 1) & 63) + 1)) - 1);
+            CantorBasis bb;
+            if (gpu_gcd) {
+                bb.build();
+                size_t ca = (size_t)((r + 31) >> 5);
+                int fm = 1;
+                while (((size_t)1 << fm) < 2 * ca - 1) fm++;
+                g_ts_gm.init(&bb, fm);
+                g_gm = &g_ts_gm;
+                g_use_hybrid = true;
+                if (gcd_min_bits_opt) hyb_gpu_min_bits = gcd_min_bits_opt;
+                hyb_reset_stats();
+            }
+            g_keep_bits = r + 1;
+            double t0 = trin_now_s();
+            std::vector<u64> gg;
+            u64 gd = ts_gcd(A.data(), A.size(), T.data(), T.size(), &gg);
+            double dt = trin_now_s() - t0;
+            printf("gcd bench (random A vs T, %s): %.2f s (gdeg %" PRIu64
+                   ")\n", g_use_hybrid ? "hybrid" : "NTL", dt, gd);
+            if (g_use_hybrid) {
+                u64 ng, nc, nf;
+                hyb_get_stats(ng, nc, nf);
+                printf("  hybrid mults: gpu %" PRIu64 " cpu %" PRIu64
+                       " fallbacks %" PRIu64 "\n", ng, nc, nf);
+                g_ts_gm.fini();
+            }
+        }
+#endif
+        return brc;
     }
     if (pos.size() != 2) usage();
     r = strtoull(pos[0].c_str(), 0, 10);
@@ -1667,7 +1945,21 @@ int main(int argc, char **argv) {
         while (r3 * r3 * r3 < r) r3++;
         P.canzass_max = 2 * r3 * r3;
     }
+#ifdef HAVE_NTL
+    if (gpu_gcd) g_use_hybrid = true;    // reflected in the banner
+#else
+    if (gpu_gcd) {
+        fprintf(stderr, "ERROR: --gpu-gcd needs an NTL build (the hybrid "
+                        "engine uses NTL for CPU-side mults and the "
+                        "finishing gcd)\n");
+        exit(1);
+    }
+#endif
     fprintf(stderr, "GCD backend: %s\n", gcd_backend());
+    if (gcd_threads == 1 && P.pend_max == 1)
+        fprintf(stderr, "hint: with --gcd-threads 1, --pend-max 2 lets the "
+                "scan run one interval\nahead of the single GCD worker at "
+                "no extra CPU cost\n");
 #ifndef HAVE_NTL
     if (!allow_no_ntl) {
         fprintf(stderr,
@@ -1741,6 +2033,17 @@ int main(int argc, char **argv) {
     TsGPU G;
     G.init(r);
     G.legacy_sq = legacy;
+#ifdef HAVE_NTL
+    if (gpu_gcd) {
+        g_ts_gm.init(&G.Bb, G.fftm);
+        g_gm = &g_ts_gm;
+        if (gcd_min_bits_opt) hyb_gpu_min_bits = gcd_min_bits_opt;
+        fprintf(stderr, "GPU-assisted GCD: on (GPU mults >= %" PRIu64
+                " bits; NTL finish <= %" PRIu64 " bits)\n",
+                hyb_gpu_min_bits, hyb_ntl_finish_bits);
+        hyb_reset_stats();
+    }
+#endif
     int m = want_m;
     if (RS.valid) {
         if (m && m != (int)RS.H.m)

@@ -18,12 +18,37 @@ vpath %.cpp . sieve cantor
 vpath %.cu  . sieve cantor stage2 scan
 vpath %.h   . common
 
-# NTL provides the subquadratic GCD backend (effectively REQUIRED for
-# production r; build NTL with NTL_GF2X_LIB=on so multiplication uses
-# gf2x, exactly as for factor.cpp).
-NTLLIB := -lntl -lgf2x -lgmp
+# NTL provides the subquadratic GCD backend and CanZass resolution --
+# REQUIRED for production; build or install NTL with the gf2x
+# multiplication backend (NTL_GF2X_LIB=on / libntl-dev + libgf2x-dev),
+# exactly as for factor.cpp: NTL without gf2x is many times slower on
+# large-degree polynomials (libntl.org/doc/tour-gf2x.html).
+#
+# Default link line is hardcoded (simplest and correct on both source
+# builds in /usr/local and distro packages); a try-link of ntl_check.cpp
+# VERIFIES it before building tsfactor and fails loudly with specifics
+# instead of silently producing a crippled binary.  Overrides:
+#   make NTLLIB="-L/opt/ntl/lib -lntl -lgf2x -lgmp"   (custom paths)
+#   make NTL_OK=0                                     (force naive; test only)
+NTLLIB ?= -lntl -lgf2x -lgmp
+NTLCHK := $(firstword $(wildcard common/ntl_check.cpp ntl_check.cpp))
+ifeq ($(origin NTL_OK),undefined)
+NTL_OK := $(shell if [ -n "$(NTLCHK)" ] && $(CXX) $(NTLCHK) $(NTLLIB) \
+  -o /tmp/ntl_chk_$$$$ >/dev/null 2>&1; then echo 1; else echo 0; fi; \
+  rm -f /tmp/ntl_chk_$$$$)
+endif
+ifeq ($(NTL_OK),1)
 NTLDEF = -DHAVE_NTL
-NTLSRC = gf2_gcd_ntl.cpp
+NTLSRC = $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp))
+NTLSRC_EMUL = build_emul/gf2_gcd_ntl.cpp
+NTLMSG = NTL: OK ($(NTLLIB))
+else
+ifeq ($(NTLCHK),)
+NTLMSG = NTL: FAILED -- ntl_check.cpp is MISSING from this directory, so the link check could not run
+else
+NTLMSG = NTL: FAILED -- '$(CXX) $(NTLCHK) $(NTLLIB)' does not link.  Install libntl-dev and libgf2x-dev (or set NTLLIB=... for custom paths); run 'make ntl-diag' for the full compiler error
+endif
+endif
 
 CPU  = sieve_ref cantor_ref
 CUDA = coarse_sieve coarse_sieve_wide cantor_cuda trinomial_stage2 trinomial_scan tsfactor
@@ -32,10 +57,13 @@ all: cpu cuda
 cpu: $(CPU)
 cuda: $(CUDA)
 
-sieve_ref: sieve_ref.cpp gf2_small_field.h gf2_field_setup.h
-	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
+ntl-diag:
+	@echo "== link check: $(CXX) $(NTLCHK) $(NTLLIB) =="
+	@$(CXX) $(NTLCHK) $(NTLLIB) -o /tmp/ntl_diag_bin && \
+	  echo "OK: NTL links and runs" && /tmp/ntl_diag_bin && \
+	  rm -f /tmp/ntl_diag_bin || true
 
-cantor_ref: cantor_ref.cpp gf2_cantor_core.h gf2_cantor_engine.h
+sieve_ref: sieve_ref.cpp gf2_small_field.h gf2_field_setup.h
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
 
 coarse_sieve: coarse_sieve.cu gf2_small_field.h gf2_field_setup.h
@@ -43,6 +71,9 @@ coarse_sieve: coarse_sieve.cu gf2_small_field.h gf2_field_setup.h
 
 coarse_sieve_wide: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h
 	$(NVCC) $(NVFLAGS) -DWIDE_FIELD $(INC) -o $@ $<
+
+cantor_ref: cantor_ref.cpp gf2_cantor_core.h gf2_cantor_engine.h
+	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
 
 cantor_cuda: cantor_cuda.cu gf2_cantor_cuda.h gf2_cantor_core.h gf2_cantor_engine.h
 	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
@@ -53,8 +84,13 @@ trinomial_stage2: trinomial_stage2.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2
 trinomial_scan: trinomial_scan.cu gf2_trinomial_cuda.h gf2_gcd.h
 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
-tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h
-	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
+tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_ntl.cpp
+	@echo "== $(NTLMSG) =="
+	@if [ "$(NTL_OK)" != "1" ] && [ "$(ALLOW_NO_NTL)" != "1" ]; then \
+	  echo "ERROR: tsfactor needs NTL for factor resolution (CanZass)."; \
+	  echo "  Kernel-testing-only override: make ALLOW_NO_NTL=1 tsfactor"; \
+	  exit 1; fi
+	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ tsfactor.cu $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
 check_ref: check_ref.cpp
 	g++ -O2 -std=c++17 -o $@ $<
@@ -106,4 +142,4 @@ emultest: emul-coarse_sieve emul-cantor_cuda emul-trinomial_stage2 emul-trinomia
 
 clean:
 	rm -rf $(CPU) $(CUDA) build_emul
-.PHONY: all cpu cuda clean emultest
+.PHONY: all cpu cuda clean emultest ntl-diag

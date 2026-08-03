@@ -376,3 +376,91 @@ Known judgment calls (flag if you disagree):
 - Checkpoints only at verified states; kill loses <= speculative tail.
 - -maxd exhaustion prints "s u" (factor would print "irreducible",
   which is misleading under -maxd).
+
+## Round 2 (hybrid GPU-assisted GCD + hardening)
+
+HARDWARE RESULTS FROM GORD (RTX 2070 SUPER, 8 GB):
+- bench: sqr legacy 0.368 ms, sqr fused 0.252 ms, Horner(m=24)
+  1.177 ms, modmul 506.4 ms; recommended m=48 at ~22.7 ms/degree.
+  Production auto-m picked 46 and achieved 19 ms/degree.
+- Validation: s in {96, 843, 2331, 4478, 9249, 19985, 29216} match the
+  factor 00M log exactly (d from 94 to 70774); >1500 NEW factors for
+  s in 2.0-2.3M all check-ntl verified; records d=568473 (s=2273693)
+  and d=285602 (s=2247915).  GPU memory steady at 4.0 GB.
+- Multithread defaults validated: s=7458 (d=30775) with gcd-threads 3 /
+  pend-max 4 matches the 00M log; gcds (67-69 s) overlap the scan.
+- Gord runs --gcd-threads 1 --pend-max 1 to keep CPU cores free for
+  "factor"-based prefiltering (d 38..247), then tsfactor --skip 247.
+  NOTE: --pend-max 2 with gcd-threads 1 is strictly better (scan runs
+  one interval ahead of the single worker, no extra CPU); tsfactor now
+  prints this hint.
+
+T4 / CLOUD "HANG" ROOT CAUSE: the gcd is pure CPU work plus one ~17 MB
+transfer -- CPU<->GPU bandwidth is not involved.  Either that VM's NTL
+lacks the gf2x backend (an order of magnitude slower at 136M bits;
+looks hung) or its vCPU is simply far slower than the Zen 2 baseline.
+tsfactor now prints the gf2x status in every banner (NTL_GF2X_LIB
+detection via NTL/config.h) and --bench --bench-gcd times one real gcd
+so the imbalance is visible in seconds, not hours.
+
+MAKEFILE (adopted Gord's approach): NTLLIB is now hardcoded to
+"-lntl -lgf2x -lgmp" by default (correct for both /usr/local source
+builds and distro packages, and gf2x is effectively required for
+production anyway).  The ntl_check.cpp try-link remains as a VERIFIER:
+`make tsfactor` prints "== NTL: OK/FAILED ... ==" with a specific
+diagnosis and refuses to build a no-NTL binary unless ALLOW_NO_NTL=1.
+`make ntl-diag` shows the raw compiler error on link failure.
+Gord's simplified Makefile dropped the NTL_OK plumbing that the
+emul-tsfactor target needs; the merged version restores it.
+
+C4 DELIVERED -- HYBRID HGCD WITH GPU MULTIPLICATION OFFLOAD (opt-in):
+- Engine: gf2_gcd_ntl.cpp, poly_gcd_hybrid(): classical polynomial
+  half-gcd recursion (m = ceil(n/2) split, one division step across
+  the straddle, second recursion at k = 2m - l), base case 4096 bits,
+  tiny multiplies (<= 512-bit operand) via direct shift-xor, mid-size
+  via NTL/gf2x, large via a GpuMulHook.  Postconditions checked at
+  every level; any violation or non-progress falls back to plain
+  poly_gcd_ntl on the ORIGINAL inputs (slow, never wrong).  Captured g
+  is normalized to from_gf2x's format (byte-identical to the NTL path).
+- Hook: tsfactor.cu TsGpuMul -- packs operands to 32-bit chunks, runs
+  the existing Cantor-FFT convolution with lazily built per-size plans
+  (shares the scan's CantorBasis, owns separate device buffers dA/dB/dP
+  = at most ~335 MB at r=136M), mutex-serialized; the legacy default
+  CUDA stream serializes device work against the concurrent scan.
+- Flags: --gpu-gcd (enable), --gpu-gcd-min-bits N (default 2^21),
+  --bench-gcd (with --bench: time one full gcd, print backend + mult
+  counts).  hyb_ntl_finish_bits (2^22) hands the reduced pair to NTL.
+- VALIDATION: standalone battery 119/119 byte-exact vs NTL (70 bits to
+  400k bits; random / planted gcds / b=0 / a=a / unit b / huge degree
+  gaps / trinomial-vs-dense), zero fallbacks; exact at 8M and 33M bits.
+  Selftest suite (8): CPU-mult and GPU-hook paths vs NTL on nonlinear
+  AND adversarial F2-linear (xorshift/LFSR) data -- the LFSR data is a
+  deliberate stress case: consecutive xorshift outputs form one linear
+  recurrence, so remainder sequences collapse via a giant quotient to
+  the generator's ~4096-bit linear complexity (this initially looked
+  like an engine bug; it is a property of F2-linear test data.  Use
+  SplitMix64-style nonlinear generators for realistic benchmarks).
+  Suite (9): full end-to-end scan with the hybrid forced through the
+  pool (thresholds shrunk for r=4423) plus a ts_gcd cross-check mode
+  (g_hyb_xcheck) that verifies every hybrid gcd against NTL and dumps
+  operands on mismatch.
+- HONEST PERFORMANCE EXPECTATIONS: HGCD's total multiplication work is
+  Theta(M(n) log n) spread across ~15 recursion levels; offloading
+  mults >= 2^21 bits captures roughly the top quarter-to-third of the
+  mass, and the GPU's advantage per mult over gf2x-on-Zen2 is modest
+  at mid sizes (per-call floor: transfers + ~7 launches + small-plan
+  transform).  First-generation projection for the 67 s gcd: roughly
+  45-60 s with a few seconds of CPU freed per gcd -- measure with
+  --bench-gcd, and A/B a survivors slice before adopting.  The main
+  wins today: weak-CPU hosts (T4-class) and partial CPU relief.
+  Round-3 path to more: batch the 4 products of a mat_apply (shared
+  operands: 6 forward + 2 inverse transforms instead of 12), pinned
+  staging + smaller per-call overhead to take the mid-level mass, and
+  trimming the hybrid's remaining ~25% CPU-constant vs NTL (mat_mul
+  composition avoidance at more levels).
+- EMULATION FIX (delivered cuda_emul.h): blockIdx/threadIdx/gridDim/
+  blockDim are now thread_local.  They were shared statics, so
+  emulated kernels launched from pool worker threads (the hybrid's
+  hook) raced against the scan thread's kernels -- emulation-only
+  nondeterminism; real CUDA has per-thread builtins and was never
+  affected.  Suite (9) is what exposed this.

@@ -201,3 +201,9 @@ loaded out36.survivors.txt: 3322198 survivors carried in (3322198 lines); sievin
 note: with --load-survivors the output records only the newly found degree-37..37 factors; keep the earlier run's .found.cert for the lower degrees
 checkpointing to out37.ckpt (delta vs baseline, keeping 3 generations), every 10.0 min; SIGTERM/SIGINT saves and exits
 d=37: dense tables need 2048.00 GB but only 13.86 GB free; switching to low-memory mode (128 buckets)
+(took 38 hours)
+
+d=38: dense tables need 4096.00 GB but only 13.86 GB free; switching to low-memory mode (256 buckets)
+d=38 lowmem 256 buckets: .[checkpoint: d=38 bucket 1/256, delta 319 entries (0.00 MB) -> out38.ckpt, 0.11s]
+.[checkpoint: d=38 bucket 2/256, delta 673 entries (0.01 MB) -> out38.ckpt, 0.11s]
+(would take 150 hours: 36 minutes per bucket)

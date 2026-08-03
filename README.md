@@ -69,7 +69,8 @@ when there are no factors, or:<br>
 s `u`<br>
 when a search was terminated prior to finding a factor, but it has not been confirmed that there are no factors.
 
-Brent's website contains a link to an FTP repository containing certificate files for all Mersenne exponents *r*&nbsp;≡&nbsp;±1&nbsp;(mod&nbsp;8) less than 136279841
+Brent's website contains [links to certificate files](https://maths-people.anu.edu.au/~brent/trinomlg.html)
+for all Mersenne exponents *r*&nbsp;≡&nbsp;±1&nbsp;(mod&nbsp;8) less than 136279841
 
 For each *s*, only the polynomial factor of smallest degree is recorded. If there are two or more of the same degree, then tiebreaks are settled by lexicographically comparing the hexadecimal bitmask strings.
 
