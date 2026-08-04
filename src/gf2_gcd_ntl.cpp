@@ -268,11 +268,50 @@ struct Mat2 {
     bool ident = true;
 };
 
+static inline u64 vbits(const V &v) {
+    int64_t d = vdeg(v);
+    return d < 0 ? 0 : (u64)d + 1;
+}
+
+// (o0, o1) = (r0c0*x + r0c1*y, r1c0*x + r1c1*y) via the hook's batched
+// frequency-domain path when any product is offload-sized; false if
+// the hook declines or the batch does not qualify.
+static bool try_mat2(const V &r0c0, const V &r0c1,
+                     const V &r1c0, const V &r1c1,
+                     const V &x, const V &y,
+                     V &o0, V &o1, GpuMulHook *gm) {
+    if (!gm) return false;
+    u64 xb = vbits(x), yb = vbits(y);
+    u64 eb[4] = {vbits(r0c0), vbits(r0c1), vbits(r1c0), vbits(r1c1)};
+    u64 mx = 0;
+    for (int i = 0; i < 4; i++) {
+        u64 ob = eb[i] ? eb[i] + ((i & 1) ? yb : xb) : 0;
+        if (ob > mx) mx = ob;
+    }
+    if (mx < hyb_gpu_min_bits) return false;
+    GpuMulHook::Op m[4] = {
+        {r0c0.data(), r0c0.size(), eb[0]}, {r0c1.data(), r0c1.size(), eb[1]},
+        {r1c0.data(), r1c0.size(), eb[2]}, {r1c1.data(), r1c1.size(), eb[3]}};
+    GpuMulHook::Op ox{x.data(), x.size(), xb}, oy{y.data(), y.size(), yb};
+    if (!gm->mat2_apply(m, ox, oy, o0, o1)) return false;
+    { std::lock_guard<std::mutex> lk(hyb_stat_mu); hyb_n_gpu += 2; }
+    vtrim(o0);
+    vtrim(o1);
+    return true;
+}
+
 // (a, b) <- M (a, b)
 static void mat_apply(const Mat2 &M, V &a, V &b, GpuMulHook *gm) {
     if (M.ident) return;
-    V na = vadd(vmul(M.m[0][0], a, gm), vmul(M.m[0][1], b, gm));
-    V nb = vadd(vmul(M.m[1][0], a, gm), vmul(M.m[1][1], b, gm));
+    V na, nb;
+    if (try_mat2(M.m[0][0], M.m[0][1], M.m[1][0], M.m[1][1],
+                 a, b, na, nb, gm)) {
+        a = std::move(na);
+        b = std::move(nb);
+        return;
+    }
+    na = vadd(vmul(M.m[0][0], a, gm), vmul(M.m[0][1], b, gm));
+    nb = vadd(vmul(M.m[1][0], a, gm), vmul(M.m[1][1], b, gm));
     a = std::move(na);
     b = std::move(nb);
 }
@@ -299,10 +338,16 @@ static Mat2 mat_mul(const Mat2 &A, const Mat2 &B, GpuMulHook *gm) {
     if (B.ident) return A;
     Mat2 C;
     C.ident = false;
-    for (int i = 0; i < 2; i++)
-        for (int j = 0; j < 2; j++)
-            C.m[i][j] = vadd(vmul(A.m[i][0], B.m[0][j], gm),
-                             vmul(A.m[i][1], B.m[1][j], gm));
+    for (int j = 0; j < 2; j++) {
+        // column j of C is a batched matrix-vector product with A
+        if (try_mat2(A.m[0][0], A.m[0][1], A.m[1][0], A.m[1][1],
+                     B.m[0][j], B.m[1][j], C.m[0][j], C.m[1][j], gm))
+            continue;
+        C.m[0][j] = vadd(vmul(A.m[0][0], B.m[0][j], gm),
+                         vmul(A.m[0][1], B.m[1][j], gm));
+        C.m[1][j] = vadd(vmul(A.m[1][0], B.m[0][j], gm),
+                         vmul(A.m[1][1], B.m[1][j], gm));
+    }
     return C;
 }
 

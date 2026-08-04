@@ -464,3 +464,44 @@ C4 DELIVERED -- HYBRID HGCD WITH GPU MULTIPLICATION OFFLOAD (opt-in):
   hook) raced against the scan thread's kernels -- emulation-only
   nondeterminism; real CUDA has per-thread builtins and was never
   affected.  Suite (9) is what exposed this.
+
+## Round 3 (batched frequency-domain matrix ops + FFT bench breakdown)
+
+BATCHED 2x2 OPERATIONS (delivered, automatic under --gpu-gcd): the four
+products of an HGCD matrix application share their operands, so
+GpuMulHook gained mat2_apply(m[4], a, b -> oa, ob): the hook transforms
+a and b once, streams each matrix entry through one scratch spectrum,
+combines spectra by XOR (GF(2^64) pointwise sums = sums of products),
+and inverse-transforms once per row -- 6 forward + 2 inverse transforms
+instead of 12.  mat_mul routes column-wise through the same primitive
+(column j of A*B is A applied to (B[0][j], B[1][j])): 16 transforms
+instead of 24.  Engine falls back to per-product mul() whenever the
+hook declines (size over plan cap, or zero batch), so behavior is
+identical, just cheaper.  TsGpuMul grew two scratch buffers (dM, dR);
+with --gpu-gcd at r=136279841 the hook now holds five full-size
+device buffers (~603 MB total) plus lazily built plans -- still
+comfortable next to the scan's 4.0 GB on an 8 GB card.  Zero-entry
+matrix rows/columns (e.g. right after an elementary step) are handled
+by bits==0 skipping.  Validation: selftest suites (8) and (9) exercise
+the batched path (GPU-op counts dropped 616 -> 446 and 408 -> 188 with
+identical results); all suites PASS, zero fallbacks.
+
+MODMUL COMPONENT BREAKDOWN (delivered): --bench now splits the modmul
+into pack / forward FFT / pointwise GF(2^64) / inverse FFT /
+overlap-add / fold-reduce, each timed with device syncs.  ACTION FOR
+GORD: send the breakdown from `./tsfactor --bench 136279841 474` on
+the 2070 SUPER -- it decides where C2 effort goes (transform-internal
+memory behavior vs. the GF(2^64) pointwise multiply vs. reduction).
+
+MULTI-GPU NOTE: tsfactor parallelizes across survivors at the process
+level today: run one instance per GPU with --device N on disjoint
+survivor files (checkpoints are per-s and independent).  No code
+needed; within-s parallelism is blocked by the sequential Frobenius
+chain.
+
+ROUND-4 CANDIDATES: (a) C2 FFT work from the breakdown numbers;
+(b) pinned host staging + per-call overhead cuts so hyb_gpu_min_bits
+can drop toward the mid-level mult mass; (c) trim the hybrid's
+remaining CPU constant vs NTL (56.8 s vs 45.4 s at 8M bits on
+identical data, sandbox vCPU); (d) C5 BLZ squaring variant if
+squaring stays the largest per-degree term at the recommended m.

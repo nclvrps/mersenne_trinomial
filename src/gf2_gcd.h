@@ -156,6 +156,18 @@ struct GpuMulHook {
     virtual bool mul(const u64 *a, size_t aw, u64 abits,
                      const u64 *b, size_t bw, u64 bbits,
                      std::vector<u64> &out) = 0;
+    // Batched 2x2 matrix-vector product over GF(2)[x]:
+    //   oa = m[0]*a + m[1]*b,  ob = m[2]*a + m[3]*b
+    // A frequency-domain implementation transforms a and b once and
+    // combines spectra (6 forward + 2 inverse transforms instead of the
+    // 12 of four independent products).  bits == 0 marks a zero
+    // operand.  Default declines; callers then compose from mul().
+    struct Op { const u64 *w; size_t nw; u64 bits; };
+    virtual bool mat2_apply(const Op m[4], const Op &a, const Op &b,
+                            std::vector<u64> &oa, std::vector<u64> &ob) {
+        (void)m; (void)a; (void)b; (void)oa; (void)ob;
+        return false;
+    }
     virtual ~GpuMulHook() {}
 };
 

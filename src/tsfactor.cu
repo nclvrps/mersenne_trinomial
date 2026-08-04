@@ -185,6 +185,11 @@ __global__ void k_square_fused(const u64 *in, u64 *out, size_t nw,
     }
 }
 
+__global__ void k_xor_buf(u64 *dst, const u64 *src, size_t n) {
+    size_t w = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)gridDim.x * blockDim.x;
+    for (; w < n; w += stride) dst[w] ^= src[w];
+}
 __global__ void k_set_zero(u64 *p, size_t nw) {
     size_t w = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = (size_t)gridDim.x * blockDim.x;
@@ -463,6 +468,7 @@ struct TsGpuMul : GpuMulHook {
     CantorBasis *Bb = nullptr;
     std::map<int, CudaFFT *> plans;
     u64 *dA = nullptr, *dB = nullptr, *dP = nullptr;
+    u64 *dM = nullptr, *dR = nullptr;    // batched-op scratch/accumulator
     size_t cap_n = 0;
     std::mutex mu;
     void init(CantorBasis *bb, int max_fm) {
@@ -470,6 +476,8 @@ struct TsGpuMul : GpuMulHook {
         cap_n = (size_t)1 << max_fm;
         CUCHK(cudaMalloc(&dA, cap_n * sizeof(u64)));
         CUCHK(cudaMalloc(&dB, cap_n * sizeof(u64)));
+        CUCHK(cudaMalloc(&dM, cap_n * sizeof(u64)));
+        CUCHK(cudaMalloc(&dR, cap_n * sizeof(u64)));
         CUCHK(cudaMalloc(&dP, (cap_n / 2 + 2) * sizeof(u64)));
     }
     void fini() {
@@ -477,8 +485,80 @@ struct TsGpuMul : GpuMulHook {
         plans.clear();
         if (dA) cudaFree(dA);
         if (dB) cudaFree(dB);
+        if (dM) cudaFree(dM);
+        if (dR) cudaFree(dR);
         if (dP) cudaFree(dP);
-        dA = dB = dP = nullptr;
+        dA = dB = dM = dR = dP = nullptr;
+    }
+    CudaFFT *plan_for(int fm) {
+        auto it = plans.find(fm);
+        if (it != plans.end()) return it->second;
+        CudaFFT *F = new CudaFFT();
+        F->init(fm, *Bb);
+        plans[fm] = F;
+        return F;
+    }
+    // pack a host operand and forward-transform it into dst
+    void pack_fwd(CudaFFT *F, const u64 *w, size_t nw, u64 bits, u64 *dst) {
+        size_t c = (size_t)((bits + 31) >> 5);
+        int blocks, threads;
+        CUCHK(cudaMemcpy(dP, w, nw * sizeof(u64), cudaMemcpyHostToDevice));
+        CudaFFT::launch_dims(F->n, blocks, threads);
+        k_pack<<<blocks, threads>>>(dP, nw, dst, c, F->n);
+        F->fwd(dst);
+    }
+    bool mat2_apply(const Op m[4], const Op &a, const Op &b,
+                    std::vector<u64> &oa, std::vector<u64> &ob) override {
+        size_t ca = (size_t)((a.bits + 31) >> 5);
+        size_t cb = (size_t)((b.bits + 31) >> 5);
+        size_t mxc = 0;
+        u64 rb[2] = {0, 0};                    // result bits per row
+        for (int i = 0; i < 4; i++) {
+            if (!m[i].bits) continue;
+            size_t cx = (i & 1) ? cb : ca;
+            if (!cx) continue;
+            size_t nch = (size_t)((m[i].bits + 31) >> 5) + cx - 1;
+            if (nch > mxc) mxc = nch;
+            u64 pb = m[i].bits + ((i & 1) ? b.bits : a.bits) - 1;
+            if (pb > rb[i >> 1]) rb[i >> 1] = pb;
+        }
+        if (!mxc) { oa.clear(); ob.clear(); return true; }
+        int fm = 5;
+        while (((size_t)1 << fm) < mxc + 1) fm++;
+        if (((size_t)1 << fm) > cap_n) return false;
+        std::lock_guard<std::mutex> lk(mu);
+        CudaFFT *F = plan_for(fm);
+        int blocks, threads;
+        CudaFFT::launch_dims(F->n, blocks, threads);
+        bool ua = (m[0].bits && a.bits) || (m[2].bits && a.bits);
+        bool ub = (m[1].bits && b.bits) || (m[3].bits && b.bits);
+        if (ua) pack_fwd(F, a.w, a.nw, a.bits, dA);
+        if (ub) pack_fwd(F, b.w, b.nw, b.bits, dB);
+        for (int row = 0; row < 2; row++) {
+            std::vector<u64> &out = row ? ob : oa;
+            const Op &e0 = m[2 * row], &e1 = m[2 * row + 1];
+            bool h0 = e0.bits && a.bits, h1 = e1.bits && b.bits;
+            if (!h0 && !h1) { out.clear(); continue; }
+            if (h0) {
+                pack_fwd(F, e0.w, e0.nw, e0.bits, dM);
+                k_pointwise<<<blocks, threads>>>(dM, dA, F->n);
+            }
+            if (h1) {
+                u64 *t = h0 ? dR : dM;
+                pack_fwd(F, e1.w, e1.nw, e1.bits, t);
+                k_pointwise<<<blocks, threads>>>(t, dB, F->n);
+                if (h0) k_xor_buf<<<blocks, threads>>>(dM, dR, F->n);
+            }
+            F->inv(dM);
+            size_t ow = bits_to_words(rb[row]);
+            int b2, t2;
+            CudaFFT::launch_dims(ow, b2, t2);
+            k_overlap_add<<<b2, t2>>>(dM, mxc, dP, ow);
+            out.resize(ow);
+            CUCHK(cudaMemcpy(out.data(), dP, ow * sizeof(u64),
+                             cudaMemcpyDeviceToHost));
+        }
+        return true;
     }
     bool mul(const u64 *a, size_t aw, u64 abits,
              const u64 *b, size_t bw, u64 bbits,
@@ -491,16 +571,7 @@ struct TsGpuMul : GpuMulHook {
         if (((size_t)1 << fm) > cap_n) return false;   // too big: CPU
         size_t ow = bits_to_words(abits + bbits - 1);
         std::lock_guard<std::mutex> lk(mu);
-        CudaFFT *F;
-        {
-            auto it = plans.find(fm);
-            if (it != plans.end()) F = it->second;
-            else {
-                F = new CudaFFT();
-                F->init(fm, *Bb);
-                plans[fm] = F;
-            }
-        }
+        CudaFFT *F = plan_for(fm);
         int blocks, threads;
         CUCHK(cudaMemcpy(dP, a, aw * sizeof(u64), cudaMemcpyHostToDevice));
         CudaFFT::launch_dims(F->n, blocks, threads);
@@ -1737,6 +1808,23 @@ static int bench(u64 r, u64 s) {
     double t_hor = timeit("Horner (m=24)", 10, [&] { G.horner_C(); });
     double t_mul = timeit("modmul (FFT + reduce)", 4,
                           [&] { G.mul_A_by_C(); });
+    {   // component breakdown of the modmul (drives the C2 FFT work)
+        size_t ca = (size_t)((r + 31) >> 5);
+        int blocks, threads;
+        CudaFFT::launch_dims(G.F.n, blocks, threads);
+        timeit("  pack (one operand)", 4, [&] {
+            k_pack<<<blocks, threads>>>(G.dA, G.nw, G.dFA, ca, G.F.n); });
+        timeit("  forward FFT (one of 2)", 4, [&] { G.F.fwd(G.dFA); });
+        timeit("  pointwise GF(2^64)", 4, [&] {
+            k_pointwise<<<blocks, threads>>>(G.dFA, G.dFB, G.F.n); });
+        timeit("  inverse FFT", 4, [&] { G.F.inv(G.dFA); });
+        int b2, t2;
+        CudaFFT::launch_dims(G.nw2, b2, t2);
+        timeit("  overlap-add", 4, [&] {
+            k_overlap_add<<<b2, t2>>>(G.dFA, 2 * ca - 1, G.dS0, G.nw2); });
+        timeit("  fold reduce (2 passes)", 4, [&] {
+            G.reduce_into(G.dTmp); });
+    }
     double t_sq = t_fus < t_leg ? t_fus : t_leg;
     printf("per-degree projection (m*t_sq + (t_mul + t_horner(m))/m):\n");
     int best_m = 8;
