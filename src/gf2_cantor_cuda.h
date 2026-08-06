@@ -35,10 +35,10 @@ static bool gf2c_use_fused = true;
 // Environment overrides, read at CudaFFT::init: GF2C_FFT=legacy|fused,
 // GF2C_TAYLOR_LV, GF2C_BFLY_LV, GF2C_FUSE_MAX_CH.
 #ifndef GF2C_TAYLOR_LV_DEFAULT
-#define GF2C_TAYLOR_LV_DEFAULT 5
+#define GF2C_TAYLOR_LV_DEFAULT 3
 #endif
 #ifndef GF2C_BFLY_LV_DEFAULT
-#define GF2C_BFLY_LV_DEFAULT 5
+#define GF2C_BFLY_LV_DEFAULT 3
 #endif
 static int gf2c_taylor_lv = GF2C_TAYLOR_LV_DEFAULT;
 static int gf2c_bfly_lv = GF2C_BFLY_LV_DEFAULT;

@@ -470,8 +470,10 @@ struct TsGpuMul : GpuMulHook {
     u64 *dA = nullptr, *dB = nullptr, *dP = nullptr;
     u64 *dM = nullptr, *dR = nullptr;    // batched-op scratch/accumulator
     size_t cap_n = 0;
+    bool alive = false;
     std::mutex mu;
     void init(CantorBasis *bb, int max_fm) {
+        std::lock_guard<std::mutex> lk(mu);
         Bb = bb;
         cap_n = (size_t)1 << max_fm;
         CUCHK(cudaMalloc(&dA, cap_n * sizeof(u64)));
@@ -479,8 +481,14 @@ struct TsGpuMul : GpuMulHook {
         CUCHK(cudaMalloc(&dM, cap_n * sizeof(u64)));
         CUCHK(cudaMalloc(&dR, cap_n * sizeof(u64)));
         CUCHK(cudaMalloc(&dP, (cap_n / 2 + 2) * sizeof(u64)));
+        alive = true;
     }
+    // Takes the hook mutex, so a call already in flight completes
+    // first, and clears `alive`, so later calls decline (the engine
+    // then multiplies on the CPU) instead of touching freed buffers.
     void fini() {
+        std::lock_guard<std::mutex> lk(mu);
+        alive = false;
         for (auto &kv : plans) { kv.second->fini(); delete kv.second; }
         plans.clear();
         if (dA) cudaFree(dA);
@@ -501,10 +509,12 @@ struct TsGpuMul : GpuMulHook {
     // pack a host operand and forward-transform it into dst
     void pack_fwd(CudaFFT *F, const u64 *w, size_t nw, u64 bits, u64 *dst) {
         size_t c = (size_t)((bits + 31) >> 5);
-        int blocks, threads;
-        CUCHK(cudaMemcpy(dP, w, nw * sizeof(u64), cudaMemcpyHostToDevice));
+        size_t nu = bits_to_words(bits);      // ignore caller padding: a
+        if (nu > nw) nu = nw;                 // trailing zero word must
+        int blocks, threads;                  // not overrun the staging
+        CUCHK(cudaMemcpy(dP, w, nu * sizeof(u64), cudaMemcpyHostToDevice));
         CudaFFT::launch_dims(F->n, blocks, threads);
-        k_pack<<<blocks, threads>>>(dP, nw, dst, c, F->n);
+        k_pack<<<blocks, threads>>>(dP, nu, dst, c, F->n);
         F->fwd(dst);
     }
     bool mat2_apply(const Op m[4], const Op &a, const Op &b,
@@ -527,6 +537,7 @@ struct TsGpuMul : GpuMulHook {
         while (((size_t)1 << fm) < mxc + 1) fm++;
         if (((size_t)1 << fm) > cap_n) return false;
         std::lock_guard<std::mutex> lk(mu);
+        if (!alive) return false;
         CudaFFT *F = plan_for(fm);
         int blocks, threads;
         CudaFFT::launch_dims(F->n, blocks, threads);
@@ -571,13 +582,17 @@ struct TsGpuMul : GpuMulHook {
         if (((size_t)1 << fm) > cap_n) return false;   // too big: CPU
         size_t ow = bits_to_words(abits + bbits - 1);
         std::lock_guard<std::mutex> lk(mu);
+        if (!alive) return false;
         CudaFFT *F = plan_for(fm);
         int blocks, threads;
-        CUCHK(cudaMemcpy(dP, a, aw * sizeof(u64), cudaMemcpyHostToDevice));
+        size_t au = bits_to_words(abits), bu = bits_to_words(bbits);
+        if (au > aw) au = aw;
+        if (bu > bw) bu = bw;
+        CUCHK(cudaMemcpy(dP, a, au * sizeof(u64), cudaMemcpyHostToDevice));
         CudaFFT::launch_dims(F->n, blocks, threads);
-        k_pack<<<blocks, threads>>>(dP, aw, dA, ca, F->n);
-        CUCHK(cudaMemcpy(dP, b, bw * sizeof(u64), cudaMemcpyHostToDevice));
-        k_pack<<<blocks, threads>>>(dP, bw, dB, cb, F->n);
+        k_pack<<<blocks, threads>>>(dP, au, dA, ca, F->n);
+        CUCHK(cudaMemcpy(dP, b, bu * sizeof(u64), cudaMemcpyHostToDevice));
+        k_pack<<<blocks, threads>>>(dP, bu, dB, cb, F->n);
         F->fwd(dA);
         F->fwd(dB);
         k_pointwise<<<blocks, threads>>>(dA, dB, F->n);
@@ -657,6 +672,19 @@ public:
         std::lock_guard<std::mutex> lk(mu);
         for (u64 id : outstanding) discard.insert(id);
         results.clear();
+    }
+    // Block until nothing is queued or running, returning how many jobs
+    // were still in flight on entry.  forget_all_pending() only MARKS
+    // jobs for discard -- a worker executing one keeps running, and it
+    // is still inside ts_gcd (hence possibly inside the GPU mult hook).
+    // Anything a running gcd can touch must be drained before teardown.
+    size_t drain() {
+        std::unique_lock<std::mutex> lk(mu);
+        size_t n = outstanding.size();
+        cv_res.wait(lk, [&] {
+            return stopf || (jobs.empty() && outstanding.empty());
+        });
+        return n;
     }
     void stop() {
         {
@@ -1804,6 +1832,10 @@ static int selftest(int gcd_threads) {
                     ok9 = res.hex == mask_hex(o.mask);
                 if (!ok9) mism++;
             }
+            // A verdict ends a scan via forget_all_pending(), which does
+            // NOT wait for the worker running that gcd -- it may still be
+            // inside the hook.  Drain before freeing gm9/G.
+            size_t stale9 = pool.drain();
             u64 g9, c9, f9;
             hyb_get_stats(g9, c9, f9);
             g_gm = nullptr;
@@ -1814,7 +1846,7 @@ static int selftest(int gcd_threads) {
             G.fini();
             gm9.fini();
             printf("end-to-end, hybrid gcd forced (gpu-mults %" PRIu64
-                   ", fb %" PRIu64 ")   %s\n", g9, f9,
+                   ", fb %" PRIu64 ", drained %zu)   %s\n", g9, f9, stale9,
                    mism ? "FAIL" : "PASS");
             if (mism) bad++;
         }
@@ -1937,8 +1969,8 @@ static int bench(u64 r, u64 s) {
         int best_tl = 0, best_bl = 0;
         u64 best_ch = 0;                            // 0/0/0 = legacy
         gf2c_use_fused = true;
-        for (int tl : {3, 4, 5}) {
-            for (int bl : {3, 4, 5}) {
+        for (int tl : {2, 3, 4, 5}) {
+            for (int bl : {2, 3, 4, 5}) {
                 for (u64 ch : std::vector<u64>{0, (u64)1 << 16, (u64)1 << 12}) {
                     gf2c_taylor_lv = tl;
                     gf2c_bfly_lv = bl;
@@ -2051,6 +2083,9 @@ static void usage() {
         "                  GPU, CPU load per gcd drops sharply (opt-in)\n"
         "  --gpu-gcd-min-bits N   offload mults with an operand >= N bits\n"
         "  --bench-gcd     with --bench: also time one full-size gcd\n"
+        "  --selftest-reps N   repeat --selftest N times (races in the\n"
+        "                  GPU/pool interaction are intermittent; a\n"
+        "                  single clean run proves less than a loop)\n"
         "  -v              verbose (repeat for more)\n");
     exit(1);
 }
@@ -2066,6 +2101,7 @@ int main(int argc, char **argv) {
          no_ckpt = false, allow_no_ntl = false, gpu_gcd = false,
          bench_gcd = false;
     u64 gcd_min_bits_opt = 0;
+    int selftest_reps = 1;
     double f_opt = 1.0;
 
     std::vector<std::string> pos;
@@ -2096,6 +2132,8 @@ int main(int argc, char **argv) {
         else if (a == "--legacy-sq") legacy = true;
         else if (a == "--allow-no-ntl") allow_no_ntl = true;
         else if (a == "--gpu-gcd") gpu_gcd = true;
+        else if (a == "--selftest-reps")
+            selftest_reps = atoi(need("--selftest-reps"));
         else if (a == "--gpu-gcd-min-bits")
             gcd_min_bits_opt = strtoull(need("--gpu-gcd-min-bits"), 0, 10);
         else if (a == "--bench-gcd") bench_gcd = true;
@@ -2116,7 +2154,21 @@ int main(int argc, char **argv) {
         gcd_threads = hc > 2 ? (int)std::min(3u, hc - 1) : 1;
     }
 
-    if (do_selftest) return selftest(gcd_threads);
+    if (do_selftest) {
+        if (device >= 0) cudaSetDevice(device);
+        int rc = 0;
+        for (int rep = 0; rep < selftest_reps; rep++) {
+            if (selftest_reps > 1)
+                printf("===== selftest run %d of %d =====\n", rep + 1,
+                       selftest_reps);
+            int one = selftest(gcd_threads);
+            if (one) rc = one;
+        }
+        if (selftest_reps > 1)
+            printf("===== %d runs complete: %s =====\n", selftest_reps,
+                   rc ? "FAILURES SEEN" : "all runs PASS");
+        return rc;
+    }
     if (do_bench) {
         if (pos.empty()) usage();
         r = strtoull(pos[0].c_str(), 0, 10);
@@ -2381,7 +2433,10 @@ int main(int argc, char **argv) {
         pool.stop_nowait();
         std::_Exit(0);             // workers may hold NTL state; skip
     }                              // static teardown entirely
-    pool.stop();
+    pool.stop();          // joins workers: nothing can be in the hook now
+#ifdef HAVE_NTL
+    g_ts_gm.fini();
+#endif
     G.fini();
     fprintf(stderr, "done: %" PRIu64 " found, %" PRIu64 " u\n", n_found,
             n_u);

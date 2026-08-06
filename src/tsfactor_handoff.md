@@ -565,3 +565,94 @@ the current linear growth; needs a careful expected-cost derivation and
 an opt-in growth mode + selftest config); lowering hyb_gpu_min_bits
 once transforms are faster; C5 BLZ squaring if squaring becomes
 dominant after FFT tuning.
+
+## Round 5 (reliability: teardown race in the GPU gcd hook)
+
+SYMPTOM (Gord, repeated --selftest runs): intermittent failures at the
+END of the run -- "CUDA error invalid argument at tsfactor.cu:505",
+"... illegal memory access at :505/:558", SIGFPE ("Floating point
+exception"), or a hang with no GPU activity.  Rates: ~3/100 with
+default --gcd-threads 3, ~1/100 with --gcd-threads 1, present in
+rounds 2, 3 and 4 (i.e. since the hook was introduced).
+
+ROOT CAUSE (one bug, all four symptoms): tearing down the GPU
+multiplication hook while a pool worker was still inside it.  A scan
+ends at a verdict via GcdPool::forget_all_pending(), which only MARKS
+outstanding jobs for discard -- the worker executing one keeps running
+and is still inside ts_gcd -> poly_gcd_hybrid -> the hook.  Selftest
+suite (9) then did g_gm = nullptr; G.fini(); gm9.fini(), freeing dP /
+dA / dB / dM / dR and deleting the CudaFFT plans.  The still-running
+worker then dereferenced freed device pointers:
+  - line 505 = the H2D cudaMemcpy into dP in pack_fwd -> "invalid
+    argument"; line 558 = the D2H cudaMemcpy out of dP in mat2_apply;
+  - a kernel launched with freed pointers -> "illegal memory access";
+  - CudaFFT::fwd on a DELETED plan -> garbage m/n -> taylor_groups
+    computes CH = (1 << (b_lo-2)) << L from garbage, CH = 0, then
+    nwin = n / (NS*CH) -> integer divide by zero -> SIGFPE;
+  - a worker stuck in a corrupted context -> the hang in pool.stop()'s
+    join, GPU idle.
+More gcd threads = more chances to be mid-hook = higher rate, matching
+the observed 3/100 vs 1/100.
+EMPIRICAL CONFIRMATION: injecting a delay into the hook (test build
+only) and draining at teardown reports "drained 2" -- two jobs were
+still running inside the hook at that exact point, every run.
+
+PRODUCTION WAS NOT AFFECTED.  main() already tears down in the correct
+order: pool.stop() JOINS all workers before G.fini().  The bug was
+reachable only through the selftest's suite-9 teardown.  It also
+cannot corrupt a computed gcd: the crash is a use-after-free of device
+buffers at shutdown, and every hook call is mutex-serialized on
+operands the worker owns.  No result, degree, or "smallest factor"
+claim from any production run is in question.
+
+FIXES (defence in depth, all shipped):
+- GcdPool::drain(): blocks until nothing is queued or running and
+  returns how many jobs were in flight; suite (9) drains before
+  freeing anything and prints the count ("drained N").
+- TsGpuMul::fini() now takes the hook mutex (a call already in flight
+  completes first) and clears a new `alive` flag; mul() and
+  mat2_apply() check `alive` under the lock and DECLINE when torn down,
+  so the engine falls back to CPU multiplication instead of touching
+  freed memory.  Either mechanism alone is sufficient; both are in.
+- Staging copies are clamped to bits_to_words(bits) words, so a caller
+  vector with trailing zero words cannot overrun dP.
+- main() frees the hook explicitly after pool.stop() (provably safe).
+- New flag --selftest-reps N repeats the whole selftest in-process;
+  intermittent races need loops, not single runs.
+
+FFT AUTOTUNE RESULTS (Gord, 2070 SUPER, 5 repeats, very consistent):
+  legacy per-level          320-325 ms      (fwd+inv)
+  fused tlv=5 blv=5 (OLD DEFAULT)  353-363 ms   <-- slower than legacy
+  fused tlv=3 blv=3 maxch=off     157-169 ms   <-- best, ~2.0x legacy
+  fused tlv=4 blv=*               297-345 ms   (sharp cliff at 32+
+                                                registers per thread)
+  maxch=2^16 / 2^12         always WORSE (226-294 ms): routing
+    long-stride groups to the legacy streaming kernels HURTS -- the
+    old "large strides defeat the register tile" belief is disproven
+    at these sizes; keep GF2C_FUSE_MAX_CH=0.
+ACTIONS TAKEN: defaults changed to GF2C_TAYLOR_LV_DEFAULT=3 and
+GF2C_BFLY_LV_DEFAULT=3 (so a plain rebuild gets the 2x with no env
+vars), and the sweep now also tests lv=2 -- the win was still growing
+at the old lower bound, so 2 may beat 3.
+EXPECTED PRODUCTION EFFECT: modmul 510 -> ~240-250 ms, per-degree
+~21-23 -> ~15.6-16.4 ms at a lower optimal m (30-32 rather than 48):
+roughly a 30% throughput gain on the squares/products phase.
+
+PROBDIST ANALYSIS (for round 6, from Gord's r=74207281 and r=57885161
+files, 37.1M and 28.9M trinomials): the small-degree values are exact
+rationals (p(2)=1/3, p(3)=4/21, p(4)=2/21 to 5 decimals in both), and
+the SURVIVAL function fits S(k) = P(no factor of degree <= k) =
+(16/9)/k to 3-4 significant figures over four decades and in both
+files:
+    k        37       247      1000     10000    100000
+    S(k)   0.04746  0.00719  0.00177  0.00018  0.00002
+    16/9k  0.04805  0.00720  0.00178  0.00018  0.00002
+CONSEQUENCE for scheduling: expected scan cost to depth K is
+proportional to K, but the number of GCDs under the current LINEAR
+interval growth is ~sqrt(2K/(m*q0)) (~375 to full depth at
+r=136279841), whereas GEOMETRIC growth (interval k -> rho*k) needs
+only log_rho(K/k0) (~30 at rho=1.5).  With c_g ~ 63 s per gcd and
+c_s ~ 16-21 ms per degree, the optimum rho balances (rho-1)/ln(rho)
+expected scan overshoot against rho/(rho-1) gcd density; S(k)=C/k
+makes the expectation integrable in closed form.  Deliver as an opt-in
+growth mode with its own selftest config, then A/B on a survivor slice.
