@@ -1464,6 +1464,62 @@ static int selftest(int gcd_threads) {
         if (!ok) bad++;
     }
 
+    // (3b) FFT variant equivalence: legacy vs fused configurations,
+    //      forward byte-equality and inverse roundtrip, at m = 12
+    {
+        bool okk = true;
+        CantorBasis bbf;
+        bbf.build();
+        CudaFFT Ff;
+        Ff.init(12, bbf);
+        size_t fn = Ff.n;
+        u64 *dbuf;
+        CUCHK(cudaMalloc(&dbuf, fn * 8));
+        std::vector<u64> hin(fn), href(fn), hout(fn);
+        u64 st = 0xabcdef12ULL;
+        for (auto &w : hin) {
+            st += 0x9E3779B97F4A7C15ULL;
+            u64 z = st;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            w = z ^ (z >> 31);
+        }
+        bool sv_f = gf2c_use_fused;
+        int sv_t = gf2c_taylor_lv, sv_b = gf2c_bfly_lv;
+        u64 sv_c = gf2c_fuse_max_ch;
+        gf2c_use_fused = false;
+        CUCHK(cudaMemcpy(dbuf, hin.data(), fn * 8, cudaMemcpyHostToDevice));
+        Ff.fwd(dbuf);
+        CUCHK(cudaMemcpy(href.data(), dbuf, fn * 8, cudaMemcpyDeviceToHost));
+        gf2c_use_fused = true;
+        for (int tl : {3, 4, 5})
+            for (int bl : {3, 5})
+                for (u64 ch : std::vector<u64>{0, 64}) {
+                    gf2c_taylor_lv = tl;
+                    gf2c_bfly_lv = bl;
+                    gf2c_fuse_max_ch = ch;
+                    CUCHK(cudaMemcpy(dbuf, hin.data(), fn * 8,
+                                     cudaMemcpyHostToDevice));
+                    Ff.fwd(dbuf);
+                    CUCHK(cudaMemcpy(hout.data(), dbuf, fn * 8,
+                                     cudaMemcpyDeviceToHost));
+                    if (hout != href) okk = false;
+                    Ff.inv(dbuf);
+                    CUCHK(cudaMemcpy(hout.data(), dbuf, fn * 8,
+                                     cudaMemcpyDeviceToHost));
+                    if (hout != hin) okk = false;
+                }
+        gf2c_use_fused = sv_f;
+        gf2c_taylor_lv = sv_t;
+        gf2c_bfly_lv = sv_b;
+        gf2c_fuse_max_ch = sv_c;
+        cudaFree(dbuf);
+        Ff.fini();
+        printf("FFT variants: legacy vs fused configs (m=12)   %s\n",
+               okk ? "PASS" : "FAIL");
+        if (!okk) bad++;
+    }
+
     // (4) end-to-end vs oracle at r = 4423
 #ifndef HAVE_NTL
     printf("end-to-end vs oracle                               SKIPPED (NTL required)\n");
@@ -1837,10 +1893,111 @@ static int bench(u64 r, u64 s) {
     int mo = (int)(sqrt(t_mul / t_sq) + 0.5) & ~1;
     if (mo < 8) mo = 8;
     if (mo > 64) mo = 64;
-    printf("recommended m: %d (analytic %d); expect ~%.1f ms/degree\n",
+    {   // FFT autotune: verify + time transform variants; the winner is
+        // left active (so a following --bench-gcd uses it) and printed
+        // as environment settings that production runs pick up.
+        printf("FFT autotune (fwd+inv per config; ~1 min on GPU):\n");
+        size_t fn = G.F.n;
+        std::vector<u64> hin(fn), href(fn), hout(fn);
+        u64 st = 0xfeedfaceULL;
+        for (auto &w : hin) {
+            st += 0x9E3779B97F4A7C15ULL;
+            u64 z = st;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            w = z ^ (z >> 31);
+        }
+        auto push = [&] {
+            CUCHK(cudaMemcpy(G.dFA, hin.data(), fn * 8,
+                             cudaMemcpyHostToDevice));
+        };
+        auto pull = [&](std::vector<u64> &h) {
+            CUCHK(cudaDeviceSynchronize());
+            CUCHK(cudaMemcpy(h.data(), G.dFA, fn * 8,
+                             cudaMemcpyDeviceToHost));
+        };
+        auto timecfg = [&]() -> double {
+            G.F.fwd(G.dFA); G.F.inv(G.dFA);        // warm-up
+            CUCHK(cudaDeviceSynchronize());
+            double t0 = trin_now_s();
+            for (int i2 = 0; i2 < 3; i2++) { G.F.fwd(G.dFA); G.F.inv(G.dFA); }
+            CUCHK(cudaDeviceSynchronize());
+            return (trin_now_s() - t0) / 3;
+        };
+        bool sv_f = gf2c_use_fused;
+        int sv_t = gf2c_taylor_lv, sv_b = gf2c_bfly_lv;
+        u64 sv_c = gf2c_fuse_max_ch;
+        gf2c_use_fused = false;
+        push();
+        G.F.fwd(G.dFA);
+        pull(href);
+        double t_legacy = timecfg();
+        printf("  %-34s %8.1f ms\n", "legacy per-level", t_legacy * 1e3);
+        double best_t = t_legacy;
+        int best_tl = 0, best_bl = 0;
+        u64 best_ch = 0;                            // 0/0/0 = legacy
+        gf2c_use_fused = true;
+        for (int tl : {3, 4, 5}) {
+            for (int bl : {3, 4, 5}) {
+                for (u64 ch : std::vector<u64>{0, (u64)1 << 16, (u64)1 << 12}) {
+                    gf2c_taylor_lv = tl;
+                    gf2c_bfly_lv = bl;
+                    gf2c_fuse_max_ch = ch;
+                    push();
+                    G.F.fwd(G.dFA);
+                    pull(hout);
+                    bool okf = hout == href;
+                    G.F.inv(G.dFA);
+                    pull(hout);
+                    bool okr = hout == hin;
+                    double tc = timecfg();
+                    char nm[64];
+                    snprintf(nm, sizeof nm, "fused tlv=%d blv=%d maxch=%s",
+                             tl, bl,
+                             ch == 0 ? "off" : (ch == ((u64)1 << 16) ? "2^16"
+                                                                     : "2^12"));
+                    printf("  %-34s %8.1f ms%s\n", nm, tc * 1e3,
+                           (okf && okr) ? "" : "  VERIFY-FAIL");
+                    if (okf && okr && tc < best_t) {
+                        best_t = tc;
+                        best_tl = tl; best_bl = bl; best_ch = ch;
+                    }
+                }
+            }
+        }
+        if (best_tl) {
+            gf2c_use_fused = true;
+            gf2c_taylor_lv = best_tl;
+            gf2c_bfly_lv = best_bl;
+            gf2c_fuse_max_ch = best_ch;
+            printf("best: fused tlv=%d blv=%d maxch=%" PRIu64
+                   " -- fwd+inv %.1f ms (%.2fx vs legacy)\n",
+                   best_tl, best_bl, best_ch, best_t * 1e3,
+                   t_legacy / best_t);
+            printf("  production: export GF2C_FFT=fused GF2C_TAYLOR_LV=%d "
+                   "GF2C_BFLY_LV=%d GF2C_FUSE_MAX_CH=%" PRIu64 "\n",
+                   best_tl, best_bl, best_ch);
+        } else {
+            gf2c_use_fused = false;
+            printf("best: legacy per-level -- fwd+inv %.1f ms\n",
+                   t_legacy * 1e3);
+            printf("  production: export GF2C_FFT=legacy\n");
+        }
+        double t_mul2 = 1.5 * best_t + 0.003;       // 3 transforms + misc
+        double bm = 8, bc = 1e100;
+        for (int mm2 = 8; mm2 <= 96; mm2 += 2) {
+            double c = mm2 * t_sq + (t_mul2 + t_hor * mm2 / 24.0) / mm2;
+            if (c < bc) { bc = c; bm = mm2; }
+        }
+        printf("projected with tuned FFT: modmul ~%.0f ms, m=%d at "
+               "~%.1f ms/degree\n", t_mul2 * 1e3, (int)bm, bc * 1e3);
+        (void)sv_f; (void)sv_t; (void)sv_b; (void)sv_c;
+    }
+        printf("recommended m: %d (analytic %d); expect ~%.1f ms/degree\n",
            best_m, mo, best_c * 1e3);
     G.fini();
-    return 0;
+    
+return 0;
 }
 
 static int auto_m(TsGPU &G) {

@@ -505,3 +505,63 @@ can drop toward the mid-level mult mass; (c) trim the hybrid's
 remaining CPU constant vs NTL (56.8 s vs 45.4 s at 8M bits on
 identical data, sandbox vCPU); (d) C5 BLZ squaring variant if
 squaring stays the largest per-degree term at the recommended m.
+
+## Round 4 (C2: transform tuning infrastructure from the breakdown)
+
+GORD'S ROUND-3 HARDWARE DATA (2070 SUPER): selftest all PASS on
+hardware including both hybrid suites (fb 0).  Breakdown of the 510 ms
+modmul: forward FFT 177.9 ms (x2), inverse FFT 152.5 ms, everything
+else < 2 ms combined -- the transforms are 99.6% of the modmul.  gcd
+bench: NTL 63.0 s vs hybrid 63.57 s (1440 GPU mults, 136M tiny CPU
+mults, 0 fallbacks) -- wall-time neutral, as projected for the
+first-generation offload.  --gpu-gcd production A/B: all 37 survivors
+with d >= 1000 (s < 20000) match "factor" exactly.  GPU memory 4.9 GB
+with --gpu-gcd vs 4.0 GB without.  NEW RECORD: s=2601234 factor of
+degree 1,440,452 (~9 h wall with "factor" prefilters sharing the CPU).
+
+DEPLOYMENT FINDING (Gord): apt libgf2x-dev is ~10x slower than
+source-built-and-tuned gf2x on a c2-standard-4 ("factor": 710 s + 710 s
+vs 45 s + 60 s).  Likely the original T4 story.  RULE: on cloud hosts,
+build gf2x from source with its tuning step, then NTL against it.
+
+ANALYSIS: the transform cost model is purely memory-bound and matches
+measurement.  Legacy path: the Taylor cascade is m(m-1) ~ 552 streaming
+passes (~55 GB) plus 24 butterfly passes (~8 GB) => ~63 GB/transform
+=> ~165-178 ms on a 2070S.  The fused register-tile path (DEFAULT ON;
+Gord's 178 ms measured it) should cut traffic to ~19 GB (~50 ms ideal)
+but at GF2C_TAYLOR_LV=5 each thread holds 64 u64 in registers: spill +
+collapsed occupancy strangle achieved bandwidth to ~30% of peak, which
+is the previously observed "fusion regression".  Long-stride (large CH)
+groups additionally defeat DRAM locality.
+
+SHIPPED (gf2_cantor_cuda.h + tsfactor.cu):
+- Runtime knobs: gf2c_taylor_lv / gf2c_bfly_lv (fused levels per pass;
+  register cost 2^(tlv+1) resp. 2^blv u64 per thread) and
+  gf2c_fuse_max_ch (groups with column stride >= this run the legacy
+  streaming kernels for exactly those levels; 0 = no limit).  Defaults
+  reproduce the previous behavior bit-for-bit.
+- Environment overrides read at CudaFFT::init (production picks up the
+  tuned config with no new flags): GF2C_FFT=legacy|fused,
+  GF2C_TAYLOR_LV, GF2C_BFLY_LV, GF2C_FUSE_MAX_CH.
+- --bench FFT autotune: verifies every candidate ON DEVICE against the
+  legacy transform (forward byte-equality + inverse roundtrip), times
+  fwd+inv for legacy and 27 fused configs (tlv, blv in {3,4,5}; maxch
+  in {off, 2^16, 2^12}), leaves the best active (so a following
+  --bench-gcd uses it), prints the winner as export lines, and projects
+  the tuned modmul and per-degree cost.  ~1 minute on GPU.
+- Selftest suite (3b): FFT variant equivalence at m=12 (legacy vs 12
+  fused configs, forward byte-equality + roundtrip); NTL-free, runs in
+  all build modes.
+EXPECTATION: if a config reaches memory-bound, fwd+inv ~100-130 ms
+(from 330 ms), modmul ~510 -> ~160-200 ms, per-degree ~21.3 -> ~12-15
+ms at a lower optimal m -- and the hybrid gcd's 1440 GPU mults shrink
+proportionally.  ACTION FOR GORD: run --bench 136279841 474 and adopt
+the printed exports if a fused config wins and verifies.
+
+OPEN (round 5+): probdist-driven interval scheduling (Gord supplied
+p(d) ~ (16/9)/d^2 empirics from 74207281/57885161 -- geometric interval
+growth should cut deep-survivor gcd counts by an order of magnitude vs
+the current linear growth; needs a careful expected-cost derivation and
+an opt-in growth mode + selftest config); lowering hyb_gpu_min_bits
+once transforms are faster; C5 BLZ squaring if squaring becomes
+dominant after FFT tuning.

@@ -25,8 +25,8 @@ See Richard Brent's [Search for Primitive Trinomials](https://maths-people.anu.e
 In 2016 and earlier,
 Brent et al. generated [certificate files](https://maths-people.anu.edu.au/~brent/trinomlg.html)
 that recorded the polynomial of smallest degree that divides x<sup>r</sup>&nbsp;+ x<sup>s</sup>&nbsp;+&nbsp;1 over GF(2)
-for all *r* corresponding to the Mersenne prime exponents known at that time, and over the full range of *s* values,
-finding a number of primitive trinomials in the process.
+for all *r* corresponding to exponents of Mersenne primes known at that time for which *r*&nbsp;≡&nbsp;±1&nbsp;(mod&nbsp;8),
+and over the full range of *s* values, finding a number of primitive trinomials in the process.
 See for example: [arXiv:1605.09213 [math.NT]](https://arxiv.org/abs/1605.09213)
 
 As of this writing, the largest known Mersenne prime is 2<sup>136279841</sup>&nbsp;−&nbsp;1, discovered in 2024.
