@@ -656,3 +656,77 @@ c_s ~ 16-21 ms per degree, the optimum rho balances (rho-1)/ln(rho)
 expected scan overshoot against rho/(rho-1) gcd density; S(k)=C/k
 makes the expectation integrable in closed form.  Deliver as an opt-in
 growth mode with its own selftest config, then A/B on a survivor slice.
+
+## Round 6 (probdist-driven interval scheduling: --sched opt)
+
+ROUND-5 CONFIRMATIONS (Gord, 2070 SUPER): selftest 100/100 clean both
+with default threads and --gcd-threads 1 (teardown race fixed).  New
+3/3 FFT defaults verified: modmul 510 -> 228-231 ms (fwd 76.6, inv
+76.9), best per-degree m=32 at 15.8 ms/degree in bench and 13-14
+ms/degree in production.  Sweep at lv=2 confirms 3/3 remains best
+(tlv=2 is worse: fewer levels fused = more passes; the optimum is
+bracketed).  BENCH REDUNDANCY: --bench --bench-gcd --gpu-gcd is a
+superset of the other two variants; run the plain --bench when only
+FFT numbers are wanted.
+
+PEND-MAX A/B (Gord, two survivors with d ~ 24.1k/24.6k, --gpu-gcd,
+--gcd-threads 1, "factor" instances loading the CPU): with pend-max 2
+the gcd latency inflates 75 -> 132 s as intervals lengthen (the
+hybrid's GPU mults queue behind continuous scan kernels), and since
+the single gcd worker is the bottleneck stream at these depths
+(gcds ~73 s vs interval scans 8-85 s), the inflation ate the overlap:
+wall 1068 s (pend 2, incl. one speculative interval) vs 1034 s
+(pend 1).  CONCLUSION: at shallow-to-mid depths with 1 gcd thread the
+run is GCD-STREAM-BOUND either way; pend-max 2 only wins deep (scan >
+gcd per interval) or with more gcd threads.  Gord's home-vs-cloud
+framing adopted: home users may prefer pend-max 1 (energy/heat, same
+wall time in this regime); cloud users should verify pend-max 2
+actually wins on their instance before paying for it.  The real fix
+for the gcd-stream regime is fewer gcds -- which is this round.
+
+SCHEDULING THEORY (from the probdist survival law S(k) = (16/9)/k,
+verified to 3-4 significant figures over four decades in both of
+Gord's files): minimize E = sum_j S(k_{j-1}) (c_s w_j + c_g).  The
+stationarity condition is k_{j+1} = k_j^2/k_{j-1} - G with
+G = c_g/c_s in degrees (~4000 at 63 s / 15.8 ms) -- ratios start
+large and settle toward ~1.3.  Numeric study at c_s=13.5 ms,
+c_g=73 s, skip=247, K=r/3:
+                       E[cost|surv]  E[gcds]  gcds to 24.6k/1.44M/K
+  linear (current)        170.5 s     1.66        9 / 68 / 384
+  pure geometric (best)   181.6 s     1.46       (worse than linear!)
+  euler-optimal           153-157 s   1.26-1.3    4-5 / 12-29 / 19-80
+KEY INSIGHTS: (a) conditioned on surviving skip=247, 71% of factors
+land in the FIRST interval, so E[gcds] is small under any schedule
+and pure geometric LOSES (its big first interval overshoots the near
+field); (b) the euler shape = gentle near field + geometric far
+field; (c) the big structural wins are E[gcds] -24% (CPU freed for
+"factor" prefilters) and deep-run gcd counts cut 4-9x (matters for
+wall on deep/Swan-capped runs, for weak-CPU hosts, and for the
+gcd-stream serialization above); E[wall] improves ~8-10%.
+
+IMPLEMENTATION (--sched opt, default remains linear):
+- QSched gained an opt mode: first interval end k1 chosen by a 96-
+  point argmin scan of the closed-form cost model (guarded above
+  sqrt(k0*G), where the recurrence would otherwise degenerate); then
+  widths follow w' = w*k/(k-w) - G (the stationarity recurrence in
+  width form), monotone non-decreasing and snapped to blocks.  The
+  width form needs only the current position and width -- exactly what
+  checkpoint resume restores -- so the schedule continues bit-exactly
+  across kills with NO checkpoint format change (verified: kill/
+  resume at r=44497 under --sched opt is byte-identical to the
+  uninterrupted run).
+- --sched-G N overrides G (default 4000; retune from --bench: G =
+  gcd_seconds / per_degree_seconds).  -z/-Z caps still apply after
+  growth.  Banner prints the mode.
+- Selftest: new end-to-end config "m=6 sched-opt G=60" vs the oracle
+  (all 104 survivors identical); full selftest all PASS.
+GUIDANCE: use --sched opt for production; expect the same factors
+(any in-order interval partition finds the same smallest factor),
+~24% fewer gcds in expectation, and dramatically fewer on deep runs.
+DYNAMIC ADAPTATION (Gord's suggestion -- adjust G from observed
+runtimes mid-run): deliberately deferred; a static per-run schedule
+keeps resume deterministic and testable.  A v2 could re-derive
+FUTURE widths from an EWMA of measured c_g/c_s (the width-form
+recurrence makes this a one-line change), at the cost of resume
+reproducing decisions from the checkpointed width rather than the
+adapted history -- still correct, mildly nondeterministic.

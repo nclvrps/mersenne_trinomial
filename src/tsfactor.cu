@@ -835,10 +835,57 @@ struct QSched {
     long q0 = 15;
     double f = 1.0, f0 = 1.0;
     long q = 0;
-    void grow() {
-        if (f == 0.0) q = q0;
-        else if (f > 1.0) { q = (long)(f0 * (double)q0 + 0.5); f0 = f * f0; }
-        else q = q + q0;
+    // Euler-optimal mode (--sched opt): interval widths follow the
+    // stationarity recurrence of E = sum_j S(k_{j-1})(c_s*w_j + c_g)
+    // under the empirical survival law S(k) = (16/9)/k, namely
+    //   k_{j+1} = k_j^2/k_{j-1} - G,   G = c_g/c_s in degrees,
+    // in width form  w' = w*k/(k-w) - G  which needs only the current
+    // position and width -- both restored by checkpoint resume, so the
+    // schedule continues exactly across kills with no header changes.
+    // Widths are monotone non-decreasing (guard against the recurrence
+    // degenerating when parameters are extreme) and snapped to blocks.
+    bool opt = false;
+    u64 optG = 4000;           // c_g/c_s, degrees (see --sched-G)
+    long m = 1;                // block size, for snapping
+    void grow(u64 k_end) {
+        if (!opt) {
+            if (f == 0.0) q = q0;
+            else if (f > 1.0) { q = (long)(f0 * (double)q0 + 0.5); f0 = f * f0; }
+            else q = q + q0;
+            return;
+        }
+        u64 w = (u64)q * (u64)m;
+        if (!w) {               // first interval: pick k1 by a small
+            u64 k0 = k_end;     // argmin scan of the cost model
+            double C = 16.0 / 9.0, bestE = 1e300;
+            u64 bestk1 = 0;
+            u64 lo = (u64)(1.02 * sqrt((double)k0 * (double)optG)) + 1;
+            if (lo <= k0) lo = k0 + (u64)m;
+            for (int i = 0; i < 96; i++) {
+                u64 k1 = lo + (u64)((double)lo * 0.06 * i);
+                double E = 0, kp = (double)k0, kc = (double)k1;
+                for (int j = 0; j < 200 && kp < 4e18; j++) {
+                    E += (C / kp) * ((kc - kp) + (double)optG);
+                    double nx = kc * kc / kp - (double)optG;
+                    double wn = nx - kc;
+                    double wc = kc - kp;
+                    if (wn < wc) wn = wc;
+                    kp = kc;
+                    kc = kc + wn;
+                    if (kp > 1e14) break;
+                }
+                if (E < bestE) { bestE = E; bestk1 = k1; }
+            }
+            w = bestk1 > k0 ? bestk1 - k0 : (u64)m;
+        } else {
+            // w' = w*k/(k-w) - G, monotone, k_end = current position
+            double kd = (double)k_end, wd = (double)w;
+            double wn = wd * kd / (kd - wd) - (double)optG;
+            if (wn < wd) wn = wd;
+            w = (u64)wn;
+        }
+        q = (long)((w + (u64)m - 1) / (u64)m);
+        if (q < 1) q = 1;
     }
 };
 
@@ -856,6 +903,8 @@ struct SParams {
     long zq = 0;               // -z: emit "u" when q would exceed
     long Zq = 0;               // -Z: cap q, keep scanning
     u64 canzass_max = 0;       // 0 = auto (2*r^(2/3))
+    bool sched_opt = false;    // Euler-optimal interval schedule
+    u64 sched_G = 0;           // c_g/c_s in degrees; 0 = default 4000
     int verbose = 0;
     int pend_max = 4;
     std::string ckpt_base;     // empty = no checkpointing
@@ -1060,6 +1109,9 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
 
     QSched Q;
     Q.q0 = P.q0;
+    Q.opt = P.sched_opt;
+    Q.optG = P.sched_G ? P.sched_G : 4000;
+    Q.m = (long)G.m;
     Q.f = P.f;
     u64 k;                     // current interval start
     long blk0 = 0;             // blocks of it already folded into A
@@ -1087,7 +1139,7 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         if (P.verbose)
             printf("Exponentiation took %f\n", trin_now_s() - t0);
         G.reset_A();
-        Q.grow();
+        Q.grow(k);
         if (P.Zq && Q.q > P.Zq) Q.q = P.Zq;
     }
 
@@ -1274,7 +1326,7 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
             GcdRes R = pool.wait_get(pv.seq);
             if (consume_verdict(pv, R)) goto done;
         }
-        Q.grow();
+        Q.grow(k - 1);
         if (P.Zq && Q.q > P.Zq) Q.q = P.Zq;
     }
     // exhausted the degree range: drain all pending verdicts
@@ -1578,12 +1630,14 @@ static int selftest(int gcd_threads) {
         GcdPool pool;
         pool.start(gcd_threads);
         u64 gseq = 0;
-        struct Cfg { int m; long q0; double f; bool legacy; const char *nm; };
-        Cfg cfgs[] = {{4, 3, 1.0, false, "m=4 q0=3 f=1"},
-                      {8, 2, 1.0, false, "m=8 q0=2 f=1"},
-                      {6, 1, 0.0, true,  "m=6 q0=1 f=0 legacy-sq"},
-                      {14, 15, 1.0, false, "m=14 q0=15 f=1"},
-                      {3, 2, 2.0, false, "m=3 q0=2 f=2"}};
+        struct Cfg { int m; long q0; double f; bool legacy; const char *nm;
+                     bool sopt; u64 sG; };
+        Cfg cfgs[] = {{4, 3, 1.0, false, "m=4 q0=3 f=1", false, 0},
+                      {8, 2, 1.0, false, "m=8 q0=2 f=1", false, 0},
+                      {6, 1, 0.0, true,  "m=6 q0=1 f=0 legacy-sq", false, 0},
+                      {14, 15, 1.0, false, "m=14 q0=15 f=1", false, 0},
+                      {3, 2, 2.0, false, "m=3 q0=2 f=2", false, 0},
+                      {6, 3, 1.0, false, "m=6 sched-opt G=60", true, 60}};
         for (auto &cf : cfgs) {
             TsGPU G;
             G.init(rr);
@@ -1591,6 +1645,7 @@ static int selftest(int gcd_threads) {
             G.legacy_sq = cf.legacy;
             SParams P;
             P.skip = skip; P.maxd = maxd; P.q0 = cf.q0; P.f = cf.f;
+            P.sched_opt = cf.sopt; P.sched_G = cf.sG;
             P.canzass_max = 2 * 270;   // 2*r^(2/3) ~ 540
             P.verbose = 0;
             u64 mism = 0;
@@ -2083,6 +2138,12 @@ static void usage() {
         "                  GPU, CPU load per gcd drops sharply (opt-in)\n"
         "  --gpu-gcd-min-bits N   offload mults with an operand >= N bits\n"
         "  --bench-gcd     with --bench: also time one full-size gcd\n"
+        "  --sched opt     Euler-optimal interval schedule from the\n"
+        "                  empirical survival law S(k)=(16/9)/k: fewer,\n"
+        "                  later GCDs (E[gcds]/survivor ~1.66 -> ~1.26;\n"
+        "                  deep runs ~4-9x fewer); default: linear\n"
+        "  --sched-G N     gcd cost / scan cost in degrees (default 4000\n"
+        "                  ~ 63 s / 15.8 ms); tune from --bench numbers\n"
         "  --selftest-reps N   repeat --selftest N times (races in the\n"
         "                  GPU/pool interaction are intermittent; a\n"
         "                  single clean run proves less than a loop)\n"
@@ -2134,6 +2195,15 @@ int main(int argc, char **argv) {
         else if (a == "--gpu-gcd") gpu_gcd = true;
         else if (a == "--selftest-reps")
             selftest_reps = atoi(need("--selftest-reps"));
+        else if (a == "--sched") {
+            std::string v = need("--sched");
+            if (v == "opt") P.sched_opt = true;
+            else if (v == "linear") P.sched_opt = false;
+            else { fprintf(stderr, "bad --sched %s (opt|linear)\n",
+                           v.c_str()); exit(1); }
+        }
+        else if (a == "--sched-G")
+            P.sched_G = strtoull(need("--sched-G"), 0, 10);
         else if (a == "--gpu-gcd-min-bits")
             gcd_min_bits_opt = strtoull(need("--gpu-gcd-min-bits"), 0, 10);
         else if (a == "--bench-gcd") bench_gcd = true;
@@ -2355,6 +2425,9 @@ int main(int argc, char **argv) {
     }
     G.set_m(m);
     if (P.q0 <= 0) P.q0 = (long)((600 + m - 1) / m);
+    if (P.sched_opt)
+        fprintf(stderr, "interval schedule: euler-optimal (G=%" PRIu64
+                " degrees)\n", P.sched_G ? P.sched_G : 4000);
     fprintf(stderr, "r=%" PRIu64 " skip=%" PRIu64 " m=%d q0=%ld f=%g "
             "gcd-threads=%d pend-max=%d%s%s\n",
             r, P.skip, m, P.q0, P.f, gcd_threads, P.pend_max,
