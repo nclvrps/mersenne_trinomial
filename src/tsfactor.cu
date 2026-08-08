@@ -833,7 +833,6 @@ static bool load_ckpt(const std::string &base, CkptHdr &H,
 //   f0 *= f.  Then clamp so the interval does not overshoot rhigh.
 struct QSched {
     long q0 = 15;
-    double f = 1.0, f0 = 1.0;
     long q = 0;
     // Euler-optimal mode (--sched opt): interval widths follow the
     // stationarity recurrence of E = sum_j S(k_{j-1})(c_s*w_j + c_g)
@@ -846,14 +845,17 @@ struct QSched {
     // degenerating when parameters are extreme) and snapped to blocks.
     bool opt = false;
     u64 optG = 4000;           // c_g/c_s, degrees (see --sched-G)
+    double rho_min = 1.25;     // geometric floor: the stationarity
+                               // recurrence's ratios decay by G/k each
+                               // interval and can cross 1.0, which the
+                               // monotone guard would freeze into a
+                               // constant-width tail (observed in the
+                               // field as "q capped at 473").  Deep
+                               // runs want the ratio to settle, not
+                               // die: floor it (see --sched-rho).
     long m = 1;                // block size, for snapping
     void grow(u64 k_end) {
-        if (!opt) {
-            if (f == 0.0) q = q0;
-            else if (f > 1.0) { q = (long)(f0 * (double)q0 + 0.5); f0 = f * f0; }
-            else q = q + q0;
-            return;
-        }
+        if (!opt) { q = q + q0; return; }    // linear growth
         u64 w = (u64)q * (u64)m;
         if (!w) {               // first interval: pick k1 by a small
             u64 k0 = k_end;     // argmin scan of the cost model
@@ -870,6 +872,7 @@ struct QSched {
                     double wn = nx - kc;
                     double wc = kc - kp;
                     if (wn < wc) wn = wc;
+                    if (wn < (rho_min - 1.0) * kc) wn = (rho_min - 1.0) * kc;
                     kp = kc;
                     kc = kc + wn;
                     if (kp > 1e14) break;
@@ -878,10 +881,11 @@ struct QSched {
             }
             w = bestk1 > k0 ? bestk1 - k0 : (u64)m;
         } else {
-            // w' = w*k/(k-w) - G, monotone, k_end = current position
+            // w' = w*k/(k-w) - G, monotone, geometric-floored
             double kd = (double)k_end, wd = (double)w;
             double wn = wd * kd / (kd - wd) - (double)optG;
             if (wn < wd) wn = wd;
+            if (wn < (rho_min - 1.0) * kd) wn = (rho_min - 1.0) * kd;
             w = (u64)wn;
         }
         q = (long)((w + (u64)m - 1) / (u64)m);
@@ -899,12 +903,12 @@ struct SParams {
     u64 skip = 0;              // no factors of degree <= skip (REQUIRED)
     u64 maxd = 0;              // 0 = no cap
     long q0 = 0;               // 0 = auto (ceil(600/m))
-    double f = 1.0;
     long zq = 0;               // -z: emit "u" when q would exceed
     long Zq = 0;               // -Z: cap q, keep scanning
     u64 canzass_max = 0;       // 0 = auto (2*r^(2/3))
     bool sched_opt = false;    // Euler-optimal interval schedule
     u64 sched_G = 0;           // c_g/c_s in degrees; 0 = default 4000
+    double sched_rho = 0;      // geometric floor ratio; 0 = default 1.25
     int verbose = 0;
     int pend_max = 4;
     std::string ckpt_base;     // empty = no checkpointing
@@ -1111,8 +1115,8 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
     Q.q0 = P.q0;
     Q.opt = P.sched_opt;
     Q.optG = P.sched_G ? P.sched_G : 4000;
+    if (P.sched_rho > 1.0) Q.rho_min = P.sched_rho;
     Q.m = (long)G.m;
-    Q.f = P.f;
     u64 k;                     // current interval start
     long blk0 = 0;             // blocks of it already folded into A
 
@@ -1121,7 +1125,6 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         const CkptHdr &H = resume->H;
         k = H.k_iv;
         Q.q = (long)H.q;
-        Q.f0 = H.f0;
         blk0 = (long)H.blk;
         G.h_from_host(resume->h);
         if (H.has_A) G.A_from_host(resume->a);
@@ -1164,7 +1167,7 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         H.r = r; H.s = s; H.skip = P.skip; H.m = (u64)G.m; H.nw = (u64)G.nw;
         std::vector<u64> hh, aa;
         if (vf == k) {           // current interval fully verified behind us
-            H.k_iv = k; H.blk = 0; H.q = (u64)Q.q; H.f0 = Q.f0;
+            H.k_iv = k; H.blk = 0; H.q = (u64)Q.q; H.f0 = 0;
             // mid-interval flavor if we are inside the interval
             // (caller ensures we are between blocks)
             G.h_to_host(hh);
@@ -1172,7 +1175,7 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
             if (b > 0) { H.blk = (u64)b; H.has_A = 1; G.A_to_host(aa); }
             save_ckpt(P.ckpt_base, H, hh, aa, P.verbose);
         } else if (cand.valid) {
-            H.k_iv = cand.k_iv; H.blk = 0; H.q = (u64)cand.q; H.f0 = cand.f0;
+            H.k_iv = cand.k_iv; H.blk = 0; H.q = (u64)cand.q; H.f0 = 0;
             save_ckpt(P.ckpt_base, H, cand.h, aa, P.verbose);
         } else if (exiting && P.verbose) {
             fprintf(stderr, "  [no verified state to checkpoint; s=%" PRIu64
@@ -1269,7 +1272,7 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         }
         if (!resumed && vf == k) {              // snapshot for checkpointing
             cand.valid = true;
-            cand.k_iv = k; cand.q = q; cand.f0 = Q.f0;
+            cand.k_iv = k; cand.q = q; cand.f0 = 0;
             G.h_to_host(cand.h);
         }
         double iv_t0 = trin_now_s(), iv_poll = 0;
@@ -1630,21 +1633,21 @@ static int selftest(int gcd_threads) {
         GcdPool pool;
         pool.start(gcd_threads);
         u64 gseq = 0;
-        struct Cfg { int m; long q0; double f; bool legacy; const char *nm;
+        struct Cfg { int m; long q0; long Zq; bool legacy; const char *nm;
                      bool sopt; u64 sG; };
-        Cfg cfgs[] = {{4, 3, 1.0, false, "m=4 q0=3 f=1", false, 0},
-                      {8, 2, 1.0, false, "m=8 q0=2 f=1", false, 0},
-                      {6, 1, 0.0, true,  "m=6 q0=1 f=0 legacy-sq", false, 0},
-                      {14, 15, 1.0, false, "m=14 q0=15 f=1", false, 0},
-                      {3, 2, 2.0, false, "m=3 q0=2 f=2", false, 0},
-                      {6, 3, 1.0, false, "m=6 sched-opt G=60", true, 60}};
+        Cfg cfgs[] = {{4, 3, 0, false, "m=4 q0=3", false, 0},
+                      {8, 2, 0, false, "m=8 q0=2", false, 0},
+                      {6, 1, 1, true,  "m=6 const-q legacy-sq", false, 0},
+                      {14, 15, 0, false, "m=14 q0=15", false, 0},
+                      {3, 2, 0, false, "m=3 q0=2", false, 0},
+                      {6, 3, 0, false, "m=6 sched-opt G=60", true, 60}};
         for (auto &cf : cfgs) {
             TsGPU G;
             G.init(rr);
             G.set_m(cf.m);
             G.legacy_sq = cf.legacy;
             SParams P;
-            P.skip = skip; P.maxd = maxd; P.q0 = cf.q0; P.f = cf.f;
+            P.skip = skip; P.maxd = maxd; P.q0 = cf.q0; P.Zq = cf.Zq;
             P.sched_opt = cf.sopt; P.sched_G = cf.sG;
             P.canzass_max = 2 * 270;   // 2*r^(2/3) ~ 540
             P.verbose = 0;
@@ -1680,7 +1683,7 @@ static int selftest(int gcd_threads) {
             G.init(rr);
             G.set_m(5);
             SParams P;
-            P.skip = skip; P.maxd = maxd; P.q0 = 4; P.f = 1.0;
+            P.skip = skip; P.maxd = maxd; P.q0 = 4;
             P.canzass_max = 1;
             P.verbose = 0;
             u64 mism = 0;
@@ -1714,7 +1717,7 @@ static int selftest(int gcd_threads) {
                 G.init(rr);
                 G.set_m(4);
                 SParams P;
-                P.skip = skip; P.maxd = maxd; P.q0 = 2; P.f = 1.0;
+                P.skip = skip; P.maxd = maxd; P.q0 = 2;
                 P.canzass_max = 540;
                 P.verbose = 0;
                 P.zq = 3;              // trips before reaching deep_d
@@ -1746,7 +1749,7 @@ static int selftest(int gcd_threads) {
                 G.init(rr);
                 G.set_m(5);
                 SParams P;
-                P.skip = skip; P.maxd = maxd; P.q0 = 2; P.f = 1.0;
+                P.skip = skip; P.maxd = maxd; P.q0 = 2;
                 P.canzass_max = 540;
                 P.verbose = 0;
                 P.ckpt_base = "/tmp/tsfactor_test.ckpt";
@@ -1872,7 +1875,7 @@ static int selftest(int gcd_threads) {
             G.init(rr);
             G.set_m(6);
             SParams P;
-            P.skip = skip; P.maxd = maxd; P.q0 = 3; P.f = 1.0;
+            P.skip = skip; P.maxd = maxd; P.q0 = 3;
             P.canzass_max = 540;
             P.verbose = 0;
             u64 mism = 0;
@@ -2144,6 +2147,8 @@ static void usage() {
         "                  deep runs ~4-9x fewer); default: linear\n"
         "  --sched-G N     gcd cost / scan cost in degrees (default 4000\n"
         "                  ~ 63 s / 15.8 ms); tune from --bench numbers\n"
+        "  --sched-rho R   geometric floor for the opt schedule's deep\n"
+        "                  tail (default 1.25)\n"
         "  --selftest-reps N   repeat --selftest N times (races in the\n"
         "                  GPU/pool interaction are intermittent; a\n"
         "                  single clean run proves less than a loop)\n"
@@ -2163,7 +2168,6 @@ int main(int argc, char **argv) {
          bench_gcd = false;
     u64 gcd_min_bits_opt = 0;
     int selftest_reps = 1;
-    double f_opt = 1.0;
 
     std::vector<std::string> pos;
     for (int i = 1; i < argc; i++) {
@@ -2179,7 +2183,6 @@ int main(int argc, char **argv) {
         else if (a == "--maxd") P.maxd = strtoull(need("--maxd"), 0, 10);
         else if (a == "--m") want_m = atoi(need("--m"));
         else if (a == "--q0") P.q0 = atol(need("--q0"));
-        else if (a == "--f") f_opt = atof(need("--f"));
         else if (a == "-z") P.zq = atol(need("-z"));
         else if (a == "-Z") P.Zq = atol(need("-Z"));
         else if (a == "--out") out_prefix = need("--out");
@@ -2204,6 +2207,8 @@ int main(int argc, char **argv) {
         }
         else if (a == "--sched-G")
             P.sched_G = strtoull(need("--sched-G"), 0, 10);
+        else if (a == "--sched-rho")
+            P.sched_rho = atof(need("--sched-rho"));
         else if (a == "--gpu-gcd-min-bits")
             gcd_min_bits_opt = strtoull(need("--gpu-gcd-min-bits"), 0, 10);
         else if (a == "--bench-gcd") bench_gcd = true;
@@ -2218,7 +2223,6 @@ int main(int argc, char **argv) {
         }
         else pos.push_back(a);
     }
-    P.f = f_opt;
     if (gcd_threads <= 0) {
         unsigned hc = std::thread::hardware_concurrency();
         gcd_threads = hc > 2 ? (int)std::min(3u, hc - 1) : 1;
@@ -2424,13 +2428,23 @@ int main(int argc, char **argv) {
         m = auto_m(G);
     }
     G.set_m(m);
+    {
+        double mb = 1.0 / (1024 * 1024);
+        double htab = 2.0 * G.m * G.nw * 8 * mb;
+        double fft = (2.0 * G.F.n + G.F.n) * 8 * mb;   // dFA+dFB+twiddles
+        double scr = (4.0 * G.nw + 2.0 * G.nw2 + G.nw) * 8 * mb;
+        fprintf(stderr, "GPU memory (fixed at startup, independent of "
+                "q/depth): h-tables %.0f MB, FFT %.0f MB, scratch %.0f MB"
+                "%s\n", htab, fft, scr,
+                gpu_gcd ? ", +gcd hook ~610 MB" : "");
+    }
     if (P.q0 <= 0) P.q0 = (long)((600 + m - 1) / m);
     if (P.sched_opt)
         fprintf(stderr, "interval schedule: euler-optimal (G=%" PRIu64
                 " degrees)\n", P.sched_G ? P.sched_G : 4000);
-    fprintf(stderr, "r=%" PRIu64 " skip=%" PRIu64 " m=%d q0=%ld f=%g "
+    fprintf(stderr, "r=%" PRIu64 " skip=%" PRIu64 " m=%d q0=%ld "
             "gcd-threads=%d pend-max=%d%s%s\n",
-            r, P.skip, m, P.q0, P.f, gcd_threads, P.pend_max,
+            r, P.skip, m, P.q0, gcd_threads, P.pend_max,
             P.zq ? " -z" : "", P.Zq ? " -Z" : "");
 
     struct sigaction sa;

@@ -730,3 +730,99 @@ FUTURE widths from an EWMA of measured c_g/c_s (the width-form
 recurrence makes this a one-line change), at the cost of resume
 reproducing decisions from the checkpointed width rather than the
 adapted history -- still correct, mildly nondeterministic.
+
+## Round 6b (schedule saturation fix, --f retirement, memory accounting)
+
+FIELD REPORT (Gord): --sched opt A/B on three survivors, factors
+byte-identical.  Shallow pair (d ~ 24k): 940 s -> 685 s (-27%; the
+schedule's 5 gcds vs linear's 9 in a gcd-stream-bound regime).  Deep
+(d=185321): 4167 s -> 3661 s, but q CAPPED AT 473 -- and that cap was
+a BUG, not memory:
+
+SATURATION BUG: the stationarity recurrence's ratios decrease by G/k
+each interval (rho' = rho - G/k).  For k1 choices whose ratio budget
+rho_1 - G*sum(1/k_j) crosses 1.0, the ratio decays below 1, the
+monotone-width guard freezes the width, and the schedule degenerates
+into a constant-width tail (reproduced exactly from the log: widths
+freeze once w*k/(k-w) - G < w).  E[cost] barely notices (survival is
+tiny out there) which is why the k1 argmin happily picks such
+trajectories -- but deep-run WALL pays ~(D/w_frozen) gcds: a d=1.44M
+run would have paid ~100 gcds.  FIX: a geometric floor,
+w' >= (rho_min - 1)*k, rho_min default 1.25 (--sched-rho), applied in
+both the recurrence and the argmin's internal model.  The floor
+matches the depth-conditional optimum rho*ln^2(rho) =
+2*ln(D/k1)*c_g/(D*c_s), which spans ~1.2 (D=1.44M) to ~1.65 (D=185k):
+1.25 covers deep runs at negligible shallow cost.  Same trajectory now
+reaches d=1.44M in ~22 gcds.
+
+--f RETIRED (per Gord; no external users yet): the factor.cpp-inherited
+growth modes (f=0 constant, f=1 additive, f>1 crude geometric) are
+gone; non-opt growth is plain linear (q += q0), --sched opt is the
+sophisticated path.  CkptHdr keeps the f0 field as reserved (written
+0) so the checkpoint FORMAT is unchanged; resuming an old checkpoint
+under the new binary continues with linear growth from the stored
+(k, q).  Selftest configs reworked: constant-q coverage now via the
+-Z cap (P.Zq=1); all 16 suites PASS.
+
+--sched-G GUIDANCE (Gord's measurement): idle ~4000, loaded ~5000.
+The expectation is flat across that range; either value is fine, and
+the schedule is deterministic per run either way.
+
+GPU MEMORY ACCOUNTING (Gord's question; also now printed at startup):
+allocations are FIXED at init and independent of q/depth --
+  h-tables: 2*m*ceil(r/64)*8 B (dH ping-pong; ~1.02 GB at r=136.3M,
+    m=30; ~1.56 GB at m=46) + the same again lazily for dHold on the
+    first fineDDF localize;
+  FFT: dFA+dFB (2 * 2^24 * 8 = 268 MB) + twiddle table (~134 MB);
+  scan scratch: dA/dC/dTmp/dS0/dS1 (~120 MB);
+  --gpu-gcd hook: five buffers ~610 MB + small lazy per-size plans;
+  plus CUDA context (~300-500 MB) and whatever the GUI holds.
+The q=473 cap had nothing to do with memory; there is no memory-based
+q logic anywhere.  On a 16 GB T4 usage is identical (depends on r and
+m, not the card).  The old log's slow creep to ~4.2 GB was most
+plausibly dHold materializing plus lazily built gcd-hook plans.
+
+## Optimization roadmap: status and what remains
+
+DONE (original Part C and successors):
+  C1 fused squaring        -- delivered R1; 0.36 -> 0.26 ms measured.
+  C4 hybrid GPU HGCD       -- delivered R2-R3 (opt-in --gpu-gcd);
+                              wall-neutral vs NTL on a loaded Zen 2,
+                              wins = CPU relief + weak-CPU hosts;
+                              batched mat ops (R3) cut its transforms.
+  C2 FFT                   -- delivered R4-R5: runtime knobs + autotune;
+                              tlv=3/blv=3 default; transforms 2.16x
+                              faster; 19-21 -> 13-14 ms/degree in
+                              production.
+  scheduling               -- delivered R6/R6b: --sched opt (+ rho
+                              floor); -27% on shallow survivors,
+                              4-9x fewer deep gcds.
+  reliability              -- R5: hook teardown race fixed (drain +
+                              alive-guard); --selftest-reps; 100/100.
+  C3 cross-s pipelining    -- RETIRED: superseded by Gord's
+                              factor-based CPU prefilter workflow.
+
+REMAINING CANDIDATES, in rough value order:
+  1. FFT achieved-bandwidth work: at tlv=3 the ~29 GB of fused traffic
+     runs at only ~45% of streaming peak -- the strided register-tile
+     gathers are the suspect.  Needs Nsight Compute profiles from the
+     2070S (memory workload analysis on k_taylor_reg NS=16) before
+     touching code; potential is another ~1.5-2x on transforms.
+  2. C5 BLZ squaring: m*t_sq is now ~7.8 of 15.5 ms/degree -- the
+     LARGEST per-degree term post-FFT-tuning.  A ~30-40% squaring cut
+     is ~2-3 ms/degree.
+  3. Hybrid gcd mass: with faster small-plan transforms, lower
+     hyb_gpu_min_bits toward the mid-level mult mass; add pinned host
+     staging to cut the per-call floor.  Target: 63 s -> 35-45 s
+     hybrid with most mass on GPU.
+  4. Dynamic schedule adaptation (Gord's idea): EWMA of measured
+     c_g/c_s feeding the width recurrence; one-line change, mildly
+     nondeterministic on resume -- do when static tuning feels stale.
+  5. Two-GPU single-s: hand the h-table to a second GPU each interval
+     (~1 GB transfer, ~100 ms over PCIe) so GPU2 scans interval j+1
+     while GPU1 finishes j -- speculative but architecturally cheap;
+     only worth it once single-GPU per-degree cost stops improving.
+  6. Primitive-trinomial mode polish: for full-depth campaigns (the
+     three-irreducibles hunt), the "u"/primitive paths plus sched-opt's
+     ~20-30 gcds to r/3 make exhaustive runs ~178 h -> dominated
+     purely by scan; any FFT/squaring win transfers 1:1.
