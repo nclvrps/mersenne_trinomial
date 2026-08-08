@@ -826,3 +826,85 @@ REMAINING CANDIDATES, in rough value order:
      three-irreducibles hunt), the "u"/primitive paths plus sched-opt's
      ~20-30 gcds to r/3 make exhaustive runs ~178 h -> dominated
      purely by scan; any FFT/squaring win transfers 1:1.
+
+## Round 6c (schedule behavior confirmed; C3 re-evaluated; release notes)
+
+Q-PLATEAU IS BY DESIGN, NOT A GLITCH.  All three of Gord's observed q
+sequences (G=4000/5000/6000, m=30, k0=248) were reproduced EXACTLY
+from the schedule arithmetic.  The opt schedule has three regimes and
+takes the max of three rules each step:
+  1. recurrence   w' = w*k/(k-w) - G     (ratios decay by ~G/k)
+  2. monotone     w' >= w                (never shrink an interval)
+  3. geometric    w' >= (rho_min-1)*k    (floor, default rho 1.25)
+Early on rule 1 governs; its ratio decays until it drops below the
+current width; for ONE OR TWO intervals rule 2 holds the width flat
+(the plateau) until the growing floor 0.25*k overtakes it, after which
+rule 3 governs and widths grow at exactly 1.25x forever.  Traced for
+G=5000: recurrence for 4 intervals, one monotone hold at q=250
+(rec=5613, floor=6392, both < w=7500), then geometric floor from
+q=276 on.  The plateau is the handoff between regimes, costs
+essentially nothing, and cannot recur (the floor only grows).
+
+--sched-G EMPIRICS (Gord, s=2469396, d=185321, moderate load):
+  G=4000 (default)  3602.6 s   207750 degrees scanned
+  G=5000            3568.6 s   197100 degrees   <- best
+  G=6000            3966.1 s   265110 degrees   (11% worse: big early
+                                ratios overshoot the answer)
+GUIDANCE: G in 4000-5000; measure as gcd_seconds/per_degree_seconds
+and do not round up.  Larger G buys fewer gcds at the price of
+overshoot, and past ~5000 the overshoot wins.
+
+C3 CROSS-S PIPELINING: RE-EVALUATED, STILL NOT WORTH REVIVING -- but
+the overlap it was designed to capture IS now available for free.
+Under --sched opt the intervals grow geometrically, so scan time per
+interval overtakes gcd time: for s=2469396 (G=5000) scan > gcd in
+12 of 14 intervals.  Cost model vs observation: serial (pend-max 1)
+predicts 3557 s, observed 3569 s; ideal one-deep overlap predicts
+2743 s, i.e. ~814 s / 23% available from --pend-max 2 ALONE.  This is
+exactly what the earlier pend-max A/B could not show, because under
+LINEAR growth intervals stayed short and the gcd stream was the
+bottleneck; geometric growth inverts that.  So:
+  - FIRST re-run the pend-max 1 vs 2 A/B under --sched opt on a deep
+    survivor.  If gcd latency inflation (the 75->132 s effect from
+    GPU contention) eats the win, the targeted fix is STREAM
+    SEPARATION -- give the gcd hook its own non-blocking CUDA stream
+    (or build with nvcc --default-stream per-thread, which gives each
+    pool worker its own stream; the hook's blocking D2H already
+    synchronizes before the mutex is released, and buffers are
+    disjoint) -- NOT cross-s pipelining.
+  - C3's only remaining niche is shallow survivors whose single s has
+    too little scan work to hide its own gcd.  That is precisely the
+    regime Gord's CPU "factor" prefilter already owns, and C3 would
+    cost a second GPU h-table (~1 GB at m=30), multi-s checkpoint
+    state, and verdict routing across s -- large complexity for a
+    shrinking niche.
+VERDICT: leave C3 retired.  If the pend-max 2 A/B disappoints, add
+"gcd hook on its own stream" to the roadmap at position 2 (cheap,
+contained, same benefit); C3 stays off the list.
+
+CODE CLEANLINESS: after the --f removal the whole translation unit
+compiles warning-free under -Wall -Wextra (g++ 13/15).  No dead code
+or refactoring debt found worth churning before release.
+
+RELEASE READINESS / PARTICIPANT CAMPAIGN NOTES:
+  - Recommended production invocation:
+      ./tsfactor <r> <survivors> --skip <d> --gpu-gcd --sched opt \
+        --gcd-threads 1 --pend-max 2 --ckpt-mins 60 --out <prefix>
+    (drop --gpu-gcd if the host CPU has spare cores and gf2x-backed
+    NTL; use --pend-max 1 to minimise GPU energy at equal wall time
+    in the shallow regime.)
+  - Each participant should run --selftest once (expect 16 PASS) and
+    --bench <r> 474 once, adopting the printed GF2C_* exports if their
+    card's best config differs from the 3/3 default.
+  - Verify every returned factor with check-ntl before merging results.
+  - ERROR CHECKING matters MORE for a distributed campaign than for a
+    single operator: check-ntl proves a REPORTED factor divides the
+    trinomial, but it cannot detect a MISSED factor caused by a silent
+    hardware error -- a false negative looks like a clean "no factor
+    below d" result and would silently corrupt the campaign's coverage
+    claim.  The separate error-checking analysis in this project found
+    a Gerbicz-style accumulator that is DETERMINISTIC in
+    characteristic 2 (Frobenius is additive, so the check is pure XOR)
+    at ~2-5% overhead, plus Bezout-cofactor certification for the gcd.
+    That work is the natural next priority if the campaign is to make
+    a defensible completeness claim over the full s range.
