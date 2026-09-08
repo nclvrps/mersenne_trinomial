@@ -47,6 +47,8 @@
 #include <algorithm>
 #include <atomic>
 #include <deque>
+#include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -2375,14 +2377,19 @@ int main(int argc, char **argv) {
     std::string res_path = out_prefix + ".results.txt";
     std::set<u64> done_s;
     {
-        FILE *f = fopen(res_path.c_str(), "r");
-        if (f) {
-            char line[256];
-            while (fgets(line, sizeof(line), f)) {
-                u64 sv = strtoull(line, 0, 10);
-                if (sv) done_s.insert(sv);
+        std::ifstream in(res_path);
+        if (in) {
+            u64 sv;
+            for (;;) {
+                if (in >> sv) {
+                    if (sv) done_s.insert(sv);
+                } else if (in.eof() || in.bad()) {
+                    break;                 // nothing left, or an I/O error
+                } else {
+                    in.clear();            // line didn't start with a number
+                }
+                in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
             }
-            fclose(f);
             fprintf(stderr, "%zu already completed in %s\n", done_s.size(),
                     res_path.c_str());
         }
