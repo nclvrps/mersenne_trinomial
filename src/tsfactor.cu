@@ -1031,14 +1031,18 @@ static bool localize(TsGPU &G, GcdPool &pool, const SParams &P, u64 /*r*/,
                      u64 ka, long q, u64 &gseq,
                      std::vector<u64> &g_out, u64 &gdeg_out,
                      u64 &ka_out, u64 &kb_out) {
-    if (P.verbose)
+    if (P.verbose) {
         printf("Entering fine DDF mode: localize in %" PRIu64 "..%" PRIu64
                "\n", ka, ka + (u64)q * G.m - 1);
+        fflush(stdout);
+    }
     double t0 = trin_now_s();
     G.init_h_at(ka);
     CUCHK(cudaDeviceSynchronize());
-    if (P.verbose)
+    if (P.verbose) {
         printf("Re-exponentiation took %f\n", trin_now_s() - t0);
+        fflush(stdout);
+    }
     G.need_hold();
     u64 kcur = ka;
     long qcur = q;
@@ -1054,9 +1058,11 @@ static bool localize(TsGPU &G, GcdPool &pool, const SParams &P, u64 /*r*/,
         pool.submit(id, hostA, T);
         GcdRes R = pool.wait_get(id);
         u64 kb = kcur + (u64)qfirst * G.m - 1;
-        if (P.verbose)
+        if (P.verbose) {
             printf("   fineDDF %" PRIu64 "..%" PRIu64 ": gcd took %f, "
                    "deg %" PRIu64 "\n", kcur, kb, R.secs, R.gdeg);
+            fflush(stdout);
+        }
         if (R.gdeg > 0) {
             bool captured = !R.g.empty();
             if (captured &&
@@ -1078,6 +1084,7 @@ static bool localize(TsGPU &G, GcdPool &pool, const SParams &P, u64 /*r*/,
             if (qcur == 1) {
                 fprintf(stderr, "ERROR: fineDDF lost the factor at %" PRIu64
                         "\n", kcur);
+                fflush(stderr);
                 ka_out = kcur;
                 kb_out = kb;
                 return false;
@@ -1133,16 +1140,20 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         else G.reset_A();
         resumed = true;
         resume->valid = false;
-        if (P.verbose)
+        if (P.verbose) {
             printf("Resumed s=%" PRIu64 " at interval %" PRIu64
                    " block %ld/%ld\n", s, k, blk0, Q.q);
+            fflush(stdout);
+        }
     } else {
         k = P.skip + 1;
         double t0 = trin_now_s();
         G.init_h_at(k);
         CUCHK(cudaDeviceSynchronize());
-        if (P.verbose)
+        if (P.verbose) {
             printf("Exponentiation took %f\n", trin_now_s() - t0);
+            fflush(stdout);
+        }
         G.reset_A();
         Q.grow(k);
         if (P.Zq && Q.q > P.Zq) Q.q = P.Zq;
@@ -1188,9 +1199,11 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
 
     // returns 1 if factor resolved (out filled), 0 for clear verdicts
     auto consume_verdict = [&](const Pend &pv, GcdRes &R) -> int {
-        if (P.verbose)
+        if (P.verbose) {
             printf("   gcd %" PRIu64 "..%" PRIu64 " took %f%s\n",
                    pv.ka, pv.kb, R.secs, R.gdeg ? "  ** HIT **" : "");
+            fflush(stdout);
+        }
         if (R.gdeg == 0) {
             vf = pv.kb + 1;
             return 0;
@@ -1226,10 +1239,12 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
             out.rhi = rkb;
             return 1;
         }
-        if (P.verbose)
+        if (P.verbose) {
             printf("CanZass took %f, total degree %" PRIu64
                    ", small degree %" PRIu64 "\n",
                    trin_now_s() - t0, gdeg, d);
+            fflush(stdout);
+        }
         if (!(d >= rka && d <= rkb))
             fprintf(stderr, "WARNING: s=%" PRIu64 " least degree %" PRIu64
                     " outside hit interval [%" PRIu64 ",%" PRIu64
@@ -1252,8 +1267,10 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         if (k2 > rhigh) {                       // clamp to cover rhigh
             q = (long)((rhigh - k + G.m) / G.m);
             k2 = k + (u64)q * G.m - 1;
-            if (P.verbose)
+            if (P.verbose) {
                 printf("Reducing q to %ld\n", q);
+                fflush(stdout);
+            }
             Q.q = q;
         }
         if (P.zq && q > P.zq) {                 // -z: give up
@@ -1264,8 +1281,10 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
                 if (consume_verdict(pv, R)) goto done;
             }
             out.kind = ScanOut::GAVE_UP;
-            if (P.verbose)
+            if (P.verbose) {
                 printf("q > %ld so skipping further test\n", P.zq);
+                fflush(stdout);
+            }
             goto done;
         }
         if (P.verbose) {
