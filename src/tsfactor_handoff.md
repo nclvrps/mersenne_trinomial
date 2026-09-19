@@ -908,3 +908,75 @@ RELEASE READINESS / PARTICIPANT CAMPAIGN NOTES:
     at ~2-5% overhead, plus Bezout-cofactor certification for the gcd.
     That work is the natural next priority if the campaign is to make
     a defensible completeness claim over the full s range.
+
+## Round 7 (fine DDF: no more re-exponentiation)
+
+PROBLEM (Gord's large-degree log): entering fine DDF cost a full rebuild
+of the h-table at the hit interval's start -- init_h_at(ka) ends with ka
+Frobenius steps, i.e. ka*m squarings.  Observed: 2756 s at ka=501728,
+6845 s at ka=1250318, and 26417 s (7.3 h) at ka=4843958 for s=5408270,
+whose localization was then lost entirely to a reboot.
+
+ROOT INSIGHT: that state is not missing, it is discarded.  The scan HELD
+exactly the h-table at ka when it began that interval; it was simply
+overwritten as the scan moved on.  factor.cpp had to rebuild because it
+kept nothing, and tsfactor inherited the behavior.
+
+FIX (three layers, all shipped):
+1. RAM snapshot per outstanding interval.  Each interval start copies
+   the h-table to host (~m*nw*8 B: 511 MB at r=136279841, m=30) into a
+   shared_ptr carried by its Pend entry, so the snapshot stays alive
+   exactly as long as that interval's gcd is unresolved -- note
+   consume_verdict copies the Pend before clearing the queue, so the
+   buffer survives into localize.  localize() then does one H2D instead
+   of ka*m squarings.  Budget: --hsnap-mb (default 2048), one snapshot
+   per interval with an outstanding gcd; the startup banner prints the
+   per-snapshot size, how many fit, and warns when the budget is below
+   pend-max+1.  --hsnap-mb 0 restores the old rebuild.
+   NOT snapshotted: an interval we resumed INTO mid-way (blk>0), where
+   the device h is already past the interval start -- that one interval
+   still rebuilds if it hits.
+2. On-disk standby file <ckpt-base>.fine, written when fine DDF is
+   actually entered and refreshed at each bisection step: (r, s, skip,
+   m, nw, ka0, q0, kcur, qcur) + the h-table at kcur, CRC'd and written
+   atomically through the existing write_file_atomic.  Removed on every
+   localize exit.  So a crash or reboot mid-localization loses neither
+   the rebuild nor the bisection progress.
+3. Resume straight into localization: scan_one_s checks for a matching
+   .fine before the interval loop and, if found, re-enters localize at
+   the saved window and resolves from there -- no rescan of the (up to
+   multi-hour) hit interval.  This is sound because verdicts are
+   consumed in order and the first hit returns, so every degree below
+   ka0 was already verified clear when the file was written.
+BONUS: localization is now INTERRUPTIBLE.  localize checks g_stop right
+after refreshing the standby file, so SIGINT/SIGTERM during a
+multi-hour bisection now exits cleanly and resumes where it stopped;
+previously the signal was ignored until localization finished.
+
+TESTS: selftest is now 17 suites, all PASS.  Suite 5 runs the forced
+fineDDF battery TWICE -- once reusing the snapshot, once with
+--hsnap-mb 0 forcing the rebuild -- and both must match the oracle.
+New suite 7b picks an s whose hit genuinely goes through localize,
+interrupts it inside the bisection (die_in_fine hook, at 3 different
+points), and re-runs with only the standby file on disk, requiring the
+same factor degree.  CLI check at r=4423: both paths give byte-identical
+results, and the .fine file is created during bisection (7 refreshes)
+and gone after completion.
+
+EXPECTED EFFECT on Gord's cases: the 2756 s / 6845 s / 26417 s rebuilds
+become a single ~0.1 s host-to-device copy.  The bisection scan itself
+is unchanged (it is bounded by the interval width, which is work
+already budgeted); the pure waste was the rebuild, which was
+proportional to the ENTIRE depth reached so far, not to the interval.
+
+REJECTED ALTERNATIVE (so it is not re-proposed): doing the localization
+modulo the interval gcd g instead of modulo T.  g is ~40x smaller than
+T, but T is a sparse trinomial whose reduction is a near-free fold,
+while g is dense and needs Barrett/Newton reduction -- roughly two FFT
+multiplications per squaring.  At r=136M that is ~0.26 ms per squaring
+mod T versus ~20 ms mod a 3.5M-degree dense g: about 85x WORSE.
+Bisection modulo T is the right algorithm.
+
+MINOR NOTES: a .fine file for an s that is never re-run stays on disk
+(it only matches its own r/s/skip/m/nw, so it is inert -- just delete
+it); at m=30 it is ~511 MB, refreshed once per bisection step.

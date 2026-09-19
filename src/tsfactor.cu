@@ -830,6 +830,81 @@ static bool load_ckpt(const std::string &base, CkptHdr &H,
 }
 
 // ---------------------------------------------------------------------------
+// fine-DDF standby state.
+//
+// localize() needs the h-table exactly as it stood at the START of the hit
+// interval.  Rebuilding it from scratch costs ka*m squarings -- at
+// r=136279841 with ka in the millions that is hours (26417 s observed at
+// ka=4843958).  But the scan HAD that state when the interval began, so
+// instead of rebuilding we keep it:
+//   * in RAM, one snapshot per interval with an outstanding gcd
+//     (Pend::h0, bounded by --hsnap-mb), which removes the rebuild
+//     entirely in the normal case; and
+//   * on disk, once fine DDF is actually entered, so that a crash or
+//     reboot mid-localization does not force the rebuild either.  The
+//     file also carries the current bisection window, so a resumed run
+//     re-enters localize where it left off instead of rescanning the
+//     (possibly multi-hour) hit interval.
+// Degrees below the hit interval are always verified clear before
+// localization starts -- verdicts are consumed in order and the first hit
+// returns -- so this file is self-contained: resuming from it needs no
+// other state.
+#define TS_FINE_MAGIC 0x314e4653544ULL     // "TSFN1"-ish
+struct FineHdr {
+    u64 magic, version;
+    u64 r, s, skip;
+    u64 m, nw;
+    u64 ka0, q0;        // hit interval as reported by the coarse gcd
+    u64 kcur, qcur;     // current bisection window; the h below is at kcur
+    u32 crc_h;
+    u32 crc_hdr;
+};
+
+static std::string fine_path(const std::string &base) { return base + ".fine"; }
+
+static bool save_fine(const std::string &base, FineHdr H,
+                      const std::vector<u64> &h, int verbose) {
+    H.magic = TS_FINE_MAGIC;
+    H.version = 1;
+    H.crc_h = h.empty() ? 0 : crc32_of(h.data(), h.size() * 8);
+    H.crc_hdr = 0;
+    H.crc_hdr = crc32_of(&H, sizeof(H) - sizeof(u32));
+    std::vector<u64> none;
+    bool ok = write_file_atomic(fine_path(base), &H, sizeof(H), h, none);
+    if (verbose)
+        fprintf(stderr, "  [fine checkpoint %s: s=%" PRIu64 " window %"
+                PRIu64 "..%" PRIu64 "]\n", ok ? "written" : "FAILED", H.s,
+                H.kcur, H.kcur + H.qcur * H.m - 1);
+    return ok;
+}
+
+static bool load_fine(const std::string &base, FineHdr &H,
+                      std::vector<u64> &h) {
+    FILE *f = fopen(fine_path(base).c_str(), "rb");
+    if (!f) return false;
+    bool ok = fread(&H, 1, sizeof(H), f) == sizeof(H);
+    if (ok) {
+        FineHdr T = H;
+        T.crc_hdr = 0;
+        ok = H.magic == TS_FINE_MAGIC &&
+             crc32_of(&T, sizeof(T) - sizeof(u32)) == H.crc_hdr &&
+             H.m && H.nw && H.qcur;
+    }
+    if (ok) {
+        h.resize((size_t)H.m * H.nw);
+        ok = fread(h.data(), 8, h.size(), f) == h.size() &&
+             crc32_of(h.data(), h.size() * 8) == H.crc_h;
+    }
+    fclose(f);
+    if (!ok) h.clear();
+    return ok;
+}
+
+static void remove_fine(const std::string &base) {
+    if (!base.empty()) remove(fine_path(base).c_str());
+}
+
+// ---------------------------------------------------------------------------
 // interval schedule, replicating factor.cpp -q/-f semantics exactly:
 //   f == 0: q = q0 always;  f == 1: q += q0;  f > 1: q = round(f0*q0),
 //   f0 *= f.  Then clamp so the interval does not overshoot rhigh.
@@ -913,9 +988,11 @@ struct SParams {
     double sched_rho = 0;      // geometric floor ratio; 0 = default 1.25
     int verbose = 0;
     int pend_max = 4;
+    long hsnap_mb = 2048;      // RAM budget for fine-DDF h-table snapshots
     std::string ckpt_base;     // empty = no checkpointing
     double ckpt_secs = 15 * 60.0;
     long die_after_blocks = -1;   // test hook: simulate SIGTERM
+    long die_in_fine = -1;        // test hook: SIGTERM inside localize
 };
 
 struct ScanOut {
@@ -1026,30 +1103,90 @@ static void do_block(TsGPU &G, int verbose) {
 // exactly like factor.cpp's fineDDF mode.  Returns the final captured
 // gcd (all of whose factors lie in the final sub-interval), or sets
 // range_only.
-static bool localize(TsGPU &G, GcdPool &pool, const SParams &P, u64 /*r*/,
+static bool localize(TsGPU &G, GcdPool &pool, const SParams &P, u64 r,
                      std::shared_ptr<const std::vector<u64>> T,
                      u64 ka, long q, u64 &gseq,
                      std::vector<u64> &g_out, u64 &gdeg_out,
-                     u64 &ka_out, u64 &kb_out) {
+                     u64 &ka_out, u64 &kb_out,
+                     const std::vector<u64> *h_at_ka) {
     if (P.verbose) {
         printf("Entering fine DDF mode: localize in %" PRIu64 "..%" PRIu64
                "\n", ka, ka + (u64)q * G.m - 1);
         fflush(stdout);
     }
-    double t0 = trin_now_s();
-    G.init_h_at(ka);
-    CUCHK(cudaDeviceSynchronize());
-    if (P.verbose) {
-        printf("Re-exponentiation took %f\n", trin_now_s() - t0);
-        fflush(stdout);
-    }
-    G.need_hold();
     u64 kcur = ka;
     long qcur = q;
-    std::vector<u64> hostA;
+    bool have_h = false;
+    // (a) an interrupted localization of this very interval?
+    if (!P.ckpt_base.empty()) {
+        FineHdr FH;
+        std::vector<u64> fh;
+        if (load_fine(P.ckpt_base, FH, fh) && FH.r == r && FH.s == G.s &&
+            FH.skip == P.skip && FH.m == (u64)G.m && FH.nw == (u64)G.nw &&
+            FH.ka0 == ka && FH.q0 == (u64)q && FH.kcur >= ka &&
+            FH.kcur + FH.qcur * FH.m <= ka + (u64)q * G.m) {
+            G.h_from_host(fh);
+            kcur = FH.kcur;
+            qcur = (long)FH.qcur;
+            have_h = true;
+            if (P.verbose) {
+                printf("Resuming fine DDF from its checkpoint at %" PRIu64
+                       " (q %ld) -- re-exponentiation skipped\n",
+                       kcur, qcur);
+                fflush(stdout);
+            }
+        }
+    }
+    // (b) the snapshot the scan took when this interval began
+    if (!have_h && h_at_ka && h_at_ka->size() == (size_t)G.m * G.nw) {
+        G.h_from_host(*h_at_ka);
+        have_h = true;
+        if (P.verbose) {
+            printf("Using the h-table saved at the interval start "
+                   "-- re-exponentiation skipped\n");
+            fflush(stdout);
+        }
+    }
+    // (c) last resort: rebuild from scratch (ka*m squarings -- hours at
+    //     production scale; only reachable with --hsnap-mb 0, with a
+    //     snapshot budget too small for the pending queue, or after a
+    //     resume with no fine checkpoint)
+    if (!have_h) {
+        double t0 = trin_now_s();
+        G.init_h_at(ka);
+        CUCHK(cudaDeviceSynchronize());
+        if (P.verbose) {
+            printf("Re-exponentiation took %f\n", trin_now_s() - t0);
+            fflush(stdout);
+        }
+    }
+    G.need_hold();
+    std::vector<u64> hostA, hsave;
     for (;;) {
         long qfirst = (qcur == 1) ? 1 : qcur - qcur / 2;
         G.copy_h(G.dHold, G.dH[G.hcur]);
+        // mirror the window to disk before spending hours inside it
+        if (!P.ckpt_base.empty()) {
+            FineHdr FH;
+            memset(&FH, 0, sizeof(FH));
+            FH.r = r; FH.s = G.s; FH.skip = P.skip;
+            FH.m = (u64)G.m; FH.nw = (u64)G.nw;
+            FH.ka0 = ka; FH.q0 = (u64)q;
+            FH.kcur = kcur; FH.qcur = (u64)qcur;
+            G.h_to_host(hsave);
+            save_fine(P.ckpt_base, FH, hsave, P.verbose);
+            if (P.die_in_fine >= 0 && --((SParams &)P).die_in_fine < 0)
+                g_stop = 1;                      // test hook
+        }
+        // With the window on disk, localization is now interruptible: a
+        // resumed run picks it up here instead of restarting the hours of
+        // rebuild + rescan that used to be required.
+        if (g_stop && !P.ckpt_base.empty()) {
+            ka_out = kcur;
+            kb_out = kcur + (u64)qcur * G.m - 1;
+            gdeg_out = 0;
+            return false;                        // caller -> INTERRUPTED
+        }
         G.reset_A();
         for (long b = 0; b < qfirst; b++) do_block(G, P.verbose);
         CUCHK(cudaDeviceSynchronize());
@@ -1071,11 +1208,13 @@ static bool localize(TsGPU &G, GcdPool &pool, const SParams &P, u64 /*r*/,
                 gdeg_out = R.gdeg;
                 ka_out = kcur;
                 kb_out = kb;
+                remove_fine(P.ckpt_base);
                 return true;
             }
             if (qfirst == 1) {          // cannot refine further, uncaptured
                 ka_out = kcur;
                 kb_out = kb;
+                remove_fine(P.ckpt_base);
                 return false;
             }
             G.copy_h(G.dH[G.hcur], G.dHold);   // back to state at kcur
@@ -1087,6 +1226,7 @@ static bool localize(TsGPU &G, GcdPool &pool, const SParams &P, u64 /*r*/,
                 fflush(stderr);
                 ka_out = kcur;
                 kb_out = kb;
+                remove_fine(P.ckpt_base);
                 return false;
             }
             kcur += (u64)qfirst * G.m;         // h is already there
@@ -1159,14 +1299,21 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         if (P.Zq && Q.q > P.Zq) Q.q = P.Zq;
     }
 
-    struct Pend { u64 seq, ka, kb; long q; };
+    struct Pend { u64 seq, ka, kb; long q;
+                  std::shared_ptr<std::vector<u64>> h0; };
     std::deque<Pend> pending;
     u64 vf = k;                // verified frontier: all degrees < vf clear
 
     // checkpoint candidate: h at the start of an interval whose
     // predecessors were all verified at snapshot time
-    struct Cand { bool valid = false; u64 k_iv = 0; long q = 0; double f0 = 1; 
-                  std::vector<u64> h; } cand;
+    struct Cand { bool valid = false; u64 k_iv = 0; long q = 0; double f0 = 1;
+                  std::shared_ptr<std::vector<u64>> h; } cand;
+    // h-table snapshots kept so that a hit can be localized without
+    // rebuilding the table (see FineHdr).  One per interval with an
+    // outstanding gcd; bounded by --hsnap-mb.
+    const double snap_mb = (double)G.m * G.nw * 8.0 / (1024 * 1024);
+    long nsnap_max = (P.hsnap_mb <= 0) ? 0 : (long)(P.hsnap_mb / snap_mb);
+    if (P.hsnap_mb > 0 && nsnap_max < 1) nsnap_max = 1;
     double last_ckpt = trin_now_s();
     long blocks_done_hook = 0;
 
@@ -1187,9 +1334,9 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
             long b = blocks_done_hook;
             if (b > 0) { H.blk = (u64)b; H.has_A = 1; G.A_to_host(aa); }
             save_ckpt(P.ckpt_base, H, hh, aa, P.verbose);
-        } else if (cand.valid) {
+        } else if (cand.valid && cand.h) {
             H.k_iv = cand.k_iv; H.blk = 0; H.q = (u64)cand.q; H.f0 = 0;
-            save_ckpt(P.ckpt_base, H, cand.h, aa, P.verbose);
+            save_ckpt(P.ckpt_base, H, *cand.h, aa, P.verbose);
         } else if (exiting && P.verbose) {
             fprintf(stderr, "  [no verified state to checkpoint; s=%" PRIu64
                     " will restart from scratch on resume]\n", s);
@@ -1197,31 +1344,15 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         last_ckpt = trin_now_s();
     };
 
-    // returns 1 if factor resolved (out filled), 0 for clear verdicts
-    auto consume_verdict = [&](const Pend &pv, GcdRes &R) -> int {
-        if (P.verbose) {
-            printf("   gcd %" PRIu64 "..%" PRIu64 " took %f%s\n",
-                   pv.ka, pv.kb, R.secs, R.gdeg ? "  ** HIT **" : "");
-            fflush(stdout);
-        }
-        if (R.gdeg == 0) {
-            vf = pv.kb + 1;
-            return 0;
-        }
-        // hit: stop speculation, resolve
-        pool.forget_all_pending();
-        pending.clear();
-        std::vector<u64> g;
-        u64 gdeg = R.gdeg, rka = pv.ka, rkb = pv.kb;
-        bool have_g = false;
-        if (!R.g.empty() && (R.gdeg < P.canzass_max || R.gdeg < 2 * pv.ka)) {
-            g = std::move(R.g);
-            have_g = true;
-        } else {
-            have_g = localize(G, pool, P, r, T, pv.ka, pv.q, gseq,
-                              g, gdeg, rka, rkb);
-        }
+    // resolve a localized hit into a result (shared by the verdict path
+    // and by the fine-DDF resume path below)
+    auto finish_hit = [&](bool have_g, std::vector<u64> &g, u64 gdeg,
+                          u64 rka, u64 rkb) -> int {
         if (!have_g) {
+            if (g_stop) {            // interrupted mid-localization; the
+                out.kind = ScanOut::INTERRUPTED;   // fine checkpoint holds
+                return 1;                          // the window
+            }
             out.kind = ScanOut::RANGE;
             out.rlo = rka;
             out.rhi = rkb;
@@ -1255,7 +1386,63 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         return 1;
     };
 
+    // returns 1 if factor resolved (out filled), 0 for clear verdicts
+    auto consume_verdict = [&](const Pend &pv, GcdRes &R) -> int {
+        if (P.verbose) {
+            printf("   gcd %" PRIu64 "..%" PRIu64 " took %f%s\n",
+                   pv.ka, pv.kb, R.secs, R.gdeg ? "  ** HIT **" : "");
+            fflush(stdout);
+        }
+        if (R.gdeg == 0) {
+            vf = pv.kb + 1;
+            return 0;
+        }
+        // hit: stop speculation, resolve
+        pool.forget_all_pending();
+        pending.clear();
+        std::vector<u64> g;
+        u64 gdeg = R.gdeg, rka = pv.ka, rkb = pv.kb;
+        bool have_g = false;
+        if (!R.g.empty() && (R.gdeg < P.canzass_max || R.gdeg < 2 * pv.ka)) {
+            g = std::move(R.g);
+            have_g = true;
+        } else {
+            have_g = localize(G, pool, P, r, T, pv.ka, pv.q, gseq,
+                              g, gdeg, rka, rkb, pv.h0.get());
+        }
+        return finish_hit(have_g, g, gdeg, rka, rkb);
+    };
+
+    // A fine-DDF localization interrupted by a crash, reboot or SIGTERM
+    // resumes directly: every degree below the hit interval was verified
+    // clear before it began, so nothing needs rescanning.
+    bool fine_resumed = false;
+    if (!P.ckpt_base.empty()) {
+        FineHdr FH;
+        std::vector<u64> fh;
+        if (load_fine(P.ckpt_base, FH, fh) && FH.r == r && FH.s == s &&
+            FH.skip == P.skip && FH.m == (u64)G.m && FH.nw == (u64)G.nw &&
+            FH.q0 && FH.ka0 > P.skip) {
+            fh.clear();
+            fh.shrink_to_fit();          // localize reloads it itself
+            if (P.verbose) {
+                printf("Found an interrupted fine DDF for s=%" PRIu64
+                       " in %" PRIu64 "..%" PRIu64 "; resuming it\n", s,
+                       FH.ka0, FH.ka0 + FH.q0 * (u64)G.m - 1);
+                fflush(stdout);
+            }
+            std::vector<u64> g;
+            u64 gdeg = 0, rka = FH.ka0;
+            u64 rkb = FH.ka0 + FH.q0 * (u64)G.m - 1;
+            bool have_g = localize(G, pool, P, r, T, FH.ka0, (long)FH.q0,
+                                   gseq, g, gdeg, rka, rkb, nullptr);
+            finish_hit(have_g, g, gdeg, rka, rkb);
+            fine_resumed = true;
+        }
+    }
+
     // main interval loop
+    if (!fine_resumed)
     for (;;) {
         if (k > rhigh) break;
         long q = Q.q;
@@ -1291,10 +1478,22 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
             printf("Interval %" PRIu64 "..%" PRIu64 ":\n", k, k2);
             fflush(stdout);
         }
-        if (!resumed && vf == k) {              // snapshot for checkpointing
+        // h at the interval start: the state fine DDF would otherwise have
+        // to rebuild, and (when everything behind us is verified) also the
+        // checkpoint candidate.  blk0 != 0 means we resumed INTO this
+        // interval, so the device h is past its start and must not be kept.
+        std::shared_ptr<std::vector<u64>> h0;
+        bool need_cand = (!resumed && vf == k);
+        bool keep_h0 = (blk0 == 0 && nsnap_max > 0 &&
+                        (long)pending.size() + 1 <= nsnap_max);
+        if (keep_h0 || need_cand) {
+            h0 = std::make_shared<std::vector<u64>>();
+            G.h_to_host(*h0);
+        }
+        if (need_cand) {
             cand.valid = true;
             cand.k_iv = k; cand.q = q; cand.f0 = 0;
-            G.h_to_host(cand.h);
+            cand.h = h0;
         }
         double iv_t0 = trin_now_s(), iv_poll = 0;
         for (long b = blk0; b < q; b++) {
@@ -1339,7 +1538,9 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         G.A_to_host(hostA);
         u64 id = gseq++;
         pool.submit(id, hostA, T);
-        pending.push_back(Pend{id, k, k2, q});
+        pending.push_back(Pend{id, k, k2, q,
+                               keep_h0 ? h0
+                                       : std::shared_ptr<std::vector<u64>>()});
         G.reset_A();
         resumed = false;
         blk0 = 0;
@@ -1360,7 +1561,8 @@ static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
         GcdRes R = pool.wait_get(pv.seq);
         if (consume_verdict(pv, R)) goto done;
     }
-    out.kind = maxd_limited ? ScanOut::GAVE_UP : ScanOut::PRIMITIVE;
+    if (!fine_resumed)
+        out.kind = maxd_limited ? ScanOut::GAVE_UP : ScanOut::PRIMITIVE;
 
 done:
     if (out.kind != ScanOut::INTERRUPTED) pool.forget_all_pending();
@@ -1708,7 +1910,11 @@ static int selftest(int gcd_threads) {
             P.canzass_max = 1;
             P.verbose = 0;
             u64 mism = 0;
-            for (size_t i = 0; i < surv.size(); i += 3) {
+            // both localize entry paths must agree: reusing the h-table
+            // snapshot taken at the interval start, and rebuilding it
+            for (int hs = 0; hs < 2; hs++) {
+              P.hsnap_mb = hs ? 0 : 2048;
+              for (size_t i = 0; i < surv.size(); i += 3) {
                 u64 sv = surv[i];
                 ScanOut res = scan_one_s(G, pool, P, rr, sv, gseq, nullptr);
                 const OracleOut &o = want[sv];
@@ -1718,8 +1924,9 @@ static int selftest(int gcd_threads) {
                 if (okk && o.found && o.mask_ok)
                     okk = res.hex == mask_hex(o.mask);
                 if (!okk) mism++;
+              }
             }
-            printf("fineDDF bisection path (forced)                    %s\n",
+            printf("fineDDF bisection path (forced, both h paths)      %s\n",
                    mism ? "FAIL" : "PASS");
             if (mism) bad++;
             G.fini();
@@ -1807,6 +2014,73 @@ static int selftest(int gcd_threads) {
             printf("checkpoint kill/resume equivalence                 %s\n",
                    okk ? "PASS" : "FAIL");
             if (!okk) bad++;
+        }
+
+        // (7b) fine DDF interrupted mid-localization and resumed from its
+        //      standby checkpoint -- the state that otherwise costs
+        //      ka*m squarings (hours at production scale) to rebuild
+        {
+            const char *fb = "/tmp/tsfactor_fine.ckpt";
+            auto wipe = [&] {
+                remove(fb);
+                remove((std::string(fb) + ".1").c_str());
+                remove((std::string(fb) + ".2").c_str());
+                remove_fine(fb);
+            };
+            TsGPU G;
+            G.init(rr);
+            G.set_m(5);
+            SParams P;
+            P.skip = skip; P.maxd = maxd; P.q0 = 4;
+            P.canzass_max = 1;                 // force the fineDDF path
+            P.verbose = 0;
+            P.ckpt_base = fb;
+            P.ckpt_secs = 1e9;
+            // find an s whose hit actually goes through localize
+            u64 deep_s = 0, deep_d = 0;
+            int tries = 0;
+            for (auto &kv : want) {
+                if (!kv.second.found || kv.second.d <= 40) continue;
+                if (++tries > 40) break;
+                wipe();
+                SParams P2 = P;
+                P2.die_in_fine = 0;
+                ScanOut r1 = scan_one_s(G, pool, P2, rr, kv.first, gseq,
+                                        nullptr);
+                g_stop = 0;
+                if (r1.kind == ScanOut::INTERRUPTED) {
+                    deep_s = kv.first; deep_d = kv.second.d; break;
+                }
+            }
+            bool okk = (deep_s != 0);
+            u64 nres = 0;
+            for (long kill = 0; okk && kill < 3; kill++) {
+                wipe();
+                SParams P2 = P;
+                P2.die_in_fine = kill;
+                ScanOut r1 = scan_one_s(G, pool, P2, rr, deep_s, gseq,
+                                        nullptr);
+                g_stop = 0;
+                if (r1.kind != ScanOut::INTERRUPTED) {   // finished first
+                    okk = okk && r1.kind == ScanOut::FOUND &&
+                          r1.d == deep_d;
+                    continue;
+                }
+                // fresh process would see only the standby file
+                ScanOut r2 = scan_one_s(G, pool, P, rr, deep_s, gseq,
+                                        nullptr);
+                g_stop = 0;
+                nres++;
+                okk = okk && r2.kind == ScanOut::FOUND && r2.d == deep_d;
+                if (!okk)
+                    printf("  fine kill@%ld: kind=%d d=%" PRIu64 " want %"
+                           PRIu64 "\n", kill, (int)r2.kind, r2.d, deep_d);
+            }
+            wipe();
+            G.fini();
+            printf("fine DDF interrupt/resume (%" PRIu64 " resumed)       "
+                   "      %s\n", nres, okk && nres ? "PASS" : "FAIL");
+            if (!okk || !nres) bad++;
         }
 
         // (8) hybrid HGCD gcd vs NTL gcd: CPU-mult and GPU-hook paths,
@@ -2170,6 +2444,11 @@ static void usage() {
         "                  ~ 63 s / 15.8 ms); tune from --bench numbers\n"
         "  --sched-rho R   geometric floor for the opt schedule's deep\n"
         "                  tail (default 1.25)\n"
+        "  --hsnap-mb N    RAM for h-table snapshots (default 2048).  A\n"
+        "                  snapshot lets a deep hit be localized without\n"
+        "                  rebuilding the h-table (hours at r=136M); one\n"
+        "                  is kept per interval with an outstanding gcd.\n"
+        "                  0 disables them (restores the old rebuild)\n"
         "  --selftest-reps N   repeat --selftest N times (races in the\n"
         "                  GPU/pool interaction are intermittent; a\n"
         "                  single clean run proves less than a loop)\n"
@@ -2234,6 +2513,7 @@ int main(int argc, char **argv) {
             gcd_min_bits_opt = strtoull(need("--gpu-gcd-min-bits"), 0, 10);
         else if (a == "--bench-gcd") bench_gcd = true;
         else if (a == "--pend-max") P.pend_max = atoi(need("--pend-max"));
+        else if (a == "--hsnap-mb") P.hsnap_mb = atol(need("--hsnap-mb"));
         else if (a == "--die-after-blocks")
             P.die_after_blocks = atol(need("--die-after-blocks"));
         else if (a == "-v") P.verbose++;
@@ -2463,6 +2743,13 @@ int main(int argc, char **argv) {
                 "q/depth): h-tables %.0f MB, FFT %.0f MB, scratch %.0f MB"
                 "%s\n", htab, fft, scr,
                 gpu_gcd ? ", +gcd hook ~610 MB" : "");
+        double snap = (double)G.m * G.nw * 8 * mb;
+        long nsn = (P.hsnap_mb <= 0) ? 0 : (long)(P.hsnap_mb / snap);
+        if (P.hsnap_mb > 0 && nsn < 1) nsn = 1;
+        fprintf(stderr, "host memory: h-table snapshot %.0f MB each, up to "
+                "%ld kept (--hsnap-mb %ld)%s\n", snap, nsn, P.hsnap_mb,
+                nsn >= P.pend_max + 1 ? "" :
+                "  [< pend-max+1: a deep hit may need the slow rebuild]");
     }
     if (P.q0 <= 0) P.q0 = (long)((600 + m - 1) / m);
     if (P.sched_opt)
