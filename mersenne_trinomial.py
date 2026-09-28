@@ -138,7 +138,7 @@ def read_config():
     new_ranges = []
     new_params = {
         'm': 14,
-        'q': 15,
+        'q': 16,
         'batchsize': 10,
         'instances': 1,
         'sched_g_global': None,
