@@ -1,0 +1,387 @@
+--- a/coarse_sieve.cu
++++ b/coarse_sieve.cu
+@@ -73,11 +73,11 @@
+ // Env:    COARSE_FORCE_BUCKETS=N forces the bucketed path with N buckets for
+ //         every degree (manual override / testing).
+ // Degrees: narrow build supports d <= 32 (elements fit u32, modulus u64);
+-//         the -DWIDE_FIELD build supports d <= 63 (u64 elements, 128-bit
+-//         products).  The survivor list uses a 32-bit counter, so d <= 37
+-//         until that is widened.  Memory in the wide build: at d=33 the
+-//         low-memory path fits ~5.5 GB on an 8 GB card (64 buckets) or
+-//         ~12.5 GB on a 16 GB card (8 buckets); d=34 needs 16 GB.
++//         the -DWIDE_FIELD build's arithmetic supports d <= 63 (u64
++//         elements, 128-bit products), but the packed best[] key
++//         (d << 48) | mask caps the program at d <= 47 (main() enforces
++//         both limits).  Low-memory mode fits any degree into any card by
++//         raising the bucket count; see the cost note in LOW-MEMORY MODE.
+ // Outputs: <prefix>.survivors.txt is written by default (--no-survivors
+ //         suppresses it); it is just the list of s with no factor of
+ //         degree <= depth, which is exactly the set of s missing from
+@@ -144,7 +144,18 @@
+ // `nbuckets` full-domain passes to rebuild each L-slice (runtime scales
+ // roughly linearly in nbuckets, so use the fewest buckets that fit).
+ // run_gpu() picks the smallest nbuckets that fits free device memory
+-// automatically; --selftest-lowmem lets you force a specific value.
++// automatically (any count, not just powers of two); --selftest-lowmem lets
++// you force a specific value.
++//
++// COST NOTE.  Total work is ~nbuckets * 2^d sweep steps, and nbuckets itself
++// grows like 2^d / VRAM, so each degree costs ~4x the previous one -- every
++// instruction in the sweep's inner loop is multiplied by nbuckets.  The sweep
++// therefore walks g^i by LFSR stepping (g = x: one shift + one conditional
++// XOR per element, seeded once per run of ANTILOG_RUN_MAX elements).  It
++// used to recompute each g^i from scratch with ~d/2 bit-serial field
++// multiplies, which was ~1000x more expensive and accounted for essentially
++// all of the measured d >= 33 runtime (e.g. 346 s per bucket at d=36 on an
++// RTX 2070 SUPER = 5.0 ns per element per bucket).
+ 
+ #if defined(WIDE_FIELD)
+   #include "gf2_wide_field.h"
+@@ -206,23 +217,92 @@
+ #define MULMOD(a, b, m) (((u64)(a) * (u64)(b)) % (u64)(m))
+ #endif
+ 
++// (a*b) mod M for the Mersenne-form modulus M = 2^d - 1 (d <= 63), with
++// a, b < M.  Since 2^d == 1 (mod M) the 2d-bit product folds at bit d:
++// p mod M == (p & M) + (p >> d).  About 20 instructions instead of the
++// ~36-iteration double-and-add loop of mulmod_u64, which ran once per L-slice
++// slot in k_resolve_slice.  (Used only where the modulus is M itself; the
++// progression moduli n = M/gg keep MULMOD.)
++GF2_HD u64 mulmod_mersenne(u64 a, u64 b, int d, u64 M) {
++#if defined(__CUDA_ARCH__)
++    u64 lo = a * b, hi = __umul64hi(a, b);
++#else   // portable 64x64 -> 128 (host/emulation path; no __int128 needed)
++    u64 a0 = (u32)a, a1 = a >> 32, b0 = (u32)b, b1 = b >> 32;
++    u64 p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
++    u64 mid = (p00 >> 32) + (u32)p01 + (u32)p10;
++    u64 lo = (mid << 32) | (u32)p00;
++    u64 hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
++#endif
++    // p < 2^(2d), so p >> d < 2^d fits in 64 bits; for d <= 32 hi == 0
++    u64 t = (lo & M) + ((lo >> d) | (d < 64 ? (hi << (64 - d)) : 0));
++    t = (t & M) + (t >> d);
++    if (t >= M) t -= M;
++    return t;
++}
++
++// True if some best[s'] on the progression s, s+n, ... <= smax can still be
++// lowered by a degree-d key.  Every degree-d key is >= (d << 48); entries
++// already below that (a smaller-degree factor, or the 0 sentinel that
++// --load-survivors uses for non-survivors) can never change, and best[] only
++// ever decreases (atomicMin), so a stale read can only cause extra work,
++// never a wrong skip.  Lets the caller skip the d^2-multiply minimal
++// polynomial for the ~95% of in-range hits that land on s values which
++// already have a smaller factor.
++GF2_HD bool progression_open(const ull *best, u64 s, u64 n, u64 smax, int d) {
++    const ull floor_d = (ull)d << 48;
++    for (; s <= smax; s += n)
++        if (best[s] >= floor_d) return true;
++    return false;
++}
++
++// Elements per thread in the antilog sweeps (k_antilog, k_build_lslice).
++// Each thread computes ONE seed g^i0 with d_antilog() (~d/2 field
++// multiplies), then walks g^(i+1) = x * g^i with gf_mulx -- one shift and
++// one conditional XOR -- since g = x for the primitive modulus.  The
++// previous kernels recomputed every g^i from scratch (~d/2 bit-serial
++// multiplies, ~20k GPU instructions per element at d=36), and the low-memory
++// path did that for the whole 2^d domain once PER BUCKET, which was ~all of
++// its runtime.
++#define ANTILOG_RUN_MAX 16384
++static u64 antilog_run_len(u64 M64) {
++    u64 run = 64;   // keep >= ~2^20 runs for parallelism, amortize the seed
++    while (run < ANTILOG_RUN_MAX && M64 / run > ((u64)1 << 20)) run <<= 1;
++    return run;
++}
++
+ // ---------------------------------------------------------------------------
+ // kernels
+-// antilog table: A[i] = g^i computed from the precomputed squares
+-// gpow2[t] = g^(2^t); i's set bits select which squares to multiply.
+-__global__ void k_antilog(fw *A, u64 M64, u64 q, int d, const fw *gpow2) {
+-    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
++// g^idx computed on the fly from the (tiny, size-d) gpow2 chain, i.e.
++// gpow2[t] = g^(2^t): one field multiply per set bit of idx.  Used only for
++// run seeds and rare per-class lookups -- never per element of a sweep.
++GF2_HD fw d_antilog(u64 idx, u64 q, int d, const fw *gpow2) {
++    fw v = 1;
++    u64 bits = idx;
++    int t = 0;
++    while (bits) {
++        if (bits & 1) v = gf_mul(v, gpow2[t], q, d);
++        bits >>= 1;
++        t++;
++    }
++    return v;
++}
++
++// antilog table: A[i] = g^i.  Each thread owns runs of `run` consecutive
++// exponents: one d_antilog() seed per run, then gf_mulx steps (see
++// ANTILOG_RUN_MAX above).
++__global__ void k_antilog(fw *A, u64 M64, u64 q, int d, const fw *gpow2,
++                          u64 run) {
++    const u64 nruns = (M64 + run - 1) / run;
++    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+     u64 stride = (u64)gridDim.x * blockDim.x;
+-    for (; i < M64; i += stride) {
+-        fw v = 1;
+-        u64 bits = i;
+-        int t = 0;
+-        while (bits) {
+-            if (bits & 1) v = gf_mul(v, gpow2[t], q, d);
+-            bits >>= 1;
+-            t++;
++    for (; rr < nruns; rr += stride) {
++        u64 i = rr * run;
++        u64 iend = i + run; if (iend > M64) iend = M64;
++        fw a = d_antilog(i, q, d, gpow2);
++        for (; i < iend; i++) {
++            A[i] = a;
++            a = gf_mulx(a, q, d);
+         }
+-        A[i] = v;
+     }
+ }
+ 
+@@ -246,12 +326,8 @@
+ 
+     for (; j64 < M64; j64 += stride) {
+         fw j = (fw)j64;
+-        // skip proper-subfield elements
+-        bool skip = false;
+-        for (int k = 0; k < nsub; k++)
+-            if (j64 % subq[k] == 0) { skip = true; break; }
+-        if (skip) continue;
+-        // only the minimal element of each cyclotomic coset
++        // only the minimal element of each cyclotomic coset (cheap test
++        // first: it rejects (d-1)/d of all j after ~2 rotations)
+         fw jj = j;
+         bool minimal = true;
+         for (int i = 1; i < d; i++) {
+@@ -259,8 +335,13 @@
+             if (jj < j) { minimal = false; break; }
+         }
+         if (!minimal) continue;
++        // skip proper-subfield elements
++        bool skip = false;
++        for (int k = 0; k < nsub; k++)
++            if (j64 % subq[k] == 0) { skip = true; break; }
++        if (skip) continue;
+ 
+-        u64 u = MULMOD(j64, rmod, M64);
++        u64 u = mulmod_mersenne(j64, rmod, d, M64);
+         if (u == 0) continue;                     // beta^r = 1: no solutions
+         fw v = L[A[u] ^ 1u];                       // Zech logarithm
+ 
+@@ -269,14 +350,19 @@
+         u64 n = M64 / gg;
+         u64 s0 = MULMOD(inv_mod(j64 / gg, n), (u64)v / gg, n);
+ 
++        u64 s = (s0 == 0 ? n : s0);
++        if (s > smax) continue;
++        u64 count = (smax - s) / n + 1;
++        if (count <= INLINE_MARKS && !progression_open(best, s, n, smax, d))
++            continue;                             // nothing left to improve
++
++        // minimal polynomial only for in-range, still-improvable hits (it
++        // was previously computed for every class, before the range test)
+         u64 mask = minpoly_mask(j, d, M, q, A, P);
+         // mask == 0 would mean non-GF(2) coefficients: impossible if the
+         // tables are right; validated exhaustively on CPU.
+         u64 packed = ((u64)d << 48) | mask;
+ 
+-        u64 s = (s0 == 0 ? n : s0);
+-        if (s > smax) continue;
+-        u64 count = (smax - s) / n + 1;
+         if (count <= INLINE_MARKS) {
+             for (; s <= smax; s += n) atomicMin(&best[s], (ull)packed);
+         } else {
+@@ -319,21 +405,6 @@
+ // fw is u32 in the narrow build (8 bytes/survivor) and u64 in the wide
+ // build (16 bytes/survivor, since j and x range up to 2^d-1 for d up to 63).
+ 
+-// g^idx computed on the fly from the (tiny, size-d) gpow2 chain, i.e.
+-// gpow2[t] = g^(2^t). Identical arithmetic to k_antilog's inner loop,
+-// just usable for one arbitrary index instead of the whole table.
+-GF2_HD fw d_antilog(u64 idx, u64 q, int d, const fw *gpow2) {
+-    fw v = 1;
+-    u64 bits = idx;
+-    int t = 0;
+-    while (bits) {
+-        if (bits & 1) v = gf_mul(v, gpow2[t], q, d);
+-        bits >>= 1;
+-        t++;
+-    }
+-    return v;
+-}
+-
+ // Same result as minpoly_mask(), but seeded with a single root value
+ // (g^j) and advanced by repeated squaring instead of indexing a stored
+ // antilog table -- squaring a field element doubles its discrete log,
+@@ -365,13 +436,24 @@
+ // Phase B, step 1: build only the L slice covering value range [lo, hi).
+ // Same computation as k_antilog+k_logscatter fused together, just
+ // filtered to one output range instead of writing a full-size table.
++// This sweeps the WHOLE 2^d domain once per bucket, so its per-element cost
++// is multiplied by nbuckets: hence run-based LFSR stepping (one d_antilog
++// seed per run, then gf_mulx), never a per-element d_antilog.
+ __global__ void k_build_lslice(int d, u64 M64, u64 q, const fw *gpow2,
+-                               u64 lo, u64 hi, fw *lslice) {
+-    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
++                               u64 lo, u64 hi, fw *lslice, u64 run) {
++    const u64 nruns = (M64 + run - 1) / run;
++    const u64 span = hi - lo;
++    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+     u64 stride = (u64)gridDim.x * blockDim.x;
+-    for (; i < M64; i += stride) {
+-        fw Ai = d_antilog(i, q, d, gpow2);
+-        if ((u64)Ai >= lo && (u64)Ai < hi) lslice[(u64)Ai - lo] = (fw)i;
++    for (; rr < nruns; rr += stride) {
++        u64 i = rr * run;
++        u64 iend = i + run; if (iend > M64) iend = M64;
++        fw a = d_antilog(i, q, d, gpow2);
++        for (; i < iend; i++) {
++            u64 off = (u64)a - lo;              // wraps (huge) when a < lo
++            if (off < span) lslice[off] = (fw)i;
++            a = gf_mulx(a, q, d);
++        }
+     }
+ }
+ 
+@@ -409,17 +491,16 @@
+     u64 t = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+     u64 stride = (u64)gridDim.x * blockDim.x;
+     fw P[64];
+-
++    unsigned long long my_surv = 0;           // one atomic per thread, not
++                                              // one per class (2^d/d of them)
+     for (; t < span; t += stride) {
+         fw vu = lslice[t];
+         if (vu == EMPTY) continue;            // element 0 has no discrete log
+-        u64 j64 = MULMOD((u64)vu, rmodinv, M64);
++        u64 j64 = mulmod_mersenne((u64)vu, rmodinv, d, M64);
+         if (j64 == 0) continue;               // u == 0 <-> j == 0, not a class
+ 
+-        bool skip = false;
+-        for (int k = 0; k < nsub; k++)
+-            if (j64 % subq[k] == 0) { skip = true; break; }
+-        if (skip) continue;
++        // coset-minimality first: it rejects (d-1)/d of all slots after ~2
++        // rotations on average, before the 64-bit modulo of the subfield test
+         fw j = (fw)j64;
+         fw jj = j;
+         bool minimal = true;
+@@ -428,7 +509,11 @@
+             if (jj < j) { minimal = false; break; }
+         }
+         if (!minimal) continue;
+-        atomicAdd(nsurv, 1ULL);               // counted where Phase A used to
++        bool skip = false;
++        for (int k = 0; k < nsub; k++)
++            if (j64 % subq[k] == 0) { skip = true; break; }
++        if (skip) continue;
++        my_surv++;                            // counted where Phase A used to
+ 
+         fw v = lslice[t ^ 1ULL];              // log of x = (lo+t)^1
+         u64 gg = gcd_u64(j64, M64);
+@@ -438,12 +523,14 @@
+ 
+         u64 s = (s0 == 0 ? n : s0);
+         if (s > smax) continue;
++        u64 count = (smax - s) / n + 1;
++        if (count <= INLINE_MARKS && !progression_open(best, s, n, smax, d))
++            continue;                         // nothing left to improve
+ 
+         fw seed = d_antilog(j64, q, d, gpow2);            // = A[j]
+         u64 mask = d_minpoly_seeded(seed, d, q, P);
+         u64 packed = ((u64)d << 48) | mask;
+ 
+-        u64 count = (smax - s) / n + 1;
+         if (count <= INLINE_MARKS) {
+             for (; s <= smax; s += n) atomicMin(&best[s], (ull)packed);
+         } else {
+@@ -452,6 +539,7 @@
+             else atomicAdd(overflow, 1u);
+         }
+     }
++    if (my_surv) atomicAdd(nsurv, my_surv);
+ }
+ 
+ 
+@@ -886,8 +974,10 @@
+     }
+ 
+     int blocks, threads;
++    const u64 run = antilog_run_len(M64);
++    launch_dims((M64 + run - 1) / run, blocks, threads);
++    k_antilog<<<blocks, threads>>>(dA, M64, q, d, dgp, run);
+     launch_dims(M64, blocks, threads);
+-    k_antilog<<<blocks, threads>>>(dA, M64, q, d, dgp);
+     k_logscatter<<<blocks, threads>>>(dA, dL, M64);
+ 
+     unsigned zero = 0;
+@@ -945,11 +1035,19 @@
+ 
+ #define GPU_MEM_RESERVE (256ull << 20) // headroom for allocator/context overhead
+ 
+-// smallest power-of-two bucket count whose slice fits in `freeb` bytes.
++// smallest bucket count whose slice fits in `freeb` bytes.  Any count works
++// (slices are just even-aligned value ranges), and every bucket costs one
++// full-domain sweep, so rounding up to a power of two wasted up to ~2x
++// (e.g. d=36 on an 8 GB card needs 90 buckets but used 128).
+ static int pick_buckets(u64 M64, int d, size_t freeb) {
+     size_t budget = freeb > GPU_MEM_RESERVE ? freeb - GPU_MEM_RESERVE : 0;
+-    for (int nb = 1; nb <= (1 << 20); nb <<= 1)
+-        if (lowmem_need_bytes(M64, d, nb) <= budget) return nb;
++    if (budget < 8192) return 0;
++    u64 domain = M64 + 1;
++    u64 per = (budget - 4096) / sizeof(fw);         // slice entries that fit
++    u64 nb = per ? (domain + per - 1) / per : 0;
++    if (nb == 0) nb = 1;
++    for (; nb <= ((u64)1 << 20); nb++)              // absorb the even rounding
++        if (lowmem_need_bytes(M64, d, (int)nb) <= budget) return (int)nb;
+     return 0;
+ }
+ 
+@@ -1011,7 +1109,8 @@
+     ckpt_snapshot(d, start_bucket, nbuckets);
+ 
+     int blocks, threads;
+-    launch_dims(M64, blocks, threads);
++    const u64 run = antilog_run_len(M64);       // elements per thread-run
++    launch_dims((M64 + run - 1) / run, blocks, threads);
+ 
+     // progress bar: one dot per completed bucket (dots for buckets already
+     // done on resume are shown up front so the bar length always matches
+@@ -1050,7 +1149,7 @@
+             launch_dims(hi - lo, fblocks, fthreads);
+             k_fill_fw<<<fblocks, fthreads>>>(G.dlslice, hi - lo, LSLICE_EMPTY);
+             k_build_lslice<<<blocks, threads>>>(d, M64, q, G.dgp, lo, hi,
+-                                                G.dlslice);
++                                                G.dlslice, run);
+             CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
+             CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
+             int sblocks, sthreads;
+@@ -1349,6 +1448,22 @@
+     }
+     u64 r = strtoull(argv[1], 0, 10);
+     int depth = atoi(argv[2]);
++    // best[] keys are (d << 48) | mask and a degree-d mask needs d+1 bits
++    // (bit d is the leading coefficient), so d = 48 would spill into the
++    // degree field and corrupt both the min-ordering and the decoding.
++    if (depth > 47) {
++        fprintf(stderr, "depth %d unsupported: packed key (d<<48)|mask "
++                "holds d <= 47 (widen the key format first)\n", depth);
++        return 1;
++    }
++#if !defined(WIDE_FIELD)
++    if (depth > 32) {
++        fprintf(stderr, "depth %d needs the -DWIDE_FIELD build "
++                "(coarse_sieve_wide); this narrow build is u32, d <= 32\n",
++                depth);
++        return 1;
++    }
++#endif
+     // Positional smax is legacy: '<r> <depth> <smax> <out_prefix>'.  Detect it
+     // by argv[3] being a pure integer (an out_prefix never is).
+     bool legacy_smax = false;

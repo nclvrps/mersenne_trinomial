@@ -36,7 +36,7 @@
 // Build:  nvcc -O3 -arch=native -I../common -o coarse_sieve coarse_sieve.cu
 //         (narrow build: u32 field, fast, depths d <= 32)
 // Wide:   nvcc -O3 -arch=native -DWIDE_FIELD -I../common
-//              -o coarse_sieve_wide coarse_sieve.cu
+//              -o coarse_sieve_wide coarse_sieve.cu    (needs gf2_dlog.h)
 //         (u64 field via gf2_wide_field.h, depths d <= 63; slower per op,
 //          and needed for any d >= 33 since field elements and log values
 //          no longer fit in 32 bits.  Use the narrow binary for d <= 32.)
@@ -61,7 +61,9 @@
 //         with --checkpoint-mins <N>, every N minutes.  In low-memory mode
 //         the save happens at bucket boundaries (mid-degree), so at most one
 //         bucket is redone; on SIGTERM the in-flight bucket is abandoned
-//         within ~100ms so the ~30s reclaim budget is met.  Resume with
+//         within ~100ms so the ~30s reclaim budget is met.  In logs mode
+//         saves happen at chunk boundaries, and a stop waits for the
+//         in-flight chunk (seconds at most).  Resume with
 //         --resume <file> (which keeps checkpointing to the same file):
 //           ./coarse_sieve_wide <r> 34 <smax> out34 --found \
 //               --load out33.found.bin --min-depth 34 \
@@ -72,6 +74,18 @@
 //         already done on resume, '.' as each new bucket completes).
 // Env:    COARSE_FORCE_BUCKETS=N forces the bucketed path with N buckets for
 //         every degree (manual override / testing).
+//         COARSE_METHOD=auto|dense|buckets|logs|tower|ph overrides the per-
+//         degree method choice (A/B timing; "logs" = tower for even d,
+//         Pohlig-Hellman for odd d).  COARSE_LOGS_MAX_MB=n caps the VRAM
+//         used by logs-path tables (default: free memory minus the reserve
+//         and min(free/8, 512 MB) of slack; less only means more giant
+//         steps for the PH parts that do not fit whole).
+//         Tests only: COARSE_LOGS_CHUNK_LOG2=k caps logs-path chunks at 2^k
+//         values (a resume must use the same k); COARSE_SELFTEST_LOGS_DMAX
+//         limits the engine checks of --selftest-logs;
+//         COARSE_TEST_FAULT_EVERY=n corrupts the log of every class with
+//         u = 1 mod n (the run must then stop with "discrete-log
+//         consistency errors").
 // Degrees: narrow build supports d <= 32 (elements fit u32, modulus u64);
 //         the -DWIDE_FIELD build's arithmetic supports d <= 63 (u64
 //         elements, 128-bit products), but the packed best[] key
@@ -82,13 +96,15 @@
 //         suppresses it); it is just the list of s with no factor of
 //         degree <= depth, which is exactly the set of s missing from
 //         <prefix>.found.bin, so it can be reconstructed from --found.
-// Sizing: the dense per-degree tables need 8*2^d bytes at degree d
-//         (8.6 GB at d=30, 17.2 GB at d=31) plus 8*(smax+1) bytes for
+// Sizing: the dense per-degree tables need 8*2^d bytes at degree d in the
+//         narrow build and 16*2^d in the wide build (at d=30: 8.6 GB and
+//         17.2 GB), plus 8*(smax+1) bytes for
 //         best[] (545 MB at smax = 68,139,920).  The program checks
 //         free device memory before each degree and, once the dense
-//         tables no longer fit, automatically switches to a low-memory
-//         bucketed mode (see "LOW-MEMORY MODE" below) that trades
-//         runtime for memory instead of simply stopping.
+//         tables no longer fit, automatically switches -- in the wide
+//         build -- to the LOGS path (see "LOGS MODE" below: tables of only
+//         ~2^(d/2) entries, any VRAM), or if even those do not fit, to the
+//         bucketed low-memory mode (see "LOW-MEMORY MODE").
 // Selftest: --selftest runs r=136279841 depth=20 smax=999999 entirely
 //         on the GPU and compares every best[] entry against the CPU
 //         reference computed in-process.  --selftest-lowmem does the
@@ -96,6 +112,13 @@
 //         number of buckets, default 4) for every degree regardless of
 //         whether the dense tables would have fit, so the low-memory
 //         kernels get exercised and checked even at small, fast depths.
+//         --selftest-logs [logs|tower|ph] (wide build) forces the logs path
+//         instead, and additionally checks log(g^u) == u on the device for
+//         every u < min(2^d - 1, 2^24) at each degree; then, beyond the
+//         sieve's depth, it checks the chosen engine(s) on 2^20 exponents at
+//         every d = 21..47 and the necklace test against the all-rotations
+//         reference at every d <= 47 (gf2_dlog_selftest.cpp is the CPU
+//         counterpart).
 //
 // LOW-MEMORY MODE
 // ----------------
@@ -156,6 +179,36 @@
 // multiplies, which was ~1000x more expensive and accounted for essentially
 // all of the measured d >= 33 runtime (e.g. 346 s per bucket at d=36 on an
 // RTX 2070 SUPER = 5.0 ns per element per bucket).
+//
+// LOGS MODE (wide build; the default once dense tables do not fit)
+// ----------------------------------------------------------------
+// Buckets exist only because the method above materializes the full 2^d-
+// entry log table.  The sieve needs much less: ONE Zech logarithm
+// Z(u) = log(g^u + 1) per cyclotomic class.  The logs path computes that
+// log directly, from tables of ~2^(d/2) entries (gf2_dlog.h):
+//   tower (even d = 2m):  GF(2^d) = K(w), K = GF(2^m); a + b*w = b*(c + w),
+//          c = a/b, so log = (2^m+1) log_K(b) + T[c] with 2^m-entry tables
+//          (128 MB at d=46) and a GF(2)-linear split (byte tables).
+//   Pohlig-Hellman (odd d): M = 2^d - 1 = P_1 * P_2 split into coprime
+//          halves of ~2^(d/2); x^E_i lands in the order-P_i subgroup, a hash
+//          table gives log mod P_i, CRT combines.  E_i are chosen with few
+//          set bits in a low window; a part too large for the memory budget
+//          (d=31: M itself is prime; d=37: 616318177; d=41: 164511353 on an
+//          8 GB card) uses baby-step/giant-step.
+// One pass over u in [0, 2^(d-1)), odd u only: the representative of each
+// class is the coset-minimal u (minimal bit rotation, found by a necklace
+// test that looks only at u's longest zero runs), which is odd and below
+// 2^(d-1); g^u by LFSR stepping; any representative yields the same factor
+// and progression (see k_logs_sweep).  The progression start needs j^-1 mod
+// M, computed as j^(lambda(M)-1) (Carmichael exponent: at most 35 bits for
+// d <= 47, vs d bits for phi(M)).  Work is O(2^d) per degree instead of
+// O(4^d / VRAM); memory is
+// best[] + the tables.  The pass is cut into chunks of u-values (kernel
+// launches) for checkpointing; checkpoints record which method wrote them,
+// and resuming re-enters the same method.  Every computed log is range-
+// checked, 1 in 256 is re-verified (g^v == x), and any inconsistency stops
+// the run at the end of that round of chunks, before any output or
+// checkpoint could include it.
 
 #if defined(WIDE_FIELD)
   #include "gf2_wide_field.h"
@@ -165,6 +218,9 @@
   #include "gf2_field_setup.h"
 #endif
 #include <cuda_runtime.h>
+#if defined(WIDE_FIELD)
+  #include "gf2_dlog.h"
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -542,6 +598,223 @@ __global__ void k_resolve_slice(int d, u64 M64, u64 q, u64 rmodinv,
     if (my_surv) atomicAdd(nsurv, my_surv);
 }
 
+// logs-path engines (also the checkpoint method tags)
+enum { LM_NONE = 0, LM_TOWER = 1, LM_PH = 2 };
+
+#if defined(WIDE_FIELD)
+// ---------------------------------------------------------------------------
+// LOGS PATH (wide build): no 2^d tables and no buckets.  See "LOGS MODE" in
+// the header comment and gf2_dlog.h.  One pass over u in [0, 2^(d-1)):
+//   * every cyclotomic class has exactly one coset-minimal u (minimal under
+//     u -> 2u mod M, i.e. bit rotation), and that u is odd and < 2^(d-1);
+//   * any representative gives the same factor and progression: with
+//     u' = 2^i u and Z(2u) = 2 Z(u), the congruence j's == Z(u') reduces to
+//     j s == Z(u) because 2 is invertible mod M;  gcd(j, M) = gcd(u, M) and
+//     u is in a subfield iff j is, since j = u * r^-1 with r a unit;
+//   * g^u comes from the LFSR (g = x), and Z(u) = log(g^u + 1) from the
+//     tower or Pohlig-Hellman engine -- one discrete log per class.
+// Each thread walks runs of consecutive u; within a run it advances to its
+// next class representative before processing it, so the warp processes
+// ~32 classes together instead of idling 30 lanes behind each survivor.
+#define LOGS_MAXPF 16
+struct LogsParams {
+    int d, method;                 // method: LM_TOWER or LM_PH
+    u64 M, q, qlow, rmodinv, smax;
+    u64 lam_m1;                    // lambda(M) - 1: j^-1 = j^(lambda-1) mod M
+    u64 fault;                     // test hook: corrupt the log of u = 1 mod fault
+    int nsub, npf;
+    OddDiv sub[4];                 // subfield moduli M/(2^(d/p)-1)
+    OddDiv pf[LOGS_MAXPF];         // prime factors of M ...
+    int pk[LOGS_MAXPF];            // ... and their multiplicities
+    TowerDev tw;
+    PHDev ph;
+};
+
+GF2_HD u64 logs_dlog(u64 x, const LogsParams &L) {
+    return L.method == LM_TOWER ? tower_log(x, L.M, L.tw)
+                                : ph_log(x, L.M, L.d, L.qlow, L.ph);
+}
+
+// u (odd, < 2^(d-1)) is the representative of a degree-d class
+GF2_HD bool logs_is_rep(u64 u, const LogsParams &L) {
+    if (!gf2f_is_min_rotation(u, L.d, L.M)) return false;
+    u64 qq;
+    for (int k = 0; k < L.nsub; k++)
+        if (odd_div_test(u, L.sub[k], &qq)) return false;
+    return true;
+}
+
+GF2_HD u64 logs_mulx2(u64 e, u64 q, int d) {
+    return gf_mulx(gf_mulx(e, q, d), q, d);
+}
+
+// everything after "u is a class representative with g^u = e"
+__device__ __forceinline__ void logs_process(u64 u, u64 e, const LogsParams &L,
+                                             const fw *gpow2, ull *best,
+                                             Heavy *heavy, unsigned *nheavy,
+                                             unsigned *overflow, fw *P,
+                                             unsigned long long *err,
+                                             bool verify) {
+    const int d = L.d;
+    const u64 M = L.M;
+    const u64 x = e ^ 1;                        // g^u + 1 (nonzero: u != 0)
+    u64 v = logs_dlog(x, L);                    // Zech log Z(u)
+    if (L.fault && u % L.fault == 1) v ^= 1;    // fault injection (tests)
+    if (v >= M) { (*err)++; return; }
+    if (verify && gf2f_antilog(v, L.qlow, d, gpow2) != x) { (*err)++; return; }
+    u64 j = gf2f_mulmod_m(u, L.rmodinv, d, M);
+    // gg = gcd(u, M) = gcd(j, M) from the factorization of M; need gg | v
+    u64 gg = 1, jg = j, vg = v, n = M, t = u, qq;
+    for (int i = 0; i < L.npf; i++) {
+        for (int k = 0; k < L.pk[i]; k++) {
+            if (!odd_div_test(t, L.pf[i], &qq)) break;
+            t = qq;
+            gg *= L.pf[i].p;
+            if (!odd_div_test(vg, L.pf[i], &qq)) return;   // gg does not divide v
+            vg = qq;
+            odd_div_test(jg, L.pf[i], &jg);
+            odd_div_test(n, L.pf[i], &n);
+        }
+    }
+    u64 s0;
+    if (gg == 1)
+        s0 = gf2f_mulmod_m(v, gf2f_powmod_m(j, L.lam_m1, d, M), d, M);
+    else
+        s0 = MULMOD(inv_mod(jg, n), vg, n);
+    u64 s = (s0 == 0 ? n : s0);
+    if (s > L.smax) return;
+    u64 count = (L.smax - s) / n + 1;
+    if (count <= INLINE_MARKS && !progression_open(best, s, n, L.smax, d))
+        return;
+    fw seed = d_antilog(j, L.q, d, gpow2);      // root g^j
+    u64 mask = d_minpoly_seeded(seed, d, L.q, P);
+    if (mask == 0) { (*err)++; return; }
+    u64 packed = ((u64)d << 48) | mask;
+    if (count <= INLINE_MARKS) {
+        for (; s <= L.smax; s += n) atomicMin(&best[s], (ull)packed);
+    } else {
+        unsigned idx = atomicAdd(nheavy, 1u);
+        if (idx < HEAVY_CAP) heavy[idx] = {s, n, packed};
+        else atomicAdd(overflow, 1u);
+    }
+}
+
+// sweep u in [ulo, uhi) (ulo, run even), runs of `run` consecutive u
+__global__ void k_logs_sweep(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
+                             u64 run, ull *best, Heavy *heavy,
+                             unsigned *nheavy, unsigned *overflow,
+                             unsigned long long *nsurv,
+                             unsigned long long *nerr) {
+    const u64 nruns = (uhi - ulo + run - 1) / run;
+    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    u64 stride = (u64)gridDim.x * blockDim.x;
+    fw P[64];
+    unsigned long long my_surv = 0, my_err = 0;
+    for (; rr < nruns; rr += stride) {
+        u64 u = (ulo + rr * run) | 1;            // odd u only
+        u64 uend = ulo + rr * run + run; if (uend > uhi) uend = uhi;
+        if (u >= uend) continue;
+        u64 e = gf2f_antilog(u, L.qlow, L.d, gpow2);
+        for (;;) {
+            while (u < uend && !logs_is_rep(u, L)) {
+                u += 2;
+                e = logs_mulx2(e, L.q, L.d);
+            }
+            if (u >= uend) break;
+            my_surv++;
+            logs_process(u, e, L, gpow2, best, heavy, nheavy, overflow, P,
+                         &my_err, (my_surv & 255) == 1);   // spot-verify logs
+            u += 2;
+            e = logs_mulx2(e, L.q, L.d);
+        }
+    }
+    if (my_surv) atomicAdd(nsurv, my_surv);
+    if (my_err) atomicAdd(nerr, my_err);
+}
+
+// tower: T[c] = log(c + w), from every e = g^u with b != 0 in [u0, u0+count)
+// (all writers of one slot write the same value, so plain stores suffice)
+__global__ void k_tower_T(TowerDev t, u64 M, u64 q, u64 qlow, int d,
+                          const fw *gpow2, u64 u0, u64 count, u64 run,
+                          u64 *T) {
+    const u64 nruns = (count + run - 1) / run;
+    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    u64 stride = (u64)gridDim.x * blockDim.x;
+    for (; rr < nruns; rr += stride) {
+        u64 u = u0 + rr * run;
+        u64 uend = u + run; if (uend > u0 + count) uend = u0 + count;
+        u64 e = gf2f_antilog(u, qlow, d, gpow2);
+        for (; u < uend; u++, e = gf_mulx(e, q, d)) {
+            u64 pk = tower_coords(e, t), ac = pk & t.MK, bc = pk >> t.m;
+            if (!bc) continue;
+            u64 lb = t.LK[bc], cc = 0;
+            if (ac) {
+                u64 la = t.LK[ac];
+                cc = t.AK[la >= lb ? la - lb : la + t.MK - lb];
+            }
+            u64 h = (t.MK + 2) * lb;
+            T[cc] = u >= h ? u - h : u + M - h;
+        }
+    }
+}
+
+// Pohlig-Hellman: insert gamma^i -> i for i < N
+__global__ void k_ph_build(u64 *keys, u32 *vals, int sbits, u64 N, u64 gamma,
+                           u64 qlow, int d, u64 run) {
+    const u64 nruns = (N + run - 1) / run, mask = ((u64)1 << sbits) - 1;
+    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    u64 stride = (u64)gridDim.x * blockDim.x;
+    for (; rr < nruns; rr += stride) {
+        u64 i = rr * run, iend = i + run; if (iend > N) iend = N;
+        u64 y = gf2f_pow(gamma, i, qlow, d);
+        for (; i < iend; i++, y = gf2f_mul(y, gamma, qlow, d)) {
+            for (u64 h = ph_slot(y, sbits);; h = (h + 1) & mask) {
+                ull old = atomicCAS((ull *)&keys[h], 0ULL, (ull)y);
+                if (old == 0) { vals[h] = (u32)i; break; }
+            }
+        }
+    }
+}
+
+// selftest: the fast rotation test against the all-rotations reference, on
+// every odd u < min(2^(d-1), 2*count) and on `count` pseudo-random odd
+// u < 2^(d-1) whose leading-zero count is spread over 1..d-1
+__global__ void k_rep_check(int d, u64 count, unsigned long long *nbad) {
+    const u64 M = ((u64)1 << d) - 1, top = (u64)1 << (d - 1);
+    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    u64 stride = (u64)gridDim.x * blockDim.x;
+    unsigned long long bad = 0;
+    for (; i < count; i += stride) {
+        u64 u = 2 * i + 1;
+        if (u < top && gf2f_is_min_rotation(u, d, M) !=
+                       gf2f_min_rotation_ref(u, d, M)) bad++;
+        u64 h = (i + 1) * 0x9E3779B97F4A7C15ULL;              // splitmix64
+        h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        h = (h ^ (h >> 27)) * 0x94D049BB133111EBULL;
+        h ^= h >> 31;
+        u = ((h >> (65 - d + (int)(i % (u64)(d - 1)))) | 1) & (top - 1);
+        if (u && gf2f_is_min_rotation(u, d, M) !=
+                 gf2f_min_rotation_ref(u, d, M)) bad++;
+    }
+    if (bad) atomicAdd(nbad, bad);
+}
+
+// selftest: log(g^u) == u for every u in [ulo, uhi)
+__global__ void k_dlog_check(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
+                             u64 run, unsigned long long *nbad) {
+    const u64 nruns = (uhi - ulo + run - 1) / run;
+    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    u64 stride = (u64)gridDim.x * blockDim.x;
+    unsigned long long bad = 0;
+    for (; rr < nruns; rr += stride) {
+        u64 u = ulo + rr * run, uend = u + run; if (uend > uhi) uend = uhi;
+        u64 e = gf2f_antilog(u, L.qlow, L.d, gpow2);
+        for (; u < uend; u++, e = gf_mulx(e, L.q, L.d))
+            if (logs_dlog(e, L) != u) bad++;
+    }
+    if (bad) atomicAdd(nbad, bad);
+}
+#endif // WIDE_FIELD
 
 // ---------------------------------------------------------------------------
 static void launch_dims(u64 work, int &blocks, int &threads) {
@@ -574,6 +847,12 @@ struct GpuCtx {
     // per-degree scratch
     fw *dgp = nullptr; u64 *dsub = nullptr; fw *dlslice = nullptr;
     unsigned long long *d_nsurv = nullptr;
+    // logs path (per-degree tables + error counter)
+    unsigned long long *d_nerr = nullptr;
+    u64 *d_btab = nullptr, *d_T = nullptr;
+    u32 *d_LK = nullptr, *d_AK = nullptr;
+    u64 *d_keys[4] = {nullptr, nullptr, nullptr, nullptr};
+    u32 *d_vals[4] = {nullptr, nullptr, nullptr, nullptr};
 };
 static std::vector<GpuCtx> g_gpus;
 static std::vector<ull> g_gather_tmp;
@@ -646,6 +925,20 @@ static CkptCtx g_ckpt;
 extern "C" void ckpt_signal_handler(int) { g_ckpt.stop = 1; }
 
 static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','2'};
+
+// The checkpoint's bucket-count field also records WHICH mid-degree method
+// wrote it (bits 24+: 0 = buckets, 1 = tower logs, 2 = Pohlig-Hellman logs;
+// bits 0-23: bucket or chunk count), because bucket b and chunk b cover
+// different work: resuming one as the other would silently skip classes.
+// Old checkpoints (buckets) decode unchanged.
+#define CKPT_METHOD_SHIFT 24
+#if defined(WIDE_FIELD)
+static inline int ckpt_enc(int count, int method) {
+    return count | (method << CKPT_METHOD_SHIFT);
+}
+#endif
+static inline int ckpt_count(int enc) { return enc & ((1 << CKPT_METHOD_SHIFT) - 1); }
+static inline int ckpt_method(int enc) { return (int)((unsigned)enc >> CKPT_METHOD_SHIFT); }
 
 // cheap 64-bit hash to tie a delta checkpoint to the exact baseline image
 static u64 ckpt_hash(const ull *p, u64 n) {
@@ -732,17 +1025,19 @@ static void ckpt_write() {
     ckpt_rotate();
     if (rename(tmp, g_ckpt.path) != 0) { perror("rename checkpoint"); return; }
     g_ckpt.last_write = now_s();
+    const char *unit = ckpt_method(g_ckpt.snap_nbuckets) ? "chunk" : "bucket";
     if (use_delta)
-        fprintf(stderr, "[checkpoint: d=%d bucket %d/%d, delta %" PRIu64
+        fprintf(stderr, "[checkpoint: d=%d %s %d/%d, delta %" PRIu64
                 " entries (%.2f MB) -> %s, %.2fs]\n",
-                g_ckpt.snap_d, g_ckpt.snap_next_bucket, g_ckpt.snap_nbuckets,
+                g_ckpt.snap_d, unit, g_ckpt.snap_next_bucket,
+                ckpt_count(g_ckpt.snap_nbuckets),
                 ndelta, (ndelta * 16 + 128) / 1048576.0, g_ckpt.path,
                 now_s() - t0);
     else
-        fprintf(stderr, "[checkpoint: d=%d bucket %d/%d, full image (%.0f MB)"
-                " -> %s, %.2fs]\n", g_ckpt.snap_d, g_ckpt.snap_next_bucket,
-                g_ckpt.snap_nbuckets, g_ckpt.smax * 8 / 1048576.0,
-                g_ckpt.path, now_s() - t0);
+        fprintf(stderr, "[checkpoint: d=%d %s %d/%d, full image (%.0f MB)"
+                " -> %s, %.2fs]\n", g_ckpt.snap_d, unit,
+                g_ckpt.snap_next_bucket, ckpt_count(g_ckpt.snap_nbuckets),
+                g_ckpt.smax * 8 / 1048576.0, g_ckpt.path, now_s() - t0);
 }
 
 static bool ckpt_periodic_due() {
@@ -887,7 +1182,8 @@ static bool ckpt_read_one(const char *path, u64 r, u64 smax,
     resume_bucket   = (int)hdr32[2];
     resume_nbuckets = (int)hdr32[3];
     // normalize: a completed degree resumes at the next one
-    if (resume_bucket >= resume_nbuckets && resume_nbuckets > 0) {
+    if (resume_bucket >= ckpt_count(resume_nbuckets) &&
+        ckpt_count(resume_nbuckets) > 0) {
         resume_d += 1; resume_bucket = 0; resume_nbuckets = 0;
     }
     return true;
@@ -921,9 +1217,14 @@ static bool ckpt_read(const char *path, u64 r, u64 smax,
 // Poll the default stream to completion, checking the stop flag every ~100 ms
 // so a signal during a long kernel is noticed promptly. Returns false if a
 // stop was requested before completion.
-static bool poll_until_done() {
+// Sleeps back off 1 ms -> 100 ms: short kernels are not padded out to a full
+// 100 ms poll period (that used to cost ~0.1 s per bucket), long ones still
+// cost almost nothing to watch.  honor_stop = false waits for completion
+// even if a stop was requested (used where the in-flight work is short).
+static bool poll_until_done(bool honor_stop = true) {
+    useconds_t nap = 1000;
     for (;;) {
-        if (ckpt_stop_requested()) return false;
+        if (honor_stop && ckpt_stop_requested()) return false;
         bool all_done = true;
         for (size_t g = 0; g < g_gpus.size(); g++) {
             CUCHK(cudaSetDevice(g_gpus[g].dev));
@@ -932,7 +1233,8 @@ static bool poll_until_done() {
             if (st != cudaSuccess) CUCHK(st);
         }
         if (all_done) return true;
-        usleep(100000); // 100 ms
+        usleep(nap);
+        if (nap < 100000) nap *= 2;
     }
 }
 
@@ -1215,6 +1517,465 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
             total_heavy, now_s() - t0);
 }
 
+// Method override (COARSE_METHOD env var or --selftest-logs):
+enum { FM_AUTO = 0, FM_TOWER = 1, FM_PH = 2, FM_LOGS = 3, FM_BUCKETS = 4,
+       FM_DENSE = 5 };
+static int g_force_method = FM_AUTO;
+static bool g_logs_selfcheck = false;    // selftest: verify every log on device
+
+#if defined(WIDE_FIELD)
+// ---------------------------------------------------------------------------
+// LOGS path: host-side driver
+
+#define LOGS_RUN_MAX        (1u << 14)   // u values per thread-run
+#define LOGS_RUNS_PER_CHUNK (1u << 17)   // runs per kernel launch (chunk)
+// Class representatives are concentrated at small u: a representative
+// starts with its longest zero run (typically ~log2(d) bits), so most lie
+// in [2^(d-8), 2^(d-4)) and nearly every odd u below ~2^(d-12) is one.  The
+// first chunks are therefore ~12x denser than average (at d=47, 2^30 odd u
+// per chunk, ~8% of them representatives on average, ~100% in chunk 0), so
+// progress dots come slower at the start of a degree than at the end, and
+// a stop request waits for at most one chunk (a few seconds at d=47).
+
+// chunk geometry depends only on d, so a checkpoint's chunk index is stable
+static void logs_geometry(int d, u64 &total, u64 &run, u64 &chunk,
+                          int &nchunks) {
+    total = (u64)1 << (d - 1);                  // class reps are < 2^(d-1)
+    run = LOGS_RUN_MAX;
+    while (run > 64 && total / run < ((u64)1 << 17)) run >>= 1;
+    chunk = run * (u64)LOGS_RUNS_PER_CHUNK;
+    // test hook: COARSE_LOGS_CHUNK_LOG2=k caps chunks at 2^k u values, so
+    // small-degree runs exercise multi-chunk and checkpoint/resume logic
+    // (a resume must use the same setting; the chunk count is checked)
+    if (const char *e = getenv("COARSE_LOGS_CHUNK_LOG2")) {
+        int k = atoi(e);
+        if (k >= 1 && k < 63 && ((u64)1 << k) < chunk) chunk = (u64)1 << k;
+    }
+    if (chunk > total) chunk = total;
+    nchunks = (int)((total + chunk - 1) / chunk);
+}
+
+struct LogsPlan {
+    int method = LM_NONE;
+    PHHost ph;                                  // PH parameters
+    size_t bytes = 0;                           // device table bytes
+};
+
+// VRAM the logs tables may use: free memory minus the usual reserve and some
+// slack (min(free/8, 512 MB)): a table filling the card would only save a few
+// giant steps over one half its size, and a near-full card risks a failed
+// allocation (e.g. when the desktop grabs memory).  COARSE_LOGS_MAX_MB caps
+// it further.
+static size_t logs_table_budget(size_t freeb) {
+    size_t slack = freeb / 8 < (512ull << 20) ? freeb / 8 : (512ull << 20);
+    size_t b = freeb > GPU_MEM_RESERVE + slack ? freeb - GPU_MEM_RESERVE - slack : 0;
+    if (const char *e = getenv("COARSE_LOGS_MAX_MB")) {
+        size_t cap = (size_t)strtoull(e, nullptr, 10) << 20;
+        if (cap && cap < b) b = cap;
+    }
+    return b;
+}
+
+// Pick the logs method for degree d whose tables fit in `budget` bytes.
+// want: FM_TOWER / FM_PH force one engine, anything else = automatic
+// (tower for even d, Pohlig-Hellman otherwise).
+static bool logs_plan(int d, u64 q, int want, size_t budget, LogsPlan &pl) {
+    pl = LogsPlan();
+    if (!gf2f_usable(q, d)) return false;
+    bool tower_ok = d >= 4 && !(d & 1) && d <= 46;
+    if (want == FM_TOWER && !tower_ok) return false;
+    if (want != FM_PH && tower_ok) {
+        size_t need = ((size_t)16 << (d / 2)) + 65536;
+        if (need <= budget) {
+            pl.method = LM_TOWER;
+            pl.bytes = need;
+            return true;
+        }
+        if (want == FM_TOWER) return false;
+    }
+    if (!ph_plan_host(d, q, budget, pl.ph)) return false;
+    pl.method = LM_PH;
+    pl.bytes = pl.ph.table_bytes;
+    return true;
+}
+
+static LogsParams logs_params_base(int d, u64 r, u64 smax, u64 q, int method) {
+    LogsParams L;
+    memset(&L, 0, sizeof L);
+    L.d = d;
+    L.method = method;
+    L.M = ((u64)1 << d) - 1;
+    L.q = q;
+    L.qlow = q ^ ((u64)1 << d);
+    L.rmodinv = inv_mod(r % L.M, L.M);
+    L.smax = smax;
+    // Carmichael lambda(M) = lcm of phi(p^k) over p^k || M: the exponent of
+    // the unit group, so j^(lambda-1) = j^-1 for gcd(j, M) = 1.  It is much
+    // shorter than phi(M) (31 vs 47 bits at d=47, 16 vs 41 at d=42), which
+    // cuts the per-class modular inverse by a third or more.
+    u64 rest = L.M, lam = 1;
+    for (u64 p : factor_u64(L.M)) {
+        int k = 0;
+        u64 pk = 1;
+        while (rest % p == 0) { rest /= p; k++; pk *= p; }
+        L.pf[L.npf] = odd_div_make(p);
+        L.pk[L.npf] = k;
+        L.npf++;
+        const u64 ph = pk / p * (p - 1);
+        lam = lam / gcd_u64(lam, ph) * ph;
+    }
+    L.lam_m1 = lam - 1;
+    for (u64 p : factor_u64((u64)d)) {
+        int e = d / (int)p;
+        L.sub[L.nsub++] = odd_div_make(L.M / (((u64)1 << e) - 1));
+    }
+    return L;
+}
+
+static u64 logs_run_for(u64 work) {             // ~2^16 threads per launch
+    u64 run = 64;
+    while (run < LOGS_RUN_MAX && work / run > ((u64)1 << 16)) run <<= 1;
+    return run;
+}
+
+// Build this device's tables and fill L's device pointers.  The tower's T
+// is computed on the first device and copied to the others via `Th`.
+static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
+                              const TowerHost &W, std::vector<u64> &Th,
+                              LogsParams &L) {
+    const u64 M = L.M;
+    int blocks, threads;
+    if (pl.method == LM_TOWER) {
+        CUCHK(cudaMalloc(&G.d_btab, W.btab.size() * sizeof(u64)));
+        CUCHK(cudaMemcpy(G.d_btab, W.btab.data(), W.btab.size() * sizeof(u64),
+                         cudaMemcpyHostToDevice));
+        CUCHK(cudaMalloc(&G.d_LK, W.LK.size() * sizeof(u32)));
+        CUCHK(cudaMemcpy(G.d_LK, W.LK.data(), W.LK.size() * sizeof(u32),
+                         cudaMemcpyHostToDevice));
+        CUCHK(cudaMalloc(&G.d_AK, W.AK.size() * sizeof(u32)));
+        CUCHK(cudaMemcpy(G.d_AK, W.AK.data(), W.AK.size() * sizeof(u32),
+                         cudaMemcpyHostToDevice));
+        const u64 slots = W.MK + 1;
+        CUCHK(cudaMalloc(&G.d_T, slots * sizeof(u64)));
+        L.tw = TowerDev{W.m, W.nb, W.MK, G.d_btab, G.d_LK, G.d_AK, G.d_T};
+        if (Th.empty()) {                       // coupon-collector sweeps
+            launch_dims(slots, blocks, threads);
+            k_fill<<<blocks, threads>>>((ull *)G.d_T, slots, ~0ULL);
+            Th.assign(slots, ~0ULL);
+            u64 u0 = 0, missing = slots;
+            while (missing && u0 < M) {
+                u64 cnt = slots * 8;
+                if (cnt > M - u0) cnt = M - u0;
+                u64 run = logs_run_for(cnt);
+                launch_dims((cnt + run - 1) / run, blocks, threads);
+                k_tower_T<<<blocks, threads>>>(L.tw, M, q, L.qlow, d, G.dgp,
+                                               u0, cnt, run, G.d_T);
+                CUCHK(cudaDeviceSynchronize());
+                CUCHK(cudaMemcpy(Th.data(), G.d_T, slots * sizeof(u64),
+                                 cudaMemcpyDeviceToHost));
+                missing = 0;
+                for (u64 c = 0; c < slots; c++) missing += (Th[c] >= M);
+                u0 += cnt;
+            }
+            if (missing) {
+                fprintf(stderr, "d=%d: tower table T incomplete (%" PRIu64
+                        " missing) -- internal error\n", d, missing);
+                exit(1);
+            }
+        } else {
+            CUCHK(cudaMemcpy(G.d_T, Th.data(), slots * sizeof(u64),
+                             cudaMemcpyHostToDevice));
+        }
+    } else {
+        L.ph.nparts = pl.ph.nparts;
+        L.ph.chain = pl.ph.chain;
+        for (int i = 0; i < pl.ph.nparts; i++) {
+            const PHPartHost &p = pl.ph.part[i];
+            const size_t S = (size_t)1 << p.sbits;
+            CUCHK(cudaMalloc(&G.d_keys[i], S * sizeof(u64)));
+            CUCHK(cudaMalloc(&G.d_vals[i], S * sizeof(u32)));
+            CUCHK(cudaMemset(G.d_keys[i], 0, S * sizeof(u64)));
+            u64 run = logs_run_for(p.N);
+            launch_dims((p.N + run - 1) / run, blocks, threads);
+            k_ph_build<<<blocks, threads>>>(G.d_keys[i], G.d_vals[i], p.sbits,
+                                            p.N, p.gamma, L.qlow, d, run);
+            L.ph.part[i] = PHPart{p.P, p.E, p.K, p.N, p.G, p.delta,
+                                  G.d_keys[i], G.d_vals[i], p.sbits};
+        }
+        CUCHK(cudaDeviceSynchronize());
+    }
+}
+
+static void logs_free_device(GpuCtx &G) {
+    cudaFree(G.d_btab); cudaFree(G.d_LK); cudaFree(G.d_AK); cudaFree(G.d_T);
+    G.d_btab = G.d_T = nullptr; G.d_LK = G.d_AK = nullptr;
+    for (int i = 0; i < 4; i++) {
+        cudaFree(G.d_keys[i]); cudaFree(G.d_vals[i]);
+        G.d_keys[i] = nullptr; G.d_vals[i] = nullptr;
+    }
+}
+
+// selftest: check log(g^u) == u for u in [0, min(M, 2^24)) on device 0
+static void logs_selfcheck(int d, const LogsParams &L) {
+    GpuCtx &G = g_gpus[0];
+    CUCHK(cudaSetDevice(G.dev));
+    u64 hi = L.M < ((u64)1 << 24) ? L.M : ((u64)1 << 24);
+    unsigned long long zero = 0, bad = 0;
+    unsigned long long *dbad;
+    CUCHK(cudaMalloc(&dbad, 8));
+    CUCHK(cudaMemcpy(dbad, &zero, 8, cudaMemcpyHostToDevice));
+    u64 run = logs_run_for(hi);
+    int blocks, threads;
+    launch_dims((hi + run - 1) / run, blocks, threads);
+    k_dlog_check<<<blocks, threads>>>(L, G.dgp, 0, hi, run, dbad);
+    CUCHK(cudaMemcpy(&bad, dbad, 8, cudaMemcpyDeviceToHost));
+    cudaFree(dbad);
+    fprintf(stderr, "  [d=%d %s logs: %" PRIu64 " checked, %llu wrong]\n", d,
+            L.method == LM_TOWER ? "tower" : "PH", hi, bad);
+    if (bad) { fprintf(stderr, "logs selfcheck FAILED at d=%d\n", d); exit(1); }
+}
+
+// --selftest-logs, second part: the rotation test and the discrete-log
+// engines at every degree up to 47 on device 0 (the sieve comparison only
+// reaches d=20).  want = FM_TOWER / FM_PH limits it to one engine.
+// Returns the number of failures.
+static u64 logs_wide_selftest(u64 r, int want) {
+    GpuCtx &G = g_gpus[0];
+    CUCHK(cudaSetDevice(G.dev));
+#if defined(__CUDACC__)
+    const u64 nrep = (u64)1 << 22, nlog = (u64)1 << 20;
+    int dmax_log = 47;
+#else                                         // CPU emulation: keep it short
+    const u64 nrep = (u64)1 << 12, nlog = (u64)1 << 9;
+    int dmax_log = 30;
+#endif
+    if (const char *e = getenv("COARSE_SELFTEST_LOGS_DMAX")) {   // test hook
+        int k = atoi(e);
+        if (k >= 21 && k <= 47) dmax_log = k;
+    }
+    unsigned long long zero = 0, bad = 0, *dbad;
+    CUCHK(cudaMalloc(&dbad, 8));
+    u64 fails = 0;
+    int blocks, threads;
+    for (int d = 2; d <= 47; d++) {
+        CUCHK(cudaMemcpy(dbad, &zero, 8, cudaMemcpyHostToDevice));
+        launch_dims(nrep, blocks, threads);
+        k_rep_check<<<blocks, threads>>>(d, nrep, dbad);
+        CUCHK(cudaMemcpy(&bad, dbad, 8, cudaMemcpyDeviceToHost));
+        if (bad) fprintf(stderr, "  d=%d: rotation test: %llu mismatches\n", d, bad);
+        fails += bad;
+    }
+    fprintf(stderr, "  [rotation test vs all-rotations reference, d=2..47, "
+            "%" PRIu64 " u per degree: %s]\n", 2 * nrep, fails ? "FAILED" : "ok");
+
+    size_t freeb = 0, totb = 0;
+    CUCHK(cudaMemGetInfo(&freeb, &totb));
+    const size_t budget = logs_table_budget(freeb);
+    for (int d = 21; d <= dmax_log; d++) {
+        const u64 q = find_primitive_poly(d), M = ((u64)1 << d) - 1;
+        fw gpow2[64];
+        gpow2[0] = 2;
+        for (int t = 1; t < d; t++) gpow2[t] = gf_sqr(gpow2[t - 1], q, d);
+        for (int eng : {FM_TOWER, FM_PH}) {
+            if (want != FM_LOGS && want != eng) continue;
+            LogsPlan pl;
+            if (!logs_plan(d, q, eng, budget, pl)) continue;   // tower: even d
+            double t0 = now_s();
+            CUCHK(cudaMalloc(&G.dgp, d * sizeof(fw)));
+            CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
+            LogsParams L = logs_params_base(d, r, 1, q, pl.method);
+            TowerHost W;
+            if (pl.method == LM_TOWER && !tower_build_host(d, q, W)) {
+                fprintf(stderr, "  d=%d: tower construction failed\n", d);
+                fails++;
+                cudaFree(G.dgp); G.dgp = nullptr;
+                continue;
+            }
+            std::vector<u64> Th;
+            logs_setup_device(G, d, q, pl, W, Th, L);
+            // nlog consecutive exponents from a degree-dependent offset
+            const u64 ulo = (0x9E3779B97F4A7C15ULL * (u64)d) % (M - nlog);
+            CUCHK(cudaMemcpy(dbad, &zero, 8, cudaMemcpyHostToDevice));
+            const u64 run = logs_run_for(nlog);
+            launch_dims((nlog + run - 1) / run, blocks, threads);
+            k_dlog_check<<<blocks, threads>>>(L, G.dgp, ulo, ulo + nlog, run, dbad);
+            CUCHK(cudaMemcpy(&bad, dbad, 8, cudaMemcpyDeviceToHost));
+            logs_free_device(G);
+            cudaFree(G.dgp); G.dgp = nullptr;
+            fprintf(stderr, "  [d=%d %-5s logs, %4.0f MB tables: %" PRIu64
+                    " checked, %llu wrong, %.2fs]\n", d,
+                    pl.method == LM_TOWER ? "tower" : "PH",
+                    pl.bytes / 1048576.0, nlog, bad, now_s() - t0);
+            fails += bad;
+        }
+    }
+    cudaFree(dbad);
+    return fails;
+}
+
+// run the sieve for one degree with the logs path (any VRAM; tables only)
+static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
+                                  int start_chunk = 0) {
+    const u64 M64 = ((u64)1 << d) - 1;
+    const u64 q = find_primitive_poly(d);
+    const u64 rmod = r % M64;
+    if (gcd_u64(rmod ? rmod : M64, M64) != 1) {
+        fprintf(stderr, "d=%d: gcd(r, 2^d-1) != 1; unsupported r\n", d);
+        exit(1);
+    }
+    const int NG = (int)g_gpus.size();
+    u64 total, run, chunk;
+    int nchunks;
+    logs_geometry(d, total, run, chunk, nchunks);
+    const char *mname = pl.method == LM_TOWER ? "tower" : "PH";
+
+    fw gpow2[64];
+    gpow2[0] = 2;
+    for (int t = 1; t < d; t++) gpow2[t] = gf_sqr(gpow2[t - 1], q, d);
+
+    double t0 = now_s();
+    TowerHost W;
+    if (pl.method == LM_TOWER && !tower_build_host(d, q, W)) {
+        fprintf(stderr, "d=%d: tower construction failed -- internal error\n", d);
+        exit(1);
+    }
+    std::vector<u64> Th;
+    std::vector<LogsParams> Lg;
+    unsigned long long zero64 = 0;
+    for (int g = 0; g < NG; g++) {
+        GpuCtx &G = g_gpus[g];
+        CUCHK(cudaSetDevice(G.dev));
+        CUCHK(cudaMalloc(&G.dgp, d * sizeof(fw)));
+        CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
+        CUCHK(cudaMalloc(&G.d_nsurv, 8));
+        CUCHK(cudaMemcpy(G.d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
+        CUCHK(cudaMalloc(&G.d_nerr, 8));
+        CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
+        Lg.push_back(logs_params_base(d, r, smax, q, pl.method));
+        // test hook: COARSE_TEST_FAULT_EVERY=n flips a bit of the log of
+        // every class with u = 1 (mod n), to exercise the error stop
+        if (const char *e = getenv("COARSE_TEST_FAULT_EVERY"))
+            Lg.back().fault = strtoull(e, nullptr, 10);
+        logs_setup_device(G, d, q, pl, W, Th, Lg.back());
+    }
+    W = TowerHost();                            // host copies no longer needed
+    Th.clear(); Th.shrink_to_fit();
+    fprintf(stderr, "d=%2d logs (%s, %.0f MB tables, built in %.1fs), %d "
+            "chunk%s", d, mname, pl.bytes / 1048576.0, now_s() - t0, nchunks,
+            nchunks == 1 ? "" : "s");
+    if (NG > 1) fprintf(stderr, " on %d GPUs", NG);
+    fprintf(stderr, ": ");
+    if (g_logs_selfcheck) { fprintf(stderr, "\n"); logs_selfcheck(d, Lg[0]); }
+
+    // One blocking-sync event per device: the host thread sleeps in the
+    // driver until its chunk is done and wakes at once -- no polling delay
+    // between chunks (chunks are short; a 1..128 ms poll back-off would
+    // idle the GPU ~10-25% of the time) and no busy-waiting CPU core.
+    std::vector<cudaEvent_t> ev(NG);
+    for (int g = 0; g < NG; g++) {
+        CUCHK(cudaSetDevice(g_gpus[g].dev));
+        CUCHK(cudaEventCreateWithFlags(&ev[g], cudaEventBlockingSync |
+                                               cudaEventDisableTiming));
+    }
+
+    const int enc = ckpt_enc(nchunks, pl.method);
+    const int dot_every = nchunks > 64 ? (nchunks + 63) / 64 : 1;
+    for (int c = 0; c < start_chunk; c += dot_every) fputc('=', stderr);
+    fflush(stderr);
+    unsigned zero = 0;
+    unsigned long long total_heavy = 0;
+    for (int base = start_chunk; base < nchunks; base += NG) {
+        // round boundary: every chunk < base is complete on every device
+        if (ckpt_stop_requested() || (g_ckpt.test_stop_after &&
+                g_ckpt.test_buckets_done >= g_ckpt.test_stop_after)) {
+            fprintf(stderr, "\n");
+            ckpt_snapshot(d, base, enc);
+            ckpt_stop_and_exit();
+        }
+        if (ckpt_periodic_due()) { ckpt_snapshot(d, base, enc); ckpt_write(); }
+        int used = 0;
+        for (int g = 0; g < NG && base + g < nchunks; g++) {
+            GpuCtx &G = g_gpus[g];
+            CUCHK(cudaSetDevice(G.dev));
+            u64 ulo = (u64)(base + g) * chunk;
+            u64 uhi = ulo + chunk; if (uhi > total) uhi = total;
+            CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
+            CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
+            int blocks, threads;
+            launch_dims((uhi - ulo + run - 1) / run, blocks, threads);
+            k_logs_sweep<<<blocks, threads>>>(Lg[g], G.dgp, ulo, uhi, run,
+                                              G.d_best, G.d_heavy, G.d_nheavy,
+                                              G.d_overflow, G.d_nsurv,
+                                              G.d_nerr);
+            CUCHK(cudaEventRecord(ev[g], 0));
+            used++;
+        }
+        for (int g = 0; g < used; g++) {        // a chunk is seconds at most
+            CUCHK(cudaSetDevice(g_gpus[g].dev));
+            CUCHK(cudaEventSynchronize(ev[g]));
+        }
+        for (int g = 0; g < used; g++) {
+            GpuCtx &G = g_gpus[g];
+            CUCHK(cudaSetDevice(G.dev));
+            unsigned nheavy = 0, overflow = 0;
+            unsigned long long nbad = 0;
+            CUCHK(cudaMemcpy(&nheavy, G.d_nheavy, 4, cudaMemcpyDeviceToHost));
+            CUCHK(cudaMemcpy(&overflow, G.d_overflow, 4, cudaMemcpyDeviceToHost));
+            CUCHK(cudaMemcpy(&nbad, G.d_nerr, 8, cudaMemcpyDeviceToHost));
+            if (overflow) {
+                fprintf(stderr, "\nd=%d: heavy queue overflow (%u); raise "
+                        "HEAVY_CAP\n", d, overflow);
+                exit(1);
+            }
+            // checked every round, so no checkpoint ever includes a chunk
+            // in which an inconsistency was seen
+            if (nbad) {
+                fprintf(stderr, "\nd=%d: %llu discrete-log consistency "
+                        "errors in chunks %d..%d (GPU %d) -- results are NOT "
+                        "trustworthy; stopping (no output written; any "
+                        "checkpoint predates these chunks)\n", d, nbad, base,
+                        base + used - 1, g);
+                exit(1);
+            }
+            // (queued ahead of the next chunk, which waits for it in-stream)
+            if (nheavy) k_mark_heavy<<<nheavy, 256>>>(G.d_heavy, nheavy, smax,
+                                                       G.d_best);
+            total_heavy += nheavy;
+        }
+        g_ckpt.test_buckets_done += used;
+        for (int c = base; c < base + used; c++)
+            if ((c + 1) % dot_every == 0 || c + 1 == nchunks) fputc('.', stderr);
+        fflush(stderr);
+    }
+    fprintf(stderr, "\n");
+
+    unsigned long long nsurv = 0, nerr = 0;
+    for (int g = 0; g < NG; g++) {
+        GpuCtx &G = g_gpus[g];
+        CUCHK(cudaSetDevice(G.dev));
+        CUCHK(cudaDeviceSynchronize());
+        CUCHK(cudaGetLastError());
+        CUCHK(cudaEventDestroy(ev[g]));
+        unsigned long long c = 0, ne = 0;     // (not 'e': CUCHK declares e)
+        CUCHK(cudaMemcpy(&c, G.d_nsurv, 8, cudaMemcpyDeviceToHost));
+        CUCHK(cudaMemcpy(&ne, G.d_nerr, 8, cudaMemcpyDeviceToHost));
+        nsurv += c; nerr += ne;
+        cudaFree(G.dgp); G.dgp = nullptr;
+        cudaFree(G.d_nsurv); G.d_nsurv = nullptr;
+        cudaFree(G.d_nerr); G.d_nerr = nullptr;
+        logs_free_device(G);
+    }
+    if (nerr) {
+        fprintf(stderr, "d=%d: %llu discrete-log consistency errors -- this "
+                "degree's results are NOT trustworthy; stopping\n", d, nerr);
+        exit(1);
+    }
+    fprintf(stderr, "d=%2d done (logs/%s, %d chunks): %llu survivors, %llu "
+            "heavy progressions, %.2fs\n", d, mname, nchunks, nsurv,
+            total_heavy, now_s() - t0);
+}
+#endif // WIDE_FIELD
+
 static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
                     int force_lowmem_buckets = 0, int min_depth = 2,
                     const std::vector<ull> *preload = nullptr,
@@ -1268,33 +2029,97 @@ static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
         }
         CUCHK(cudaSetDevice(g_gpus[0].dev));
 
+        const size_t budget = freeb > GPU_MEM_RESERVE ? freeb - GPU_MEM_RESERVE : 0;
+        const int fm = g_force_method;
+        (void)budget; (void)totb;
+#if defined(WIDE_FIELD)
+        // logs path: chosen (forced) engine or automatic; true if it ran
+        auto try_logs = [&](int want, int start_chunk, bool must) -> bool {
+            LogsPlan pl;
+            const u64 qd = find_primitive_poly(d);
+            const size_t lbudget = logs_table_budget(freeb);
+            if (!logs_plan(d, qd, want, lbudget, pl)) {
+                if (must) {
+                    fprintf(stderr, "d=%d: logs path (%s) not possible here "
+                            "(tables do not fit in %.2f GB, or unsupported d)\n",
+                            d, want == FM_TOWER ? "tower" : want == FM_PH
+                            ? "PH" : "auto", lbudget / 1073741824.0);
+                    exit(1);
+                }
+                return false;
+            }
+            if (fm == FM_AUTO)
+                fprintf(stderr, "d=%d: dense tables need %.2f GB but only %.2f "
+                        "GB free; using the logs path\n", d,
+                        need / 1073741824.0, freeb / 1073741824.0);
+            sieve_degree_gpu_logs(d, r, smax, pl, start_chunk);
+            return true;
+        };
+#endif
         if (force_lowmem_buckets > 0) {
             sieve_degree_gpu_lowmem(d, r, smax, force_lowmem_buckets,
                                     start_bucket);
         } else if (forced_nb > 0) {
-            // resuming mid-degree: reuse the checkpoint's bucket count
-            fprintf(stderr, "d=%d: resuming at bucket %d/%d\n", d,
-                    start_bucket, forced_nb);
-            sieve_degree_gpu_lowmem(d, r, smax, forced_nb, start_bucket);
-        } else if (need <= freeb) {
-            sieve_degree_gpu(d, r, smax, d_best, d_heavy, d_nheavy, d_overflow);
-        } else {
-            // dense tables don't fit; fall back to the bucketed low-memory
-            // path (see "LOW-MEMORY MODE" at the top of the file) instead of
-            // giving up outright.
-            u64 M64 = ((u64)1 << d) - 1;
-            int nbuckets = pick_buckets(M64, d, freeb);
-            if (nbuckets == 0) {
-                fprintf(stderr, "d=%d needs %.2f GB tables but only %.2f GB"
-                        " free, and even 2^20 buckets does not fit; stopping"
-                        " at depth %d\n", d, need / 1073741824.0,
-                        freeb / 1073741824.0, d - 1);
-                break;
+            int meth = ckpt_method(forced_nb), cnt = ckpt_count(forced_nb);
+            if (meth == LM_NONE) {
+                // resuming mid-degree: reuse the checkpoint's bucket count
+                fprintf(stderr, "d=%d: resuming at bucket %d/%d\n", d,
+                        start_bucket, cnt);
+                sieve_degree_gpu_lowmem(d, r, smax, cnt, start_bucket);
+            } else {
+#if defined(WIDE_FIELD)
+                u64 tt, rn, ch;
+                int nch;
+                logs_geometry(d, tt, rn, ch, nch);
+                if (nch != cnt) {
+                    fprintf(stderr, "d=%d: checkpoint has %d chunks but this "
+                            "build uses %d; cannot resume\n", d, cnt, nch);
+                    exit(1);
+                }
+                fprintf(stderr, "d=%d: resuming logs path at chunk %d/%d\n", d,
+                        start_bucket, cnt);
+                try_logs(meth == LM_TOWER ? FM_TOWER : FM_PH, start_bucket, true);
+#else
+                fprintf(stderr, "checkpoint was written by the logs path; "
+                        "resume it with the -DWIDE_FIELD build\n");
+                exit(1);
+#endif
             }
-            fprintf(stderr, "d=%d: dense tables need %.2f GB but only %.2f GB"
-                    " free; switching to low-memory mode (%d buckets)\n", d,
-                    need / 1073741824.0, freeb / 1073741824.0, nbuckets);
-            sieve_degree_gpu_lowmem(d, r, smax, nbuckets, start_bucket);
+        } else {
+            bool done = false;
+            if (fm == FM_DENSE || (fm == FM_AUTO && need <= freeb)) {
+                sieve_degree_gpu(d, r, smax, d_best, d_heavy, d_nheavy,
+                                 d_overflow);
+                done = true;
+            } else if (fm == FM_TOWER || fm == FM_PH || fm == FM_LOGS) {
+#if defined(WIDE_FIELD)
+                done = try_logs(fm, 0, true);
+#else
+                fprintf(stderr, "the logs path needs the -DWIDE_FIELD build\n");
+                exit(1);
+#endif
+            }
+#if defined(WIDE_FIELD)
+            else if (fm == FM_AUTO) done = try_logs(FM_LOGS, 0, false);
+#endif
+            if (!done) {
+                // dense tables don't fit and no logs path: bucketed
+                // low-memory path (see "LOW-MEMORY MODE")
+                u64 M64 = ((u64)1 << d) - 1;
+                int nbuckets = pick_buckets(M64, d, freeb);
+                if (nbuckets == 0) {
+                    fprintf(stderr, "d=%d needs %.2f GB tables but only %.2f "
+                            "GB free, and even 2^20 buckets does not fit; "
+                            "stopping at depth %d\n", d, need / 1073741824.0,
+                            freeb / 1073741824.0, d - 1);
+                    break;
+                }
+                fprintf(stderr, "d=%d: dense tables need %.2f GB but only "
+                        "%.2f GB free; switching to low-memory mode (%d "
+                        "buckets)\n", d, need / 1073741824.0,
+                        freeb / 1073741824.0, nbuckets);
+                sieve_degree_gpu_lowmem(d, r, smax, nbuckets, start_bucket);
+            }
         }
 
         // Degree boundary: a stop during a dense degree (which can't
@@ -1372,24 +2197,76 @@ static void sieve_cpu(u64 r, int depth, u64 smax, std::vector<ull> &best) {
 int main(int argc, char **argv) {
     // selftests run on a single device
     g_gpus.assign(1, GpuCtx());
+    // COARSE_METHOD=auto|dense|buckets|logs|tower|ph overrides the per-degree
+    // method choice (testing / A-B timing); tower falls back to an error on
+    // odd d, logs = tower for even d and Pohlig-Hellman for odd d.
+    if (const char *e = getenv("COARSE_METHOD")) {
+        if (!strcmp(e, "dense")) g_force_method = FM_DENSE;
+        else if (!strcmp(e, "buckets")) g_force_method = FM_BUCKETS;
+        else if (!strcmp(e, "logs")) g_force_method = FM_LOGS;
+        else if (!strcmp(e, "tower")) g_force_method = FM_TOWER;
+        else if (!strcmp(e, "ph")) g_force_method = FM_PH;
+        else if (strcmp(e, "auto")) {
+            fprintf(stderr, "COARSE_METHOD=%s: expected auto, dense, buckets, "
+                    "logs, tower or ph\n", e);
+            return 1;
+        }
+    }
     if (argc >= 2 && (!strcmp(argv[1], "--selftest") ||
-                      !strcmp(argv[1], "--selftest-lowmem"))) {
+                      !strcmp(argv[1], "--selftest-lowmem") ||
+                      !strcmp(argv[1], "--selftest-logs"))) {
         bool lowmem = !strcmp(argv[1], "--selftest-lowmem");
+        bool logs = !strcmp(argv[1], "--selftest-logs");
         int force_p = 0;
         if (lowmem) {
             force_p = (argc >= 3) ? atoi(argv[2]) : 4;
             if (force_p < 1) force_p = 4;
         }
+        if (logs) {
+#if !defined(WIDE_FIELD)
+            fprintf(stderr, "--selftest-logs needs the -DWIDE_FIELD build\n");
+            return 1;
+#endif
+            const char *e = argc >= 3 ? argv[2] : "logs";
+            g_force_method = !strcmp(e, "tower") ? FM_TOWER
+                           : !strcmp(e, "ph") ? FM_PH : FM_LOGS;
+            g_logs_selfcheck = true;
+        }
+        const int logs_want = g_force_method;
         u64 r = 136279841, smax = 999999;
         int depth = 20;
         printf("selftest%s: r=%" PRIu64 " depth=%d smax=%" PRIu64
                " (GPU vs in-process CPU reference)\n",
-               lowmem ? " [lowmem, forced]" : "", r, depth, smax);
+               lowmem ? " [lowmem, forced]" : logs ? " [logs, forced]" : "",
+               r, depth, smax);
         if (lowmem)
             printf("  forcing the bucketed low-memory path, %d buckets,"
                    " for every degree\n", force_p);
+        if (logs)
+            printf("  forcing the logs path (%s) for every degree, with an "
+                   "on-device check of the logs\n",
+                   g_force_method == FM_TOWER ? "tower: even d only, so the "
+                   "run starts at d=4" : g_force_method == FM_PH
+                   ? "Pohlig-Hellman" : "tower for even d, PH for odd d");
         std::vector<ull> g, c;
-        run_gpu(r, depth, smax, g, force_p);
+        if (g_force_method == FM_TOWER) {
+            // tower needs even d >= 4: seed d=2,3 with the dense path first
+            g_force_method = FM_DENSE;
+            run_gpu(r, 3, smax, g, 0);
+            g_force_method = FM_TOWER;
+            for (int d = 4; d <= depth; d += 2) {
+                std::vector<ull> pre = g;
+                run_gpu(r, d, smax, g, 0, d, &pre);
+                if (d + 1 <= depth) {         // odd degree: dense
+                    g_force_method = FM_DENSE;
+                    pre = g;
+                    run_gpu(r, d + 1, smax, g, 0, d + 1, &pre);
+                    g_force_method = FM_TOWER;
+                }
+            }
+        } else {
+            run_gpu(r, depth, smax, g, force_p);
+        }
         double t0 = now_s();
         sieve_cpu(r, depth, smax, c);
         fprintf(stderr, "cpu reference: %.2fs\n", now_s() - t0);
@@ -1398,9 +2275,20 @@ int main(int argc, char **argv) {
             if (g[s] != c[s] && ++bad <= 10)
                 fprintf(stderr, "MISMATCH s=%" PRIu64 " gpu=%" PRIx64
                         " cpu=%" PRIx64 "\n", s, (u64)g[s], (u64)c[s]);
+        u64 wide_fails = 0;
+#if defined(WIDE_FIELD)
+        if (logs) {
+            fprintf(stderr, "logs engines at d <= 47 (device 0):\n");
+            wide_fails = logs_wide_selftest(r, logs_want);
+        }
+#endif
+        (void)logs_want;
+        if (wide_fails)
+            printf("selftest: logs engine checks at d <= 47: %" PRIu64
+                   " failures\n", wide_fails);
         printf("selftest: %s (%" PRIu64 " mismatches)\n",
-               bad ? "FAIL" : "PASS", bad);
-        return bad ? 1 : 0;
+               bad || wide_fails ? "FAIL" : "PASS", bad);
+        return bad || wide_fails ? 1 : 0;
     }
 
     if (argc < 4) {
@@ -1525,9 +2413,10 @@ int main(int argc, char **argv) {
         u64 pre_surv = 0;
         for (u64 s = 1; s <= smax; s++) if (preload[s] == ~0ULL) pre_surv++;
         fprintf(stderr, "resumed %s: %" PRIu64 " survivors carried in; "
-                "continuing at degree %d, bucket %d/%d, up to depth %d\n",
-                resume_path, pre_surv, min_depth, resume_bucket,
-                resume_nbuckets, depth);
+                "continuing at degree %d, %s %d/%d, up to depth %d\n",
+                resume_path, pre_surv, min_depth,
+                ckpt_method(resume_nbuckets) ? "chunk" : "bucket",
+                resume_bucket, ckpt_count(resume_nbuckets), depth);
     } else if (load_path) {
         // Degree-boundary extend from a prior .found.bin.
         if (!read_found_image(load_path, smax, preload)) return 1;
