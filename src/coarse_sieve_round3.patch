@@ -1,0 +1,2471 @@
+--- a/Makefile	2026-10-20 23:03:43.546672311 -0400
++++ b/Makefile	2026-10-20 23:03:43.561022874 -0400
+@@ -67,14 +67,16 @@
+ 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
+ 
+ # host self-test of the discrete-log engines used by coarse_sieve_wide
++# (gf2_dlog.h needs C++17: the bit-sliced arithmetic is expanded by folds)
+ gf2_dlog_selftest: gf2_dlog_selftest.cpp gf2_dlog.h gf2_wide_field.h gf2_wide_setup.h
+-	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
++	$(CXX) $(CXXFLAGS) -std=c++17 $(INC) -o $@ $<
+ 
+ coarse_sieve: coarse_sieve.cu gf2_small_field.h gf2_field_setup.h
+ 	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
+ 
++# (~54 kernel instantiations of the logs path: expect a few minutes)
+ coarse_sieve_wide: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h
+-	$(NVCC) $(NVFLAGS) -DWIDE_FIELD $(INC) -o $@ $<
++	$(NVCC) $(NVFLAGS) -std=c++17 -DWIDE_FIELD $(INC) -o $@ $<
+ 
+ cantor_ref: cantor_ref.cpp gf2_cantor_core.h gf2_cantor_engine.h
+ 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
+@@ -121,7 +123,7 @@
+ 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
+ 	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
+ 	$(SEDLAUNCH) $$(find . sieve -maxdepth 1 -name 'coarse_sieve.cu' 2>/dev/null | head -1) > build_emul/coarse_sieve_wide.cpp
+-	$(CXX) $(CXXFLAGS) -x c++ -DWIDE_FIELD -Ibuild_emul -o build_emul/coarse_sieve_wide build_emul/coarse_sieve_wide.cpp
++	$(CXX) $(CXXFLAGS) -std=c++17 -x c++ -DWIDE_FIELD -Ibuild_emul -o build_emul/coarse_sieve_wide build_emul/coarse_sieve_wide.cpp
+ 
+ emul-tsfactor:
+ 	@echo "== $(NTLMSG) =="
+--- a/coarse_sieve.cu	2026-10-20 23:03:43.535630462 -0400
++++ b/coarse_sieve.cu	2026-10-20 23:03:43.555738200 -0400
+@@ -21,7 +21,8 @@
+ // s of modulus n = M / gcd(j, M).  Only the minimal j of each cyclotomic
+ // coset is processed (conjugates give the same factor and progression);
+ // proper-subfield elements are skipped.  Each progression is marked into
+-// best[s] with atomicMin on the packed key (d << 48) | mask, which
++// best[s] with atomicMin on the packed key (d << 48) | mask (d <= 47; see
++// key_pack for d = 48..55), which
+ // implements exactly "smallest degree, then lexicographically least
+ // mask" (equal-degree masks have equal hex length, so lexicographic
+ // order on the printed string is numeric order on the mask).
+@@ -31,7 +32,10 @@
+ //         <prefix>.found.bin      (optional, --found) little-endian u64
+ //                                 packed keys for s = 1..smax, one per
+ //                                 s, UINT64_MAX where no factor found;
+-//                                 mask = key & 0xFFFFFFFFFFFF, d = key>>48
++//                                 d <= 47: mask = key & 0xFFFFFFFFFFFF,
++//                                 d = key >> 48; if key >> 60 == 0xF:
++//                                 d = 48 + ((key >> 56) & 0xF),
++//                                 mask = key & 0xFFFFFFFFFFFFFF
+ //
+ // Build:  nvcc -O3 -arch=native -I../common -o coarse_sieve coarse_sieve.cu
+ //         (narrow build: u32 field, fast, depths d <= 32)
+@@ -45,13 +49,14 @@
+ //                        [--load <file.found.bin>] [--min-depth <D>]
+ //                        [--checkpoint <file>] [--checkpoint-mins <N>]
+ //                        [--resume <file>]
++//                        [--allow-degree-gap]
+ //                        [--selftest] [--selftest-lowmem [nbuckets]]
+ // Extend: --load seeds best[] from a prior run's .found.bin and --min-depth
+ //         starts the sieve at degree D, so you compute only the new
+ //         degrees.  Recommended for d>=33: run the FAST narrow binary to
+ //         depth 32 with --found, then run the wide binary for just d=33:
+ //           ./coarse_sieve      <r> 32 <smax> out32 --found
+-//           ./coarse_sieve_wide <r> 33 <smax> out33 --found \
++//           ./coarse_sieve_wide <r> 33 <smax> out33 --found
+ //                               --load out32.found.bin --min-depth 33
+ //         This avoids re-doing d<=32 in the slow u64 build (a degree-d
+ //         factor only ever improves an s with no smaller-degree factor, so
+@@ -65,8 +70,8 @@
+ //         saves happen at chunk boundaries, and a stop waits for the
+ //         in-flight chunk (seconds at most).  Resume with
+ //         --resume <file> (which keeps checkpointing to the same file):
+-//           ./coarse_sieve_wide <r> 34 <smax> out34 --found \
+-//               --load out33.found.bin --min-depth 34 \
++//           ./coarse_sieve_wide <r> 34 <smax> out34 --found
++//               --load out33.found.bin --min-depth 34
+ //               --checkpoint out34.ckpt --checkpoint-mins 20
+ //           # on reclaim, just:
+ //           ./coarse_sieve_wide <r> 34 <smax> out34 --found --resume out34.ckpt
+@@ -80,17 +85,30 @@
+ //         used by logs-path tables (default: free memory minus the reserve
+ //         and min(free/8, 512 MB) of slack; less only means more giant
+ //         steps for the PH parts that do not fit whole).
++//         COARSE_LOGS_KERNEL=batched|r2 selects the logs-path kernel: the
++//         round-3 batched kernel (default) or the round-2 one (A/B timing,
++//         fallback).  Checkpoints do not depend on it: either kernel can
++//         resume the other's.
+ //         Tests only: COARSE_LOGS_CHUNK_LOG2=k caps logs-path chunks at 2^k
+ //         values (a resume must use the same k); COARSE_SELFTEST_LOGS_DMAX
+ //         limits the engine checks of --selftest-logs;
+ //         COARSE_TEST_FAULT_EVERY=n corrupts the log of every class with
+ //         u = 1 mod n (the run must then stop with "discrete-log
+-//         consistency errors").
++//         consistency errors"); COARSE_TEST_STOP_DEGREE=n acts as if
++//         degree n could not be sieved (the run must then write outputs
++//         for the degrees below n only, say so, and exit with status 2).
+ // Degrees: narrow build supports d <= 32 (elements fit u32, modulus u64);
+-//         the -DWIDE_FIELD build's arithmetic supports d <= 63 (u64
+-//         elements, 128-bit products), but the packed best[] key
+-//         (d << 48) | mask caps the program at d <= 47 (main() enforces
+-//         both limits).  Low-memory mode fits any degree into any card by
++//         the -DWIDE_FIELD build supports d <= 55: the packed best[] key
++//         holds d <= 55 (key_pack) and the logs path's fast arithmetic
++//         d <= 55 (main() enforces both limits).  Degrees 48..55 run only
++//         in the logs path, and d = 49 cannot be sieved at all (2^49 - 1 =
++//         127 * 4432676798593: too large a prime for any log table, and a
++//         bucketed pass would take decades), so main() refuses any run that
++//         includes it.  Degrees 50..55 can still be sieved, with
++//         --load-survivors and --min-depth 50 plus --allow-degree-gap: a
++//         factor found there is real, but it is the LEAST-degree factor of
++//         its trinomial only if degree-49 factors were ruled out some other
++//         way.  Low-memory mode fits any degree <= 47 into any card by
+ //         raising the bucket count; see the cost note in LOW-MEMORY MODE.
+ // Outputs: <prefix>.survivors.txt is written by default (--no-survivors
+ //         suppresses it); it is just the list of s with no factor of
+@@ -116,9 +134,11 @@
+ //         instead, and additionally checks log(g^u) == u on the device for
+ //         every u < min(2^d - 1, 2^24) at each degree; then, beyond the
+ //         sieve's depth, it checks the chosen engine(s) on 2^20 exponents at
+-//         every d = 21..47 and the necklace test against the all-rotations
+-//         reference at every d <= 47 (gf2_dlog_selftest.cpp is the CPU
+-//         counterpart).
++//         every d = 21..55, the batched kernel end to end (log(g^u) == u for
++//         every class it enumerates in a stretch of u, and its class count
++//         against the necklace test's), and the necklace test against the
++//         all-rotations reference at every d <= 55 (gf2_dlog_selftest.cpp
++//         is the CPU counterpart).
+ //
+ // LOW-MEMORY MODE
+ // ----------------
+@@ -187,22 +207,29 @@
+ // Z(u) = log(g^u + 1) per cyclotomic class.  The logs path computes that
+ // log directly, from tables of ~2^(d/2) entries (gf2_dlog.h):
+ //   tower (even d = 2m):  GF(2^d) = K(w), K = GF(2^m); a + b*w = b*(c + w),
+-//          c = a/b, so log = (2^m+1) log_K(b) + T[c] with 2^m-entry tables
+-//          (128 MB at d=46) and a GF(2)-linear split (byte tables).
+-//   Pohlig-Hellman (odd d): M = 2^d - 1 = P_1 * P_2 split into coprime
+-//          halves of ~2^(d/2); x^E_i lands in the order-P_i subgroup, a hash
+-//          table gives log mod P_i, CRT combines.  E_i are chosen with few
+-//          set bits in a low window; a part too large for the memory budget
+-//          (d=31: M itself is prime; d=37: 616318177; d=41: 164511353 on an
+-//          8 GB card) uses baby-step/giant-step.
+-// One pass over u in [0, 2^(d-1)), odd u only: the representative of each
+-// class is the coset-minimal u (minimal bit rotation, found by a necklace
+-// test that looks only at u's longest zero runs), which is odd and below
+-// 2^(d-1); g^u by LFSR stepping; any representative yields the same factor
+-// and progression (see k_logs_sweep).  The progression start needs j^-1 mod
+-// M, computed as j^(lambda(M)-1) (Carmichael exponent: at most 35 bits for
+-// d <= 47, vs d bits for phi(M)).  Work is O(2^d) per degree instead of
+-// O(4^d / VRAM); memory is
++//          c = a/b, so log = (2^m+1) log_K(b) + T[log_h(c)] with 2^m-entry
++//          tables (96 MB at d=46, 1.5 GB at d=54) and a GF(2)-linear split
++//          (byte tables).
++//   Pohlig-Hellman (odd d): M = 2^d - 1 = P_1 * ... * P_k (k <= 4) split
++//          into coprime parts; x^E_i lands in the order-P_i subgroup, a hash
++//          table gives log mod P_i, CRT combines.  A planner picks the split
++//          and the exponents E_i (few set bits in a low window) for the least
++//          estimated time per class, charging for table memory; a part too
++//          large for the memory budget (d=31: M itself is prime; d=37:
++//          616318177; d=41: 164511353 on an 8 GB card) uses baby-step/
++//          giant-step.
++// Classes: each class of degree d has exactly one representative u that is
++// a Lyndon word (aperiodic and least among its bit rotations, hence odd and
++// below 2^(d-1)); any representative yields the same factor and progression
++// (see k_logs_sweep).  The batched kernel (round 3, the default) enumerates
++// exactly those u with the FKM algorithm and handles them 32 per thread at
++// a time: g^u and the PH powers x^E_i in bit-sliced form (32 elements per
++// u32 per coefficient), and one modular inversion per batch (Montgomery's
++// trick).  The round-2 kernel (COARSE_LOGS_KERNEL=r2) tests every odd u with
++// the necklace test, steps g^u by LFSR and handles classes one at a time.
++// The progression start needs j^-1 mod M, computed as j^(lambda(M)-1)
++// (Carmichael exponent, much shorter than phi(M)).  Work is O(2^d) per
++// degree instead of O(4^d / VRAM); memory is
+ // best[] + the tables.  The pass is cut into chunks of u-values (kernel
+ // launches) for checkpointing; checkpoints record which method wrote them,
+ // and resuming re-enters the same method.  Every computed log is range-
+@@ -255,6 +282,30 @@
+ 
+ typedef unsigned long long ull;
+ 
++// best[] keys: "smallest degree, then numerically least mask" as one u64
++// compared by atomicMin.  The mask has d+1 bits (all coefficients of the
++// minimal polynomial).
++//   d <= 47:       (d << 48) | mask   -- the original format, so .found.bin
++//                                        files and checkpoints from earlier
++//                                        rounds stay valid
++//   48 <= d <= 55: (0xF << 60) | ((d - 48) << 56) | mask
++// Keys increase with (d, mask), every d <= 47 key is below every d >= 48 key,
++// and all are below the UINT64_MAX "no factor" marker (and above the 0 that
++// --load-survivors uses for "factor of a lower degree").
++#define KEY_MAX_DEGREE 55
++GF2_HD ull key_pack(int d, u64 mask) {
++    return d <= 47 ? ((ull)d << 48) | mask
++                   : (0xFull << 60) | ((ull)(d - 48) << 56) | mask;
++}
++GF2_HD ull key_floor(int d) { return key_pack(d, 0); }  // least degree-d key
++static inline int key_degree(ull k) {
++    return (k >> 60) == 0xF ? 48 + (int)((k >> 56) & 0xF) : (int)(k >> 48);
++}
++static inline u64 key_mask(ull k) {
++    return (k >> 60) == 0xF ? (u64)(k & ((1ull << 56) - 1))
++                            : (u64)(k & 0xFFFFFFFFFFFFull);
++}
++
+ // heavy-progression record for the second-pass marking kernel
+ struct Heavy { u64 s_first, n, packed; };
+ 
+@@ -297,7 +348,7 @@
+ }
+ 
+ // True if some best[s'] on the progression s, s+n, ... <= smax can still be
+-// lowered by a degree-d key.  Every degree-d key is >= (d << 48); entries
++// lowered by a degree-d key.  Every degree-d key is >= key_floor(d); entries
+ // already below that (a smaller-degree factor, or the 0 sentinel that
+ // --load-survivors uses for non-survivors) can never change, and best[] only
+ // ever decreases (atomicMin), so a stale read can only cause extra work,
+@@ -305,7 +356,7 @@
+ // polynomial for the ~95% of in-range hits that land on s values which
+ // already have a smaller factor.
+ GF2_HD bool progression_open(const ull *best, u64 s, u64 n, u64 smax, int d) {
+-    const ull floor_d = (ull)d << 48;
++    const ull floor_d = key_floor(d);
+     for (; s <= smax; s += n)
+         if (best[s] >= floor_d) return true;
+     return false;
+@@ -417,7 +468,7 @@
+         u64 mask = minpoly_mask(j, d, M, q, A, P);
+         // mask == 0 would mean non-GF(2) coefficients: impossible if the
+         // tables are right; validated exhaustively on CPU.
+-        u64 packed = ((u64)d << 48) | mask;
++        u64 packed = key_pack(d, mask);
+ 
+         if (count <= INLINE_MARKS) {
+             for (; s <= smax; s += n) atomicMin(&best[s], (ull)packed);
+@@ -585,7 +636,7 @@
+ 
+         fw seed = d_antilog(j64, q, d, gpow2);            // = A[j]
+         u64 mask = d_minpoly_seeded(seed, d, q, P);
+-        u64 packed = ((u64)d << 48) | mask;
++        u64 packed = key_pack(d, mask);
+ 
+         if (count <= INLINE_MARKS) {
+             for (; s <= smax; s += n) atomicMin(&best[s], (ull)packed);
+@@ -622,6 +673,7 @@
+     u64 M, q, qlow, rmodinv, smax;
+     u64 lam_m1;                    // lambda(M) - 1: j^-1 = j^(lambda-1) mod M
+     u64 fault;                     // test hook: corrupt the log of u = 1 mod fault
++    int check;                     // selftest: compute log(g^u), count != u
+     int nsub, npf;
+     OddDiv sub[4];                 // subfield moduli M/(2^(d/p)-1)
+     OddDiv pf[LOGS_MAXPF];         // prime factors of M ...
+@@ -648,7 +700,65 @@
+     return gf_mulx(gf_mulx(e, q, d), q, d);
+ }
+ 
+-// everything after "u is a class representative with g^u = e"
++// The progression s, s+n, ... (start s in [1, n]) of the class with root
++// g^j: mark it, unless it is out of range or nothing on it can improve.
++__device__ __forceinline__ void logs_mark(u64 s, u64 n, u64 j,
++                                          const LogsParams &L,
++                                          const fw *gpow2, ull *best,
++                                          Heavy *heavy, unsigned *nheavy,
++                                          unsigned *overflow, fw *P,
++                                          unsigned long long *err) {
++    const int d = L.d;
++    if (s > L.smax) return;
++    u64 count = (L.smax - s) / n + 1;
++    if (count <= INLINE_MARKS && !progression_open(best, s, n, L.smax, d))
++        return;
++    fw seed = d_antilog(j, L.q, d, gpow2);      // root g^j
++    u64 mask = d_minpoly_seeded(seed, d, L.q, P);
++    if (mask == 0) { (*err)++; return; }
++    u64 packed = key_pack(d, mask);
++    if (count <= INLINE_MARKS) {
++        for (; s <= L.smax; s += n) atomicMin(&best[s], (ull)packed);
++    } else {
++        unsigned idx = atomicAdd(nheavy, 1u);
++        if (idx < HEAVY_CAP) heavy[idx] = {s, n, packed};
++        else atomicAdd(overflow, 1u);
++    }
++}
++
++// gcd(u, M) == 1?  (gcd(u, M) = gcd(j, M) as r is a unit)
++GF2_HD bool logs_regular(u64 u, const LogsParams &L) {
++    u64 qq;
++    for (int i = 0; i < L.npf; i++)
++        if (odd_div_test(u, L.pf[i], &qq)) return false;
++    return true;
++}
++
++// a class with gg = gcd(u, M) > 1: j s == v (mod M) needs gg | v, and then
++// has modulus n = M / gg
++__device__ __forceinline__ void logs_irregular(u64 u, u64 j, u64 v,
++                                               const LogsParams &L,
++                                               const fw *gpow2, ull *best,
++                                               Heavy *heavy, unsigned *nheavy,
++                                               unsigned *overflow, fw *P,
++                                               unsigned long long *err) {
++    u64 jg = j, vg = v, n = L.M, t = u, qq;
++    for (int i = 0; i < L.npf; i++) {
++        for (int k = 0; k < L.pk[i]; k++) {
++            if (!odd_div_test(t, L.pf[i], &qq)) break;
++            t = qq;
++            if (!odd_div_test(vg, L.pf[i], &qq)) return;   // gg does not divide v
++            vg = qq;
++            odd_div_test(jg, L.pf[i], &jg);
++            odd_div_test(n, L.pf[i], &n);
++        }
++    }
++    u64 s0 = MULMOD(inv_mod(jg, n), vg, n);
++    logs_mark(s0 == 0 ? n : s0, n, j, L, gpow2, best, heavy, nheavy, overflow,
++              P, err);
++}
++
++// round-2 kernel: everything after "u is a class representative, g^u = e"
+ __device__ __forceinline__ void logs_process(u64 u, u64 e, const LogsParams &L,
+                                              const fw *gpow2, ull *best,
+                                              Heavy *heavy, unsigned *nheavy,
+@@ -663,40 +773,13 @@
+     if (v >= M) { (*err)++; return; }
+     if (verify && gf2f_antilog(v, L.qlow, d, gpow2) != x) { (*err)++; return; }
+     u64 j = gf2f_mulmod_m(u, L.rmodinv, d, M);
+-    // gg = gcd(u, M) = gcd(j, M) from the factorization of M; need gg | v
+-    u64 gg = 1, jg = j, vg = v, n = M, t = u, qq;
+-    for (int i = 0; i < L.npf; i++) {
+-        for (int k = 0; k < L.pk[i]; k++) {
+-            if (!odd_div_test(t, L.pf[i], &qq)) break;
+-            t = qq;
+-            gg *= L.pf[i].p;
+-            if (!odd_div_test(vg, L.pf[i], &qq)) return;   // gg does not divide v
+-            vg = qq;
+-            odd_div_test(jg, L.pf[i], &jg);
+-            odd_div_test(n, L.pf[i], &n);
+-        }
+-    }
+-    u64 s0;
+-    if (gg == 1)
+-        s0 = gf2f_mulmod_m(v, gf2f_powmod_m(j, L.lam_m1, d, M), d, M);
+-    else
+-        s0 = MULMOD(inv_mod(jg, n), vg, n);
+-    u64 s = (s0 == 0 ? n : s0);
+-    if (s > L.smax) return;
+-    u64 count = (L.smax - s) / n + 1;
+-    if (count <= INLINE_MARKS && !progression_open(best, s, n, L.smax, d))
++    if (!logs_regular(u, L)) {
++        logs_irregular(u, j, v, L, gpow2, best, heavy, nheavy, overflow, P, err);
+         return;
+-    fw seed = d_antilog(j, L.q, d, gpow2);      // root g^j
+-    u64 mask = d_minpoly_seeded(seed, d, L.q, P);
+-    if (mask == 0) { (*err)++; return; }
+-    u64 packed = ((u64)d << 48) | mask;
+-    if (count <= INLINE_MARKS) {
+-        for (; s <= L.smax; s += n) atomicMin(&best[s], (ull)packed);
+-    } else {
+-        unsigned idx = atomicAdd(nheavy, 1u);
+-        if (idx < HEAVY_CAP) heavy[idx] = {s, n, packed};
+-        else atomicAdd(overflow, 1u);
+     }
++    u64 s0 = gf2f_mulmod_m(v, gf2f_powmod_m(j, L.lam_m1, d, M), d, M);
++    logs_mark(s0 == 0 ? M : s0, M, j, L, gpow2, best, heavy, nheavy, overflow,
++              P, err);
+ }
+ 
+ // sweep u in [ulo, uhi) (ulo, run even), runs of `run` consecutive u
+@@ -732,8 +815,159 @@
+     if (my_err) atomicAdd(nerr, my_err);
+ }
+ 
+-// tower: T[c] = log(c + w), from every e = g^u with b != 0 in [u0, u0+count)
+-// (all writers of one slot write the same value, so plain stores suffice)
++// ---------------------------------------------------------------------------
++// LOGS PATH, round 3: the batched kernel.  Each thread enumerates the Lyndon
++// words of its runs with FKM -- exactly the class representatives, nothing
++// else to test -- and handles them 32 at a time (bit-sliced, see gf2_dlog.h):
++//   * g^u for all 32 by bs_pow_g (squarings and plane shifts only), then
++//     x = g^u + 1;
++//   * Pohlig-Hellman (odd d): x^(E_i) bit-sliced for each part, back to
++//     scalars, one table lookup per class and part, CRT;
++//     tower (even d): back to scalars, tower_log per class;
++//   * progression starts v * j^-1 for all 32 with ONE modular exponentiation
++//     (Montgomery's trick: invert the product of the j's, then peel off each
++//     inverse with two multiplies).
++// Against the round-2 kernel this removes per class ~12 necklace tests (and
++// the warp idling between representatives), ~19 scalar multiplies and 27
++// squarings of a PH log, and ~45 of the ~50 multiplies of j^-1.
++#define LB 32
++
++template <int D, int METHOD>
++__device__ __forceinline__ void logs_batch(const LogsParams &L,
++                                           const fw *gpow2, u64 (&ub)[LB],
++                                           u64 (&vb)[LB], u64 (&tb)[LB], int n,
++                                           bool verify, ull *best,
++                                           Heavy *heavy, unsigned *nheavy,
++                                           unsigned *overflow, fw *P,
++                                           unsigned long long *err) {
++    const u64 M = L.M;
++    for (int k = n; k < LB; k++) ub[k] = 1;     // padding; results unused
++    u32 X[D];
++    {
++        u32 U[D];
++        bs_load<D>(ub, U);
++        bs_pow_g<D>(U, X);                      // g^u
++    }
++    if (!L.check) X[0] = ~X[0];                 // x = g^u + 1
++    if (METHOD == LM_PH) {
++        for (int k = 0; k < LB; k++) vb[k] = 0;
++        for (int i = 0; i < L.ph.nparts; i++) {
++            const PHPart &pt = L.ph.part[i];
++            {
++                u32 A[D];
++                bs_pow<D>(X, pt.E, A);          // in the order-P_i subgroup
++                bs_store<D>(A, tb);
++            }
++            for (int k = 0; k < n; k++) {
++                if (vb[k] == ~0ULL) continue;
++                const u64 xi = ph_part_log(pt, tb[k], L.qlow, D);
++                if (xi == ~0ULL) { vb[k] = ~0ULL; continue; }
++                const u64 t = vb[k] + gf2f_mulmod_m(xi, pt.K, D, M);
++                vb[k] = t >= M ? t - M : t;
++            }
++        }
++    } else {
++        bs_store<D>(X, vb);
++        for (int k = 0; k < n; k++) vb[k] = tower_log(vb[k], M, L.tw);
++    }
++    if (L.check) {                              // selftest: log(g^u) == u?
++        for (int k = 0; k < n; k++) if (vb[k] != ub[k]) (*err)++;
++        return;
++    }
++    if (L.fault)                                // fault injection (tests)
++        for (int k = 0; k < n; k++) if (ub[k] % L.fault == 1) vb[k] ^= 1;
++    if (verify && vb[0] < M &&                  // spot check: g^v == g^u + 1
++        gf2f_antilog(vb[0], L.qlow, D, gpow2) !=
++        (gf2f_antilog(ub[0], L.qlow, D, gpow2) ^ 1))
++        vb[0] = ~0ULL;
++    // forward: tb[k] = product of the regular j's before k; ub[k] <- j
++    u64 acc = 1;
++    bool any = false;
++    for (int k = 0; k < n; k++) {
++        tb[k] = acc;
++        if (vb[k] >= M) { (*err)++; continue; }  // inconsistent log
++        const u64 u = ub[k];
++        const u64 j = gf2f_mulmod_m(u, L.rmodinv, D, M);
++        ub[k] = j;
++        if (!logs_regular(u, L)) {               // rare: gcd(u, M) > 1
++            logs_irregular(u, j, vb[k], L, gpow2, best, heavy, nheavy,
++                           overflow, P, err);
++            vb[k] = ~0ULL;                       // done (not an error)
++            continue;
++        }
++        acc = gf2f_mulmod_m(acc, j, D, M);
++        any = true;
++    }
++    if (!any) return;
++    u64 inv = gf2f_powmod_m(acc, L.lam_m1, D, M);   // (prod j)^-1
++    for (int k = n - 1; k >= 0; k--) {
++        if (vb[k] >= M) continue;
++        const u64 j = ub[k];
++        const u64 jinv = gf2f_mulmod_m(inv, tb[k], D, M);
++        inv = gf2f_mulmod_m(inv, j, D, M);
++        const u64 s0 = gf2f_mulmod_m(vb[k], jinv, D, M);
++        logs_mark(s0 == 0 ? M : s0, M, j, L, gpow2, best, heavy, nheavy,
++                  overflow, P, err);
++    }
++}
++
++// sweep the Lyndon words in [ulo, uhi), runs of `run` u-values per step of
++// the grid-stride loop; partial batches carry over between runs
++template <int D, int METHOD>
++__global__ void k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
++                             u64 run, ull *best, Heavy *heavy,
++                             unsigned *nheavy, unsigned *overflow,
++                             unsigned long long *nsurv,
++                             unsigned long long *nerr) {
++    const u64 nruns = (uhi - ulo + run - 1) / run;
++    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
++    const u64 stride = (u64)gridDim.x * blockDim.x;
++    u64 ub[LB], vb[LB], tb[LB];
++    fw P[64];
++    unsigned long long my_surv = 0, my_err = 0;
++    unsigned nb = 0;
++    u64 w = 0, whi = 0;
++    int p = 0;
++    bool have = false;
++    for (;;) {
++        int n = 0;
++        while (n < LB) {                        // fill: next 32 Lyndon words
++            if (!have) {
++                if (rr >= nruns) break;
++                const u64 lo = ulo + rr * run;
++                whi = uhi - lo > run ? lo + run : uhi;
++                rr += stride;
++                w = fkm_seek(lo, D, &p);
++                have = true;
++            }
++            if (w >= whi) { have = false; continue; }
++            if (p == D) ub[n++] = w;
++            w = fkm_next(w, D, &p);
++        }
++        if (n == 0) break;
++        my_surv += n;
++        logs_batch<D, METHOD>(L, gpow2, ub, vb, tb, n, (nb++ & 7) == 0, best,
++                              heavy, nheavy, overflow, P, &my_err);
++    }
++    if (my_surv) atomicAdd(nsurv, my_surv);
++    if (my_err) atomicAdd(nerr, my_err);
++}
++
++// selftest: count the representatives in [ulo, uhi) by the necklace test
++// (the batched kernel's class count must match)
++__global__ void k_rep_count(LogsParams L, u64 ulo, u64 uhi,
++                            unsigned long long *count) {
++    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
++    const u64 stride = (u64)gridDim.x * blockDim.x;
++    unsigned long long c = 0;
++    for (u64 u = (ulo | 1) + 2 * i; u < uhi; u += 2 * stride)
++        c += logs_is_rep(u, L);
++    if (c) atomicAdd(count, c);
++}
++
++// tower: T[log_h(c)] = log(c + w) (and T[MK] = log(w)), from every e = g^u
++// with b != 0 in [u0, u0+count) (all writers of one slot write the same
++// value, so plain stores suffice)
+ __global__ void k_tower_T(TowerDev t, u64 M, u64 q, u64 qlow, int d,
+                           const fw *gpow2, u64 u0, u64 count, u64 run,
+                           u64 *T) {
+@@ -747,19 +981,19 @@
+         for (; u < uend; u++, e = gf_mulx(e, q, d)) {
+             u64 pk = tower_coords(e, t), ac = pk & t.MK, bc = pk >> t.m;
+             if (!bc) continue;
+-            u64 lb = t.LK[bc], cc = 0;
++            u64 lb = t.LK[bc], l = t.MK;
+             if (ac) {
+                 u64 la = t.LK[ac];
+-                cc = t.AK[la >= lb ? la - lb : la + t.MK - lb];
++                l = la >= lb ? la - lb : la + t.MK - lb;
+             }
+             u64 h = (t.MK + 2) * lb;
+-            T[cc] = u >= h ? u - h : u + M - h;
++            T[l] = u >= h ? u - h : u + M - h;
+         }
+     }
+ }
+ 
+ // Pohlig-Hellman: insert gamma^i -> i for i < N
+-__global__ void k_ph_build(u64 *keys, u32 *vals, int sbits, u64 N, u64 gamma,
++__global__ void k_ph_build(PHSlot *slots, int sbits, u64 N, u64 gamma,
+                            u64 qlow, int d, u64 run) {
+     const u64 nruns = (N + run - 1) / run, mask = ((u64)1 << sbits) - 1;
+     u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+@@ -769,8 +1003,8 @@
+         u64 y = gf2f_pow(gamma, i, qlow, d);
+         for (; i < iend; i++, y = gf2f_mul(y, gamma, qlow, d)) {
+             for (u64 h = ph_slot(y, sbits);; h = (h + 1) & mask) {
+-                ull old = atomicCAS((ull *)&keys[h], 0ULL, (ull)y);
+-                if (old == 0) { vals[h] = (u32)i; break; }
++                ull old = atomicCAS((ull *)&slots[h].key, 0ULL, (ull)y);
++                if (old == 0) { slots[h].val = i; break; }
+             }
+         }
+     }
+@@ -850,9 +1084,10 @@
+     // logs path (per-degree tables + error counter)
+     unsigned long long *d_nerr = nullptr;
+     u64 *d_btab = nullptr, *d_T = nullptr;
+-    u32 *d_LK = nullptr, *d_AK = nullptr;
+-    u64 *d_keys[4] = {nullptr, nullptr, nullptr, nullptr};
+-    u32 *d_vals[4] = {nullptr, nullptr, nullptr, nullptr};
++    u32 *d_LK = nullptr;
++#if defined(WIDE_FIELD)
++    PHSlot *d_slots[4] = {nullptr, nullptr, nullptr, nullptr};
++#endif
+ };
+ static std::vector<GpuCtx> g_gpus;
+ static std::vector<ull> g_gather_tmp;
+@@ -1522,6 +1757,7 @@
+        FM_DENSE = 5 };
+ static int g_force_method = FM_AUTO;
+ static bool g_logs_selfcheck = false;    // selftest: verify every log on device
++static bool g_logs_r2 = false;           // COARSE_LOGS_KERNEL=r2: round-2 kernel
+ 
+ #if defined(WIDE_FIELD)
+ // ---------------------------------------------------------------------------
+@@ -1557,10 +1793,37 @@
+ 
+ struct LogsPlan {
+     int method = LM_NONE;
++    bool batched = false;                       // round-3 (batched) kernel
+     PHHost ph;                                  // PH parameters
+     size_t bytes = 0;                           // device table bytes
+ };
+ 
++// The round-3 kernel for (d, method), or nullptr: Pohlig-Hellman for odd d
++// (and d=2), tower for even d >= 4.  One instantiation per degree, since the
++// bit-sliced code needs d at compile time.
++typedef void (*LogsBatchFn)(LogsParams, const fw *, u64, u64, u64, ull *,
++                            Heavy *, unsigned *, unsigned *,
++                            unsigned long long *, unsigned long long *);
++static LogsBatchFn logs_batch_fn(int d, int method) {
++#define LBF_PH(D) case D: return method == LM_PH ? k_logs_batch<D, LM_PH> : nullptr;
++#define LBF_TW(D) case D: return method == LM_TOWER ? k_logs_batch<D, LM_TOWER> : nullptr;
++    switch (d) {
++    LBF_PH(2)  LBF_PH(3)  LBF_TW(4)  LBF_PH(5)  LBF_TW(6)  LBF_PH(7)
++    LBF_TW(8)  LBF_PH(9)  LBF_TW(10) LBF_PH(11) LBF_TW(12) LBF_PH(13)
++    LBF_TW(14) LBF_PH(15) LBF_TW(16) LBF_PH(17) LBF_TW(18) LBF_PH(19)
++    LBF_TW(20) LBF_PH(21) LBF_TW(22) LBF_PH(23) LBF_TW(24) LBF_PH(25)
++    LBF_TW(26) LBF_PH(27) LBF_TW(28) LBF_PH(29) LBF_TW(30) LBF_PH(31)
++    LBF_TW(32) LBF_PH(33) LBF_TW(34) LBF_PH(35) LBF_TW(36) LBF_PH(37)
++    LBF_TW(38) LBF_PH(39) LBF_TW(40) LBF_PH(41) LBF_TW(42) LBF_PH(43)
++    LBF_TW(44) LBF_PH(45) LBF_TW(46) LBF_PH(47) LBF_TW(48) LBF_PH(49)
++    LBF_TW(50) LBF_PH(51) LBF_TW(52) LBF_PH(53) LBF_TW(54) LBF_PH(55)
++    default: break;
++    }
++#undef LBF_PH
++#undef LBF_TW
++    return nullptr;
++}
++
+ // VRAM the logs tables may use: free memory minus the usual reserve and some
+ // slack (min(free/8, 512 MB)): a table filling the card would only save a few
+ // giant steps over one half its size, and a near-full card risks a failed
+@@ -1578,23 +1841,33 @@
+ 
+ // Pick the logs method for degree d whose tables fit in `budget` bytes.
+ // want: FM_TOWER / FM_PH force one engine, anything else = automatic
+-// (tower for even d, Pohlig-Hellman otherwise).
++// (tower for even d, Pohlig-Hellman otherwise).  The batched kernel is used
++// whenever there is one for (d, method), its compile-time modulus matches
++// find_primitive_poly(d), and COARSE_LOGS_KERNEL=r2 does not ask otherwise;
++// the PH plan is optimized for whichever kernel will run it (the round-2
++// kernel gets round 2's plan: the most balanced pair of parts).
+ static bool logs_plan(int d, u64 q, int want, size_t budget, LogsPlan &pl) {
+     pl = LogsPlan();
+     if (!gf2f_usable(q, d)) return false;
+-    bool tower_ok = d >= 4 && !(d & 1) && d <= 46;
++    const bool qtab = (q ^ ((u64)1 << d)) == gf2_qlow(d);
++    bool tower_ok = d >= 4 && !(d & 1) && d <= 54;
+     if (want == FM_TOWER && !tower_ok) return false;
+     if (want != FM_PH && tower_ok) {
+-        size_t need = ((size_t)16 << (d / 2)) + 65536;
++        // LK (4 B) + T (8 B) per K-element, byte tables, slack
++        size_t need = ((size_t)12 << (d / 2)) + ((size_t)((d + 7) / 8) << 11) + 65536;
+         if (need <= budget) {
+             pl.method = LM_TOWER;
+             pl.bytes = need;
++            pl.batched = !g_logs_r2 && qtab && logs_batch_fn(d, LM_TOWER);
+             return true;
+         }
+         if (want == FM_TOWER) return false;
+     }
+-    if (!ph_plan_host(d, q, budget, pl.ph)) return false;
++    const bool batched = !g_logs_r2 && qtab && logs_batch_fn(d, LM_PH);
++    if (!ph_plan_host(d, q, budget, pl.ph,
++                      batched ? kPHCostBitsliced : kPHCostRound2)) return false;
+     pl.method = LM_PH;
++    pl.batched = batched;
+     pl.bytes = pl.ph.table_bytes;
+     return true;
+ }
+@@ -1652,12 +1925,9 @@
+         CUCHK(cudaMalloc(&G.d_LK, W.LK.size() * sizeof(u32)));
+         CUCHK(cudaMemcpy(G.d_LK, W.LK.data(), W.LK.size() * sizeof(u32),
+                          cudaMemcpyHostToDevice));
+-        CUCHK(cudaMalloc(&G.d_AK, W.AK.size() * sizeof(u32)));
+-        CUCHK(cudaMemcpy(G.d_AK, W.AK.data(), W.AK.size() * sizeof(u32),
+-                         cudaMemcpyHostToDevice));
+         const u64 slots = W.MK + 1;
+         CUCHK(cudaMalloc(&G.d_T, slots * sizeof(u64)));
+-        L.tw = TowerDev{W.m, W.nb, W.MK, G.d_btab, G.d_LK, G.d_AK, G.d_T};
++        L.tw = TowerDev{W.m, W.nb, W.MK, G.d_btab, G.d_LK, G.d_T};
+         if (Th.empty()) {                       // coupon-collector sweeps
+             launch_dims(slots, blocks, threads);
+             k_fill<<<blocks, threads>>>((ull *)G.d_T, slots, ~0ULL);
+@@ -1692,29 +1962,52 @@
+         for (int i = 0; i < pl.ph.nparts; i++) {
+             const PHPartHost &p = pl.ph.part[i];
+             const size_t S = (size_t)1 << p.sbits;
+-            CUCHK(cudaMalloc(&G.d_keys[i], S * sizeof(u64)));
+-            CUCHK(cudaMalloc(&G.d_vals[i], S * sizeof(u32)));
+-            CUCHK(cudaMemset(G.d_keys[i], 0, S * sizeof(u64)));
++            CUCHK(cudaMalloc(&G.d_slots[i], S * sizeof(PHSlot)));
++            CUCHK(cudaMemset(G.d_slots[i], 0, S * sizeof(PHSlot)));
+             u64 run = logs_run_for(p.N);
+             launch_dims((p.N + run - 1) / run, blocks, threads);
+-            k_ph_build<<<blocks, threads>>>(G.d_keys[i], G.d_vals[i], p.sbits,
+-                                            p.N, p.gamma, L.qlow, d, run);
++            k_ph_build<<<blocks, threads>>>(G.d_slots[i], p.sbits, p.N, p.gamma,
++                                            L.qlow, d, run);
+             L.ph.part[i] = PHPart{p.P, p.E, p.K, p.N, p.G, p.delta,
+-                                  G.d_keys[i], G.d_vals[i], p.sbits};
++                                  G.d_slots[i], p.sbits};
+         }
+         CUCHK(cudaDeviceSynchronize());
+     }
+ }
+ 
+ static void logs_free_device(GpuCtx &G) {
+-    cudaFree(G.d_btab); cudaFree(G.d_LK); cudaFree(G.d_AK); cudaFree(G.d_T);
+-    G.d_btab = G.d_T = nullptr; G.d_LK = G.d_AK = nullptr;
++    cudaFree(G.d_btab); cudaFree(G.d_LK); cudaFree(G.d_T);
++    G.d_btab = G.d_T = nullptr; G.d_LK = nullptr;
+     for (int i = 0; i < 4; i++) {
+-        cudaFree(G.d_keys[i]); cudaFree(G.d_vals[i]);
+-        G.d_keys[i] = nullptr; G.d_vals[i] = nullptr;
++        cudaFree(G.d_slots[i]);
++        G.d_slots[i] = nullptr;
+     }
+ }
+ 
++// launch shape for the batched kernel: ONE full wave of resident blocks
++// (from the occupancy calculator, so it follows whatever register count the
++// compiler gave this instantiation), each thread grid-striding over ~10-20
++// runs and carrying partial batches from run to run; fewer blocks if there
++// are fewer runs.  A grid of several waves would leave its last wave partly
++// idle: e.g. 3.2 waves of PH blocks take as long as 4.  Smaller blocks for
++// the register-heavy PH variant.
++static void logs_batch_dims(LogsBatchFn kfn, u64 nruns, int method,
++                            int &blocks, int &threads) {
++    threads = method == LM_PH ? 128 : 256;
++    int dev = 0, nsm = 0, per_sm = 0;
++    if (cudaGetDevice(&dev) != cudaSuccess) dev = 0;
++    if (cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, dev) !=
++            cudaSuccess || nsm < 1)
++        nsm = 1;
++    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kfn, threads, 0)
++            != cudaSuccess || per_sm < 1)
++        per_sm = 1;
++    const u64 wave = (u64)nsm * (u64)per_sm;
++    const u64 need = (nruns + threads - 1) / threads;
++    const u64 b = need < wave ? need : wave;
++    blocks = (int)(b ? b : 1);
++}
++
+ // selftest: check log(g^u) == u for u in [0, min(M, 2^24)) on device 0
+ static void logs_selfcheck(int d, const LogsParams &L) {
+     GpuCtx &G = g_gpus[0];
+@@ -1735,29 +2028,72 @@
+     if (bad) { fprintf(stderr, "logs selfcheck FAILED at d=%d\n", d); exit(1); }
+ }
+ 
+-// --selftest-logs, second part: the rotation test and the discrete-log
+-// engines at every degree up to 47 on device 0 (the sieve comparison only
++// selftest: the batched kernel in check mode over [ulo, uhi): every class
++// it enumerates must get log(g^u) == u, and it must enumerate exactly the
++// representatives that the necklace test finds there.  Returns failures.
++static u64 logs_batch_check(GpuCtx &G, int d, const LogsPlan &pl,
++                            LogsParams L, u64 ulo, u64 uhi, u64 *nclasses) {
++    LogsBatchFn kfn = logs_batch_fn(d, pl.method);
++    if (!kfn) return 0;
++    unsigned long long zero = 0, ns = 0, ne = 0, nc = 0;
++    unsigned long long *dns, *dne, *dnc;
++    CUCHK(cudaMalloc(&dns, 8)); CUCHK(cudaMalloc(&dne, 8)); CUCHK(cudaMalloc(&dnc, 8));
++    CUCHK(cudaMemcpy(dns, &zero, 8, cudaMemcpyHostToDevice));
++    CUCHK(cudaMemcpy(dne, &zero, 8, cudaMemcpyHostToDevice));
++    CUCHK(cudaMemcpy(dnc, &zero, 8, cudaMemcpyHostToDevice));
++    L.check = 1;
++    const u64 run = 1024;
++    int blocks, threads;
++    logs_batch_dims(kfn, (uhi - ulo + run - 1) / run, pl.method, blocks, threads);
++    kfn<<<blocks, threads>>>(L, G.dgp, ulo, uhi, run, nullptr, nullptr, nullptr,
++                             nullptr, dns, dne);
++    launch_dims((uhi - ulo) / 2, blocks, threads);
++    k_rep_count<<<blocks, threads>>>(L, ulo, uhi, dnc);
++    CUCHK(cudaMemcpy(&ns, dns, 8, cudaMemcpyDeviceToHost));
++    CUCHK(cudaMemcpy(&ne, dne, 8, cudaMemcpyDeviceToHost));
++    CUCHK(cudaMemcpy(&nc, dnc, 8, cudaMemcpyDeviceToHost));
++    cudaFree(dns); cudaFree(dne); cudaFree(dnc);
++    *nclasses = ns;
++    return ne + (ns != nc ? 1 : 0);
++}
++
++// A stretch [H 2^L, (H+1) 2^L) of u that is dense in class representatives:
++// H = 0^z 1 0 1 0 1 ... (d - L bits, z = min(L/2, d-L-1)) puts the longest
++// zero run first, so most odd u there are their own least rotation (about
++// half of the 2^L values are classes).  (A stretch at 2^(d-12) is not: its
++// u have an internal zero run of d - 12 - L bits, longer than the leading
++// one once d > 2L + 12, and then hold no representatives at all.)
++static u64 logs_dense_stretch(int d, int L) {
++    const int hb = d - L;
++    const int z = L / 2 < hb - 1 ? L / 2 : hb - 1;
++    u64 H = 0;
++    for (int b = hb - z - 1; b >= 0; b -= 2) H |= (u64)1 << b;
++    return H << L;
++}
++
++// --selftest-logs, second part: the rotation test, FKM and the discrete-log
++// engines at every degree up to 55 on device 0 (the sieve comparison only
+ // reaches d=20).  want = FM_TOWER / FM_PH limits it to one engine.
+ // Returns the number of failures.
+ static u64 logs_wide_selftest(u64 r, int want) {
+     GpuCtx &G = g_gpus[0];
+     CUCHK(cudaSetDevice(G.dev));
+ #if defined(__CUDACC__)
+-    const u64 nrep = (u64)1 << 22, nlog = (u64)1 << 20;
+-    int dmax_log = 47;
++    const u64 nrep = (u64)1 << 22, nlog = (u64)1 << 20, nbat = (u64)1 << 22;
++    int dmax_log = KEY_MAX_DEGREE;
+ #else                                         // CPU emulation: keep it short
+-    const u64 nrep = (u64)1 << 12, nlog = (u64)1 << 9;
++    const u64 nrep = (u64)1 << 12, nlog = (u64)1 << 9, nbat = (u64)1 << 12;
+     int dmax_log = 30;
+ #endif
+     if (const char *e = getenv("COARSE_SELFTEST_LOGS_DMAX")) {   // test hook
+         int k = atoi(e);
+-        if (k >= 21 && k <= 47) dmax_log = k;
++        if (k >= 21 && k <= KEY_MAX_DEGREE) dmax_log = k;
+     }
+     unsigned long long zero = 0, bad = 0, *dbad;
+     CUCHK(cudaMalloc(&dbad, 8));
+     u64 fails = 0;
+     int blocks, threads;
+-    for (int d = 2; d <= 47; d++) {
++    for (int d = 2; d <= KEY_MAX_DEGREE; d++) {
+         CUCHK(cudaMemcpy(dbad, &zero, 8, cudaMemcpyHostToDevice));
+         launch_dims(nrep, blocks, threads);
+         k_rep_check<<<blocks, threads>>>(d, nrep, dbad);
+@@ -1765,8 +2101,9 @@
+         if (bad) fprintf(stderr, "  d=%d: rotation test: %llu mismatches\n", d, bad);
+         fails += bad;
+     }
+-    fprintf(stderr, "  [rotation test vs all-rotations reference, d=2..47, "
+-            "%" PRIu64 " u per degree: %s]\n", 2 * nrep, fails ? "FAILED" : "ok");
++    fprintf(stderr, "  [rotation test vs all-rotations reference, d=2..%d, "
++            "%" PRIu64 " u per degree: %s]\n", KEY_MAX_DEGREE, 2 * nrep,
++            fails ? "FAILED" : "ok");
+ 
+     size_t freeb = 0, totb = 0;
+     CUCHK(cudaMemGetInfo(&freeb, &totb));
+@@ -1779,7 +2116,13 @@
+         for (int eng : {FM_TOWER, FM_PH}) {
+             if (want != FM_LOGS && want != eng) continue;
+             LogsPlan pl;
+-            if (!logs_plan(d, q, eng, budget, pl)) continue;   // tower: even d
++            if (!logs_plan(d, q, eng, budget, pl)) {   // tower: even d only
++                if (eng == FM_PH)
++                    fprintf(stderr, "  [d=%d PH    logs: no feasible plan "
++                            "(expected only for d=49)]\n", d);
++                if (eng == FM_PH && d != 49) fails++;
++                continue;
++            }
+             double t0 = now_s();
+             CUCHK(cudaMalloc(&G.dgp, d * sizeof(fw)));
+             CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
+@@ -1800,13 +2143,31 @@
+             launch_dims((nlog + run - 1) / run, blocks, threads);
+             k_dlog_check<<<blocks, threads>>>(L, G.dgp, ulo, ulo + nlog, run, dbad);
+             CUCHK(cudaMemcpy(&bad, dbad, 8, cudaMemcpyDeviceToHost));
++            // the batched kernel on a stretch dense in representatives
++            u64 bfail = 0, ncls = 0;
++            if (pl.batched) {
++                int lb = 0;
++                while (((u64)2 << lb) <= nbat && lb + 1 <= d - 8) lb++;
++                const u64 blo = logs_dense_stretch(d, lb);
++                bfail = logs_batch_check(G, d, pl, L, blo, blo + ((u64)1 << lb),
++                                         &ncls);
++                if (ncls < ((u64)1 << lb) / 8) {      // the check must test something
++                    fprintf(stderr, "  d=%d: batched check found only %" PRIu64
++                            " classes in its stretch\n", d, ncls);
++                    bfail++;
++                }
++            }
+             logs_free_device(G);
+             cudaFree(G.dgp); G.dgp = nullptr;
+             fprintf(stderr, "  [d=%d %-5s logs, %4.0f MB tables: %" PRIu64
+-                    " checked, %llu wrong, %.2fs]\n", d,
++                    " checked, %llu wrong", d,
+                     pl.method == LM_TOWER ? "tower" : "PH",
+-                    pl.bytes / 1048576.0, nlog, bad, now_s() - t0);
+-            fails += bad;
++                    pl.bytes / 1048576.0, nlog, bad);
++            if (pl.batched)
++                fprintf(stderr, "; batched: %" PRIu64 " classes, %s", ncls,
++                        bfail ? "FAILED" : "ok");
++            fprintf(stderr, ", %.2fs]\n", now_s() - t0);
++            fails += bad + bfail;
+         }
+     }
+     cudaFree(dbad);
+@@ -1828,6 +2189,7 @@
+     int nchunks;
+     logs_geometry(d, total, run, chunk, nchunks);
+     const char *mname = pl.method == LM_TOWER ? "tower" : "PH";
++    const LogsBatchFn kfn = pl.batched ? logs_batch_fn(d, pl.method) : nullptr;
+ 
+     fw gpow2[64];
+     gpow2[0] = 2;
+@@ -1860,9 +2222,9 @@
+     }
+     W = TowerHost();                            // host copies no longer needed
+     Th.clear(); Th.shrink_to_fit();
+-    fprintf(stderr, "d=%2d logs (%s, %.0f MB tables, built in %.1fs), %d "
+-            "chunk%s", d, mname, pl.bytes / 1048576.0, now_s() - t0, nchunks,
+-            nchunks == 1 ? "" : "s");
++    fprintf(stderr, "d=%2d logs (%s%s, %.0f MB tables, built in %.1fs), %d "
++            "chunk%s", d, mname, kfn ? ", batched" : ", round-2 kernel",
++            pl.bytes / 1048576.0, now_s() - t0, nchunks, nchunks == 1 ? "" : "s");
+     if (NG > 1) fprintf(stderr, " on %d GPUs", NG);
+     fprintf(stderr, ": ");
+     if (g_logs_selfcheck) { fprintf(stderr, "\n"); logs_selfcheck(d, Lg[0]); }
+@@ -1902,11 +2264,19 @@
+             CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
+             CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
+             int blocks, threads;
+-            launch_dims((uhi - ulo + run - 1) / run, blocks, threads);
+-            k_logs_sweep<<<blocks, threads>>>(Lg[g], G.dgp, ulo, uhi, run,
+-                                              G.d_best, G.d_heavy, G.d_nheavy,
+-                                              G.d_overflow, G.d_nsurv,
+-                                              G.d_nerr);
++            if (kfn) {
++                logs_batch_dims(kfn, (uhi - ulo + run - 1) / run, pl.method,
++                                blocks, threads);
++                kfn<<<blocks, threads>>>(Lg[g], G.dgp, ulo, uhi, run, G.d_best,
++                                         G.d_heavy, G.d_nheavy, G.d_overflow,
++                                         G.d_nsurv, G.d_nerr);
++            } else {
++                launch_dims((uhi - ulo + run - 1) / run, blocks, threads);
++                k_logs_sweep<<<blocks, threads>>>(Lg[g], G.dgp, ulo, uhi, run,
++                                                  G.d_best, G.d_heavy,
++                                                  G.d_nheavy, G.d_overflow,
++                                                  G.d_nsurv, G.d_nerr);
++            }
+             CUCHK(cudaEventRecord(ev[g], 0));
+             used++;
+         }
+@@ -1976,10 +2346,12 @@
+ }
+ #endif // WIDE_FIELD
+ 
+-static void run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
+-                    int force_lowmem_buckets = 0, int min_depth = 2,
+-                    const std::vector<ull> *preload = nullptr,
+-                    int resume_bucket = 0, int resume_nbuckets = 0) {
++// Returns the last degree fully sieved: depth, unless some degree could not
++// be done here (then best[] holds the results through the returned degree).
++static int run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
++                   int force_lowmem_buckets = 0, int min_depth = 2,
++                   const std::vector<ull> *preload = nullptr,
++                   int resume_bucket = 0, int resume_nbuckets = 0) {
+     // Every device gets a private best[]; the elementwise min across them is
+     // the answer (see the MULTI-GPU note above).  Seeding each with the same
+     // preload keeps that identity true from the start.
+@@ -2008,7 +2380,17 @@
+     Heavy *d_heavy = g_gpus[0].d_heavy;
+     unsigned *d_nheavy = g_gpus[0].d_nheavy, *d_overflow = g_gpus[0].d_overflow;
+ 
++    int reached = min_depth - 1;
++    // test hook: COARSE_TEST_STOP_DEGREE=n behaves as if degree n could not
++    // be sieved here (exercises the early-stop handling in main)
++    const char *tsd = getenv("COARSE_TEST_STOP_DEGREE");
++    const int test_stop_degree = tsd ? atoi(tsd) : 0;
+     for (int d = min_depth; d <= depth; d++) {
++        if (d == test_stop_degree) {
++            fprintf(stderr, "d=%d: COARSE_TEST_STOP_DEGREE: stopping at depth "
++                    "%d\n", d, d - 1);
++            break;
++        }
+         // On a mid-degree resume, the first degree processed continues from
+         // resume_bucket using the exact nbuckets the checkpoint was made
+         // with (bucket value-ranges depend on nbuckets); later degrees start
+@@ -2102,6 +2484,17 @@
+ #if defined(WIDE_FIELD)
+             else if (fm == FM_AUTO) done = try_logs(FM_LOGS, 0, false);
+ #endif
++            if (!done && d > 47) {
++                // beyond d=47 only the logs path is supported (a bucketed
++                // pass would take years); 49 is the one degree with no
++                // discrete-log method (2^49-1 = 127 * 4432676798593), and
++                // main() refuses it before starting
++                fprintf(stderr, "d=%d: no discrete-log method fits here (%s); "
++                        "stopping at depth %d\n", d, d == 49 ? "2^49-1 has "
++                        "the prime factor 4432676798593" : "tables too large "
++                        "for this card", d - 1);
++                break;
++            }
+             if (!done) {
+                 // dense tables don't fit and no logs path: bucketed
+                 // low-memory path (see "LOW-MEMORY MODE")
+@@ -2131,11 +2524,18 @@
+         }
+         // Only worth a periodic save if more degrees remain; after the last
+         // one the run is about to write its real output anyway.
++        reached = d;
+         if (d < depth && ckpt_periodic_due()) {
+             ckpt_snapshot(d + 1, 0, 0); ckpt_write();
+         }
+     }
+ 
++    if (reached < depth && g_ckpt.enabled) {
++        // stopped early (a degree that cannot be done here): save the degree
++        // boundary, so a resume -- e.g. with more free VRAM -- starts there
++        ckpt_snapshot(reached + 1, 0, 0);
++        ckpt_write();
++    }
+     best.resize(smax + 1);
+     gather_best(best.data(), smax + 1);
+     for (size_t g = 0; g < g_gpus.size(); g++) {
+@@ -2146,6 +2546,7 @@
+         G.d_best = nullptr;
+     }
+     g_gather_tmp.clear(); g_gather_tmp.shrink_to_fit();
++    return reached;
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -2186,7 +2587,7 @@
+             u64 n = M64 / gg;
+             u64 s0 = MULMOD(inv_mod(jj64 / gg, n), (u64)v / gg, n);
+             u64 mask = minpoly_mask(j, d, M, q, A.data(), P);
+-            u64 packed = ((u64)d << 48) | mask;
++            u64 packed = key_pack(d, mask);
+             for (u64 s = (s0 == 0 ? n : s0); s <= smax; s += n)
+                 if (packed < best[s]) best[s] = packed;
+         }
+@@ -2200,6 +2601,15 @@
+     // COARSE_METHOD=auto|dense|buckets|logs|tower|ph overrides the per-degree
+     // method choice (testing / A-B timing); tower falls back to an error on
+     // odd d, logs = tower for even d and Pohlig-Hellman for odd d.
++    // COARSE_LOGS_KERNEL=r2 uses the round-2 logs kernel (one class per
++    // thread, scalar arithmetic) instead of the batched one: A/B timing
++    if (const char *e = getenv("COARSE_LOGS_KERNEL")) {
++        if (!strcmp(e, "r2")) g_logs_r2 = true;
++        else if (strcmp(e, "batched")) {
++            fprintf(stderr, "COARSE_LOGS_KERNEL=%s: expected batched or r2\n", e);
++            return 1;
++        }
++    }
+     if (const char *e = getenv("COARSE_METHOD")) {
+         if (!strcmp(e, "dense")) g_force_method = FM_DENSE;
+         else if (!strcmp(e, "buckets")) g_force_method = FM_BUCKETS;
+@@ -2278,14 +2688,14 @@
+         u64 wide_fails = 0;
+ #if defined(WIDE_FIELD)
+         if (logs) {
+-            fprintf(stderr, "logs engines at d <= 47 (device 0):\n");
++            fprintf(stderr, "logs engines at d <= %d (device 0):\n", KEY_MAX_DEGREE);
+             wide_fails = logs_wide_selftest(r, logs_want);
+         }
+ #endif
+         (void)logs_want;
+         if (wide_fails)
+-            printf("selftest: logs engine checks at d <= 47: %" PRIu64
+-                   " failures\n", wide_fails);
++            printf("selftest: logs engine checks at d <= %d: %" PRIu64
++                   " failures\n", KEY_MAX_DEGREE, wide_fails);
+         printf("selftest: %s (%" PRIu64 " mismatches)\n",
+                bad || wide_fails ? "FAIL" : "PASS", bad);
+         return bad || wide_fails ? 1 : 0;
+@@ -2320,6 +2730,11 @@
+                         "present; buckets split across\n"
+                         "                      devices, no peer access or "
+                         "NVLink needed)\n"
++                        "  --allow-degree-gap  allow --min-depth >= 50 (degree 49 "
++                        "cannot be sieved, so\n"
++                        "                      factors found at d >= 50 are least-"
++                        "degree only where there\n"
++                        "                      is no degree-49 factor)\n"
+                         "\n"
+                         "  <out_prefix>.found.cert lists one line per s that has a "
+                         "factor, in the same\n"
+@@ -2336,12 +2751,11 @@
+     }
+     u64 r = strtoull(argv[1], 0, 10);
+     int depth = atoi(argv[2]);
+-    // best[] keys are (d << 48) | mask and a degree-d mask needs d+1 bits
+-    // (bit d is the leading coefficient), so d = 48 would spill into the
+-    // degree field and corrupt both the min-ordering and the decoding.
+-    if (depth > 47) {
+-        fprintf(stderr, "depth %d unsupported: packed key (d<<48)|mask "
+-                "holds d <= 47 (widen the key format first)\n", depth);
++    // best[] keys hold degrees up to KEY_MAX_DEGREE (see key_pack); degrees
++    // above 47 exist only in the logs path (wide build)
++    if (depth > KEY_MAX_DEGREE) {
++        fprintf(stderr, "depth %d unsupported: the packed best[] key holds "
++                "d <= %d\n", depth, KEY_MAX_DEGREE);
+         return 1;
+     }
+ #if !defined(WIDE_FIELD)
+@@ -2373,6 +2787,7 @@
+     const char *load_path = nullptr, *ckpt_path = nullptr, *resume_path = nullptr;
+     const char *loadsurv_path = nullptr;
+     int min_depth = 2, ckpt_keep = 3, want_gpus = 0;   // 0 = use every device
++    bool allow_gap = false;                      // --allow-degree-gap
+     double ckpt_mins = -1;                       // <0 = not given on command line
+     for (int a = first_flag; a < argc; a++) {
+         if (!strcmp(argv[a], "--found")) write_found = true;
+@@ -2388,6 +2803,7 @@
+         else if (!strcmp(argv[a], "--checkpoint-keep") && a + 1 < argc) ckpt_keep = atoi(argv[++a]);
+         else if (!strcmp(argv[a], "--resume") && a + 1 < argc) resume_path = argv[++a];
+         else if (!strcmp(argv[a], "--gpus") && a + 1 < argc) want_gpus = atoi(argv[++a]);
++        else if (!strcmp(argv[a], "--allow-degree-gap")) allow_gap = true;
+         else fprintf(stderr, "warning: ignoring unknown argument '%s'\n", argv[a]);
+     }
+     if (min_depth < 2) min_depth = 2;
+@@ -2435,7 +2851,7 @@
+         // Seed from a survivors list instead of a full .found.bin.  Only the
+         // *degrees* in best[] matter for correctness when sieving degrees
+         // >= min_depth: every s not listed already has a factor of degree
+-        // < min_depth, so any sentinel below (min_depth << 48) blocks all new
++        // < min_depth, so any sentinel below key_floor(min_depth) blocks all new
+         // writes exactly as the real key would.  The polynomial data in a
+         // .found.bin is never read by the sieve -- only compared against.
+         u64 pre_surv = 0, line = 0, oor = 0;
+@@ -2459,6 +2875,34 @@
+                 "degrees 2..%d are not computed\n", min_depth, min_depth - 1);
+     }
+ 
++    // Degree 49 cannot be sieved: 2^49 - 1 = 127 * 4432676798593 leaves no
++    // discrete-log method with tables that fit, and a bucketed pass would
++    // take decades.  Degrees 50..55 can be, but then a factor found at
++    // degree 50..55 is the LEAST-degree factor of its trinomial only if
++    // degree 49 was ruled out by other means -- so that takes an explicit
++    // --allow-degree-gap.
++    if (min_depth <= 49 && depth >= 49) {
++        fprintf(stderr, "degree 49 cannot be sieved: 2^49 - 1 = 127 * "
++                "4432676798593, too large a prime for any discrete-log table, "
++                "and a bucketed pass would take decades.  Use depth <= 48%s\n",
++                depth > 49 ? " (degrees 50..55: see --allow-degree-gap)" : "");
++        return 1;
++    }
++    if (min_depth >= 50 && !allow_gap) {
++        fprintf(stderr, "--min-depth %d: degree 49 cannot be sieved, so a factor "
++                "found at degree %d..%d is the least-degree factor of its "
++                "trinomial only if degree-49 factors were ruled out some other "
++                "way -- otherwise its certificate line may be wrong (the factor "
++                "itself is real).  Add --allow-degree-gap to sieve anyway.\n",
++                min_depth, min_depth, depth);
++        return 1;
++    }
++    const bool gap49 = min_depth >= 50;
++    if (gap49)
++        fprintf(stderr, "note: --allow-degree-gap: degree 49 is NOT covered; "
++                "factors of degree %d..%d found here are least-degree factors "
++                "only where there is no degree-49 factor\n", min_depth, depth);
++
+     // Configure checkpointing and install signal handlers.  A --resume run
+     // keeps checkpointing to the same file (so it survives repeated spot
+     // reclaims) unless --checkpoint names a different destination.
+@@ -2507,9 +2951,17 @@
+     std::vector<ull> best;
+     int force_buckets = 0;
+     if (const char *e = getenv("COARSE_FORCE_BUCKETS")) force_buckets = atoi(e);
+-    run_gpu(r, depth, smax, best, force_buckets, min_depth,
+-            have_preload ? &preload : nullptr, resume_bucket, resume_nbuckets);
++    const int reached = run_gpu(r, depth, smax, best, force_buckets, min_depth,
++                                have_preload ? &preload : nullptr, resume_bucket,
++                                resume_nbuckets);
+     fprintf(stderr, "total sieve time: %.2fs\n", now_s() - t0);
++    if (reached < depth)
++        fprintf(stderr, "WARNING: stopped after degree %d of %d; the outputs "
++                "below cover degrees through %d only, and the checkpoint (if "
++                "any) is kept.  Exit status 2.\n", reached, depth, reached);
++    char covered[64];
++    if (gap49) snprintf(covered, sizeof covered, "<= %d other than 49", reached);
++    else snprintf(covered, sizeof covered, "<= %d", reached);
+ 
+     char path[1024];
+     if (write_survivors) {
+@@ -2520,13 +2972,13 @@
+         for (u64 s = 1; s <= smax; s++)
+             if (best[s] == ~0ULL) { fprintf(fs, "%" PRIu64 "\n", s); nsurv++; }
+         fclose(fs);
+-        fprintf(stderr, "%" PRIu64 " survivors (no factor of degree <= %d) -> %s\n",
+-                nsurv, depth, path);
++        fprintf(stderr, "%" PRIu64 " survivors (no factor of degree %s) -> %s\n",
++                nsurv, covered, path);
+     } else {
+         u64 nsurv = 0;
+         for (u64 s = 1; s <= smax; s++) if (best[s] == ~0ULL) nsurv++;
+-        fprintf(stderr, "%" PRIu64 " survivors (no factor of degree <= %d) "
+-                "[survivors file suppressed via --no-survivors]\n", nsurv, depth);
++        fprintf(stderr, "%" PRIu64 " survivors (no factor of degree %s) "
++                "[survivors file suppressed via --no-survivors]\n", nsurv, covered);
+     }
+ 
+     if (write_cert) {
+@@ -2543,8 +2995,8 @@
+         for (u64 s = 1; s <= smax; s++) {
+             ull b = best[s];
+             if (b == ~0ULL || b == 0ULL) continue;      // survivor / not ours
+-            unsigned dd = (unsigned)(b >> 48);
+-            u64 mask = (u64)b & 0xFFFFFFFFFFFFULL;
++            unsigned dd = (unsigned)key_degree(b);
++            u64 mask = key_mask(b);
+             fprintf(fc, "%" PRIu64 " %u p%" PRIx64 "\n", s, dd, mask);
+             ncert++;
+         }
+@@ -2560,6 +3012,7 @@
+         fclose(ff);
+         fprintf(stderr, "packed keys for s=1..%" PRIu64 " -> %s\n", smax, path);
+     }
++    if (reached < depth) return 2;
+     // Run finished normally: drop the checkpoint so it can't be resumed by
+     // mistake later.
+     if (g_ckpt.enabled && g_ckpt.path) {
+--- a/cuda_emul.h	2026-10-20 23:03:43.551738200 -0400
++++ b/cuda_emul.h	2026-10-20 23:03:43.558080328 -0400
+@@ -15,6 +15,14 @@
+ static inline cudaError_t cudaDeviceSynchronize() { return 0; }
+ static inline cudaError_t cudaGetLastError() { return 0; }
+ static inline cudaError_t cudaSetDevice(int) { return 0; }
++static inline cudaError_t cudaGetDevice(int* d) { *d = 0; return 0; }
++// launch-shape queries: a small pretend GPU (4 SMs, 2 resident blocks per SM
++// for any kernel) -- only the work split changes, never the results
++enum cudaDeviceAttr { cudaDevAttrMultiProcessorCount = 16 };
++static inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int) {
++    *v = a == cudaDevAttrMultiProcessorCount ? 4 : 0; return 0; }
++template <class F> static inline cudaError_t
++cudaOccupancyMaxActiveBlocksPerMultiprocessor(int* n, F, int, size_t) { *n = 2; return 0; }
+ // test hooks: EMUL_NDEV=n pretends to have n devices (all the same host
+ // memory); EMUL_FREE_MB=m reports m MB free (default 64 GB) so the
+ // memory-dependent paths (coarse_sieve buckets / logs tables) can be hit
+--- a/gf2_dlog.h	2026-10-20 23:03:43.539926374 -0400
++++ b/gf2_dlog.h	2026-10-20 23:03:43.557844323 -0400
+@@ -1,35 +1,40 @@
+ // gf2_dlog.h
+-// Table-light discrete logarithms in GF(2^d), d <= 47, for coarse_sieve's
++// Table-light discrete logarithms in GF(2^d), d <= 55, for coarse_sieve's
+ // "logs" path (-DWIDE_FIELD build only).  The sieve needs, per cyclotomic
+ // class, one Zech logarithm log(g^u + 1); instead of a 2^d-entry log table
+ // (or its bucketed slices) it computes that one log directly:
+ //
+ //   tower  (even d = 2m): GF(2^d) = K(w), K = GF(2^m), w = x.  Every element
+ //          is a + b*w with a, b in K; for b != 0 it equals b*(c + w),
+-//          c = a/b, so  log e = (2^m+1)*logK(b) + T[c].  The split e -> (a,b)
+-//          is GF(2)-linear (byte tables); tables have 2^m entries.
++//          c = a/b, so  log e = (2^m+1)*logK(b) + T[logK(c)].  The split
++//          e -> (a,b) is GF(2)-linear (byte tables); tables have 2^m entries.
+ //   ph     (any d): Pohlig-Hellman over a coprime split M = P_1*...*P_n of
+-//          M = 2^d - 1 (n <= 4, typically 2 balanced parts of ~2^(d/2)):
+-//          e^(E_i) lies in the order-P_i subgroup and a hash table (with
+-//          baby-step/giant-step when P_i exceeds the table budget) gives
+-//          v mod P_i; CRT gives v.  The exponents E_i = c_i * M/P_i are
+-//          chosen (over c_i coprime to P_i, and rotations) to have few set
+-//          bits in a short window: few general multiplies, short squaring
+-//          chain.
++//          M = 2^d - 1 (n <= 4): e^(E_i) lies in the order-P_i subgroup and
++//          a hash table of 16-byte slots (with baby-step/giant-step when P_i
++//          exceeds the table budget) gives v mod P_i; CRT gives v.  The
++//          exponents E_i = c_i * M/P_i are chosen (over c_i coprime to P_i,
++//          and rotations) to have few set bits in a short window: few
++//          general multiplies, short squaring chain.  The planner picks the
++//          split by estimated cost per class, for the kernel that will run
++//          it (cost models below).
+ //
+ // Also here: carry-less arithmetic that is ~8x cheaper than gf_mul's
+ // bit-serial loops (integer-multiply clmul with 4-bit holes, BearSSL-style;
+-// two-fold reduction by the sparse low part of the modulus), and the u64
+-// helpers the sweep needs (Mersenne mulmod/powmod, exact-division tests).
++// two-fold reduction by the sparse low part of the modulus); bit-sliced
++// arithmetic for 32 elements at once (round 3: one u32 per coefficient,
++// the modulus fixed at compile time); the FKM enumeration of class
++// representatives (Lyndon words); and the u64 helpers the sweep needs
++// (Mersenne mulmod/powmod, exact-division tests).
+ // Everything is plain host+device code: no tables in shared memory, no
+ // warp intrinsics, so cuda_emul.h validates it exactly.
+ 
+ #ifndef GF2_DLOG_H
+ #define GF2_DLOG_H
+ #include "gf2_wide_field.h"
++#include <utility>        // std::integer_sequence (bit-sliced arithmetic)
+ 
+ // ---------------------------------------------------------------------------
+-// fast field arithmetic (d <= 47, modulus q = x^d + qlow, deg(qlow) <= 16)
++// fast field arithmetic (d <= 55, modulus q = x^d + qlow, deg(qlow) <= 16)
+ 
+ // 32x32 -> 64 carry-less product via integer multiplies.  Each operand is
+ // split into 4 bit-classes (bits = k mod 4); an integer product of two
+@@ -84,7 +89,7 @@
+ }
+ 
+ // p * qlow for p < 2^(64 - deg qlow): XOR of shifted copies, one per set
+-// bit of qlow (2..6 for every d <= 47; uniform across threads).  qlow has
++// bit of qlow (2..6 for every d <= 55; uniform across threads).  qlow has
+ // degree <= 8 here (< 2^25 whenever gf2f_usable holds), so the loop runs on
+ // 32-bit control: ~10 instead of ~18 instructions per term on the GPU.
+ GF2_HD u64 gf2f_mul_low(u64 p, u64 qlow) {
+@@ -143,9 +148,11 @@
+     return r;
+ }
+ 
+-// host check: can the fast path handle this modulus?
++// host check: can the fast path handle this modulus?  (d <= 55: the
++// packed best[] key's limit; the two-fold reduction holds there for the
++// smallest primitive polynomials, whose low part has degree <= 8)
+ static inline bool gf2f_usable(u64 q, int d) {
+-    if (d < 2 || d > 47) return false;
++    if (d < 2 || d > 55) return false;
+     u64 ql = q ^ ((u64)1 << d);
+     if (!ql) return false;
+     int dl = 63 - __builtin_clzll(ql);
+@@ -221,7 +228,8 @@
+ // count kept warps busy for ~30 iterations per u, most of the sweep's time
+ // at large d; the result is the same for every such u (checked against
+ // gf2f_min_rotation_ref exhaustively for d <= 24 and on random u for every
+-// d <= 47 by t_rot.cpp, and on the device by --selftest-logs).
++// d <= 55 by t_rot.cpp / gf2_dlog_selftest.cpp, and on the device by
++// --selftest-logs).
+ GF2_HD u64 gf2f_zero_runs(u64 w, int k) {    // k >= 1
+     int m = 1;
+     while (2 * m <= k) { w &= w >> m; m *= 2; }
+@@ -251,6 +259,51 @@
+     return true;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Lyndon words in increasing order (Fredricksen-Kessler-Maiorana).
++//
++// The degree-d classes are exactly the binary Lyndon words of length n = d
++// (aperiodic, and least among their rotations), read MSB first; as numbers
++// they are the odd representatives u < 2^(d-1).  FKM visits the
++// pre-necklaces of length n in lexicographic = numeric order; a pre-
++// necklace has a "period" p, and the Lyndon words are those with p == n.
++// There are about twice as many pre-necklaces as Lyndon words, so a sweep
++// costs ~2 cheap steps per class -- instead of a test of every odd u
++// (~12 per class at d=47, most of them where there are almost no classes:
++// half of all u start with "01" and hold only the classes without "00").
++//
++// The top n bits of the infinite repetition of the j-bit word P:
++GF2_HD u64 fkm_extend(u64 P, int j, int n) {
++    if (j >= n) return P;
++    u64 X = P << (64 - j);
++    for (int f = j; f < n; f *= 2) X |= X >> f;
++    return X >> (64 - n);
++}
++
++// The least pre-necklace >= lo (lo < 2^n); *p receives its period.
++// FKM's recurrence a_i >= a_(i-p) fails at the first i with a_i < a_(i-p);
++// the least pre-necklace above then repeats a_1..a_p (its prefix up to i-1
++// already does).
++GF2_HD u64 fkm_seek(u64 lo, int n, int *p) {
++    int pp = 1;
++    for (int i = 2; i <= n; i++) {
++        const int ai = (int)((lo >> (n - i)) & 1);
++        const int aq = (int)((lo >> (n - i + pp)) & 1);
++        if (ai < aq) { *p = pp; return fkm_extend(lo >> (n - pp), pp, n); }
++        if (ai > aq) pp = i;
++    }
++    *p = pp;
++    return lo;
++}
++
++// The next pre-necklace after w (w < 2^n - 1); *p receives its period:
++// raise the last 0 to 1 and repeat the prefix up to it.
++GF2_HD u64 fkm_next(u64 w, int n, int *p) {
++    const int b = gf2f_ctz64(~w);              // last 0, as a bit index (< n)
++    *p = n - b;
++    return fkm_extend((w >> b) | 1, n - b, n);
++}
++
+ #if defined(__CUDACC__)
+ #define GF2D_UNROLL _Pragma("unroll")
+ #else
+@@ -258,6 +311,265 @@
+ #endif
+ 
+ // ---------------------------------------------------------------------------
++// The moduli as compile-time constants: q_d = x^d + gf2_qlow(d) is the
++// smallest primitive polynomial of degree d, i.e. exactly what
++// find_primitive_poly(d) returns (the host code checks this before using
++// the bit-sliced kernels, which need the taps at compile time).
++GF2_HD constexpr u64 gf2_qlow(int d) {
++    switch (d) {
++    case  2: return 0x3;   case  3: return 0x3;   case  4: return 0x3;
++    case  5: return 0x5;   case  6: return 0x3;   case  7: return 0x3;
++    case  8: return 0x1d;  case  9: return 0x11;  case 10: return 0x9;
++    case 11: return 0x5;   case 12: return 0x53;  case 13: return 0x1b;
++    case 14: return 0x2b;  case 15: return 0x3;   case 16: return 0x2d;
++    case 17: return 0x9;   case 18: return 0x27;  case 19: return 0x27;
++    case 20: return 0x9;   case 21: return 0x5;   case 22: return 0x3;
++    case 23: return 0x21;  case 24: return 0x1b;  case 25: return 0x9;
++    case 26: return 0x47;  case 27: return 0x27;  case 28: return 0x9;
++    case 29: return 0x5;   case 30: return 0x53;  case 31: return 0x9;
++    case 32: return 0xaf;  case 33: return 0x53;  case 34: return 0xe7;
++    case 35: return 0x5;   case 36: return 0x77;  case 37: return 0x3f;
++    case 38: return 0x63;  case 39: return 0x11;  case 40: return 0x39;
++    case 41: return 0x9;   case 42: return 0x3f;  case 43: return 0x59;
++    case 44: return 0x65;  case 45: return 0x1b;  case 46: return 0x12f;
++    case 47: return 0x21;  case 48: return 0xb7;  case 49: return 0x71;
++    case 50: return 0x1d;  case 51: return 0x4b;  case 52: return 0x9;
++    case 53: return 0x47;  case 54: return 0x7d;  case 55: return 0x47;
++    default: return 0;
++    }
++}
++
++GF2_HD constexpr int gf2_deg(u64 x) {
++    int d = -1;
++    while (x) { x >>= 1; d++; }
++    return d;
++}
++
++// ---------------------------------------------------------------------------
++// Bit-sliced arithmetic: 32 field elements at once, one u32 per coefficient
++// ("plane"): bit k of plane i is coefficient i of element k.  A product is
++// then sum_(i+j=m) a_i & b_j per output plane -- one 3-input LOP3 per term,
++// d^2 for 32 products, against ~250 instructions for ONE scalar product --
++// and reduction mod q_D only XORs whole planes.  A squaring is a fixed
++// permutation of planes plus that reduction: nearly free.  D is a template
++// parameter so every plane index is a compile-time constant and the planes
++// live in registers (3D+ registers for a product: the PH kernels use ~160-
++// 250 registers per thread, i.e. 8-12 warps per SM, which is plenty for
++// LOP3 streams).
++
++// Every plane index must be a compile-time constant for the planes to stay
++// in registers.  Loops would need to be fully unrolled for that, and the
++// unrollers' size limits are exceeded at large D (clang gives up at D = 55),
++// so the plane computations are expanded by folds over index sequences
++// instead: no loops at all in a product or a square.
++template <int D> struct BSRed {               // reduction by q_D = x^D + QL
++    static constexpr u64 QL = gf2_qlow(D);
++    static constexpr int T = gf2_deg(QL);       // taps: x^D = QL, deg QL = T
++    static constexpr int NH = T > 1 ? T - 1 : 1;  // pending planes D..D+T-2
++};
++
++// x^M = x^(M-D) * QL (M >= D): tap S sends plane M to plane M - D + S
++// (the helpers take plain pointers: with array references, GCC's identical-
++// code folding of the empty taps across D produces bogus -Warray-bounds
++// warnings; on the device everything is inlined and indexed by constants)
++template <int D, int M, int S>
++GF2_HD void bs_tap(u32 t, u32 *r, u32 *hp) {
++    if constexpr ((BSRed<D>::QL >> S) & 1) {
++        constexpr int g = M - D + S;
++        if constexpr (g >= D) hp[g - D] ^= t; else r[g] ^= t;
++    }
++}
++
++template <int D, int M, int... S>
++GF2_HD void bs_taps(u32 t, u32 *r, u32 *hp, std::integer_sequence<int, S...>) {
++    (bs_tap<D, M, S>(t, r, hp), ...);
++}
++
++// fold plane M (value t) into the result; a plane M >= D first collects
++// what higher planes folded into it
++template <int D, int M>
++GF2_HD void bs_fold_plane(u32 t, u32 *r, u32 *hp) {
++    if constexpr (M >= D) {
++        if constexpr (M - D < BSRed<D>::T - 1) t ^= hp[M - D];
++        bs_taps<D, M>(t, r, hp, std::make_integer_sequence<int, BSRed<D>::T + 1>{});
++    } else {
++        r[M] ^= t;
++    }
++}
++
++// plane M of a*b: XOR of a[i] & b[M-i] over I0 <= i <= I0 + #J - 1
++template <int D, int M, int I0, int... J>
++GF2_HD u32 bs_conv(const u32 *a, const u32 *b, std::integer_sequence<int, J...>) {
++    return (0u ^ ... ^ (a[I0 + J] & b[M - I0 - J]));
++}
++
++template <int D, int M>
++GF2_HD void bs_mul_plane(const u32 *a, const u32 *b, u32 *r, u32 *hp) {
++    constexpr int I0 = M >= D ? M - D + 1 : 0, I1 = M < D ? M : D - 1;
++    bs_fold_plane<D, M>(
++        bs_conv<D, M, I0>(a, b, std::make_integer_sequence<int, I1 - I0 + 1>{}),
++        r, hp);
++}
++
++template <int D, int... K>
++GF2_HD void bs_mul_planes(const u32 *a, const u32 *b, u32 *r, u32 *hp,
++                          std::integer_sequence<int, K...>) {
++    (bs_mul_plane<D, 2 * D - 2 - K>(a, b, r, hp), ...);   // M = 2D-2 .. 0
++}
++
++// r = a * b  (r must not alias a or b)
++template <int D>
++GF2_HD void bs_mul(const u32 (&a)[D], const u32 (&b)[D], u32 (&r)[D]) {
++    u32 hp[BSRed<D>::NH];
++    GF2D_UNROLL
++    for (int k = 0; k < BSRed<D>::NH; k++) hp[k] = 0;
++    GF2D_UNROLL
++    for (int k = 0; k < D; k++) r[k] = 0;
++    bs_mul_planes<D>(a, b, r, hp, std::make_integer_sequence<int, 2 * D - 1>{});
++}
++
++// plane M of a^2 is a[M/2] for even M and 0 for odd M -- but an odd M >= D
++// still has to pass down what higher planes folded into it
++template <int D, int M>
++GF2_HD void bs_sqr_plane(const u32 *a, u32 *r, u32 *hp) {
++    if constexpr (M & 1) {
++        if constexpr (M >= D) bs_fold_plane<D, M>(0u, r, hp);
++    } else {
++        bs_fold_plane<D, M>(a[M / 2], r, hp);
++    }
++}
++
++template <int D, int... K>
++GF2_HD void bs_sqr_planes(const u32 *a, u32 *r, u32 *hp,
++                          std::integer_sequence<int, K...>) {
++    (bs_sqr_plane<D, 2 * D - 2 - K>(a, r, hp), ...);       // M = 2D-2 .. 0
++}
++
++// r = a^2  (r must not alias a)
++template <int D>
++GF2_HD void bs_sqr(const u32 (&a)[D], u32 (&r)[D]) {
++    u32 hp[BSRed<D>::NH];
++    GF2D_UNROLL
++    for (int k = 0; k < BSRed<D>::NH; k++) hp[k] = 0;
++    GF2D_UNROLL
++    for (int k = 0; k < D; k++) r[k] = 0;
++    bs_sqr_planes<D>(a, r, hp, std::make_integer_sequence<int, 2 * D - 1>{});
++}
++
++// g = g * x in the slots selected by sel, unchanged elsewhere
++template <int D>
++GF2_HD void bs_mulx_sel(u32 (&g)[D], u32 sel) {
++    constexpr u64 QL = gf2_qlow(D);
++    const u32 top = g[D - 1] & sel;
++    GF2D_UNROLL
++    for (int k = D - 1; k >= 1; k--) g[k] = (g[k - 1] & sel) | (g[k] & ~sel);
++    g[0] &= ~sel;
++    GF2D_UNROLL
++    for (int s = 0; s < D; s++)
++        if ((QL >> s) & 1) g[s] ^= top;
++}
++
++// G = g^u per slot, g = x; U holds the exponents as planes (bit k of U[b] =
++// bit b of u_k), every u_k < 2^(D-1).  Left to right: square, then multiply
++// by x where the bit is set -- a plane shift, so no general multiplies.
++// The loop over b stays rolled on purpose: unrolled it would be ~15k
++// instructions of straight-line code per kernel, far beyond the instruction
++// cache; rolled, U[b] is one local-memory (L1) load per ~4D instructions.
++template <int D>
++GF2_HD void bs_pow_g(const u32 (&U)[D], u32 (&G)[D]) {
++    GF2D_UNROLL
++    for (int k = 0; k < D; k++) G[k] = 0;
++    G[0] = ~0u;                                  // 1 in every slot
++#if defined(__CUDACC__)
++#pragma unroll 1
++#endif
++    for (int b = D - 2; b >= 0; b--) {
++        u32 R[D];
++        bs_sqr<D>(G, R);
++        GF2D_UNROLL
++        for (int k = 0; k < D; k++) G[k] = R[k];
++        bs_mulx_sel<D>(G, U[b]);
++    }
++}
++
++// A = X^E in every slot (E >= 1, the same for all slots)
++template <int D>
++GF2_HD void bs_pow(const u32 (&X)[D], u64 E, u32 (&A)[D]) {
++    GF2D_UNROLL
++    for (int k = 0; k < D; k++) A[k] = X[k];
++    for (int b = 62 - gf2f_clz64(E); b >= 0; b--) {
++        u32 R[D];
++        bs_sqr<D>(A, R);
++        if ((E >> b) & 1) {
++            bs_mul<D>(R, X, A);
++        } else {
++            GF2D_UNROLL
++            for (int k = 0; k < D; k++) A[k] = R[k];
++        }
++    }
++}
++
++// 32x32 bit transpose in place: afterwards bit k of w[i] is the former bit
++// i of w[k]
++GF2_HD void bs_transpose32(u32 (&w)[32]) {
++    GF2D_UNROLL
++    for (int jj = 4; jj >= 0; jj--) {           // j = 16, 8, 4, 2, 1
++        const int j = 1 << jj;
++        const u32 m = j == 16 ? 0x0000FFFFu : j == 8 ? 0x00FF00FFu
++                    : j == 4 ? 0x0F0F0F0Fu : j == 2 ? 0x33333333u : 0x55555555u;
++        GF2D_UNROLL
++        for (int k = 0; k < 32; k++) {
++            if (k & j) continue;
++            const u32 t = ((w[k] >> j) ^ w[k | j]) & m;
++            w[k | j] ^= t;
++            w[k] ^= t << j;
++        }
++    }
++}
++
++// 32 scalars (bits 0..D-1 used) -> D planes
++template <int D>
++GF2_HD void bs_load(const u64 *v, u32 (&P)[D]) {
++    constexpr int D0 = D < 32 ? D : 32;
++    u32 w[32];
++    GF2D_UNROLL
++    for (int k = 0; k < 32; k++) w[k] = (u32)v[k];
++    bs_transpose32(w);
++    GF2D_UNROLL
++    for (int i = 0; i < D0; i++) P[i] = w[i];
++    if (D > 32) {
++        GF2D_UNROLL
++        for (int k = 0; k < 32; k++) w[k] = (u32)(v[k] >> 32);
++        bs_transpose32(w);
++        GF2D_UNROLL
++        for (int i = 32; i < D; i++) P[i] = w[i - 32];
++    }
++}
++
++// D planes -> 32 scalars
++template <int D>
++GF2_HD void bs_store(const u32 (&P)[D], u64 *v) {
++    constexpr int D0 = D < 32 ? D : 32;
++    u32 w[32];
++    GF2D_UNROLL
++    for (int i = 0; i < D0; i++) w[i] = P[i];
++    GF2D_UNROLL
++    for (int i = D0; i < 32; i++) w[i] = 0;
++    bs_transpose32(w);
++    GF2D_UNROLL
++    for (int k = 0; k < 32; k++) v[k] = w[k];
++    if (D > 32) {
++        GF2D_UNROLL
++        for (int i = 32; i < D; i++) w[i - 32] = P[i];
++        GF2D_UNROLL
++        for (int i = (D > 32 ? D - 32 : 0); i < 32; i++) w[i] = 0;
++        bs_transpose32(w);
++        GF2D_UNROLL
++        for (int k = 0; k < 32; k++) v[k] |= (u64)w[k] << 32;
++    }
++}
++
++// ---------------------------------------------------------------------------
+ // tower logs (d = 2m).  All pointers are device pointers; structs are
+ // passed to kernels by value.
+ struct TowerDev {
+@@ -265,8 +577,8 @@
+     u64 MK;               // 2^m - 1 (also the coordinate mask)
+     const u64 *btab;      // [nb][256]: packed coords coordK(a) | coordK(b)<<m
+     const u32 *LK;        // [2^m]   coordinate -> log base h (h = g^(2^m+1))
+-    const u32 *AK;        // [2^m-1] log base h -> coordinate
+-    const u64 *T;         // [2^m]   c -> log_g(c + w)
++    const u64 *T;         // [2^m]   T[l] = log_g(h^l + w) for l < MK, and
++                          //         T[MK] = log_g(w)  (c = 0)
+ };
+ 
+ GF2_HD u64 tower_coords(u64 x, const TowerDev &t) {
+@@ -275,18 +587,20 @@
+     return pk;
+ }
+ 
+-// log_g(x) for x != 0
++// log_g(x) for x != 0.  T is indexed by log_h(c) rather than by c, so the
++// quotient c = a/b is never formed: three table reads (two in LK, one in
++// T) instead of four.
+ GF2_HD u64 tower_log(u64 x, u64 M, const TowerDev &t) {
+     u64 pk = tower_coords(x, t);
+     u64 ac = pk & t.MK, bc = pk >> t.m;
+     u64 h1 = t.MK + 2;                          // 2^m + 1 = log_g(h)
+     if (bc == 0) return h1 * t.LK[ac];          // x in K*;  < M
+-    u64 lb = t.LK[bc], cc = 0;
++    u64 lb = t.LK[bc], l = t.MK;                // c = a/b; slot MK: c = 0
+     if (ac) {
+         u64 la = t.LK[ac];
+-        cc = t.AK[la >= lb ? la - lb : la + t.MK - lb];   // c = a / b
++        l = la >= lb ? la - lb : la + t.MK - lb;          // log_h(c)
+     }
+-    u64 v = h1 * lb + t.T[cc];                  // h1*lb < M, T < M
++    u64 v = h1 * lb + t.T[l];                   // h1*lb < M, T < M
+     return v >= M ? v - M : v;
+ }
+ 
+@@ -294,14 +608,17 @@
+ // Pohlig-Hellman logs
+ #define PH_MAXPARTS 4
+ 
++// One hash slot: key and value side by side, so a probe is one 16-byte
++// read (one memory sector) instead of two.
++struct alignas(16) PHSlot { u64 key, val; };
++
+ struct PHPart {
+     u64 P;                // order of the subgroup this part resolves
+     u64 E;                // exponent: x^E = gamma^(log x mod P)
+     u64 K;                // CRT constant: log x = sum (log x mod P_i)*K_i mod M
+     u64 N, G;             // baby table holds gamma^0..gamma^(N-1); G = ceil(P/N)
+     u64 delta;            // gamma^(-N): one giant step
+-    const u64 *keys;      // 2^sbits slots, 0 = empty (subgroup elements != 0)
+-    const u32 *vals;
++    const PHSlot *slots;  // 2^sbits slots, key 0 = empty (subgroup elems != 0)
+     int sbits;
+ };
+ 
+@@ -318,12 +635,26 @@
+ GF2_HD u64 ph_lookup(const PHPart &p, u64 y) {
+     const u64 mask = ((u64)1 << p.sbits) - 1;
+     for (u64 h = ph_slot(y, p.sbits);; h = (h + 1) & mask) {
+-        u64 k = p.keys[h];
+-        if (k == y) return p.vals[h];
+-        if (k == 0) return ~0ULL;
++        const PHSlot e = p.slots[h];
++        if (e.key == y) return e.val;
++        if (e.key == 0) return ~0ULL;
+     }
+ }
+ 
++// log of the subgroup element y (= x^E) mod P, by baby-step/giant-step if
++// the table holds fewer than P entries; ~0 if not found (an error)
++GF2_HD u64 ph_part_log(const PHPart &p, u64 y, u64 qlow, int d) {
++    for (u64 s = 0; s < p.G; s++) {
++        u64 idx = ph_lookup(p, y);
++        if (idx != ~0ULL) {
++            idx += s * p.N;
++            return idx < p.P ? idx : ~0ULL;
++        }
++        y = gf2f_mul(y, p.delta, qlow, d);
++    }
++    return ~0ULL;
++}
++
+ // log_g(x) for x != 0, or ~0 on an internal inconsistency (never expected;
+ // the caller counts it as an error)
+ GF2_HD u64 ph_log(u64 x, u64 M, int d, u64 qlow, const PHDev &ph) {
+@@ -343,13 +674,8 @@
+     for (int i = 0; i < PH_MAXPARTS; i++) {
+         if (i >= ph.nparts) continue;
+         const PHPart &p = ph.part[i];
+-        u64 y = acc[i], xi = ~0ULL;
+-        for (u64 s = 0; s < p.G; s++) {
+-            u64 idx = ph_lookup(p, y);
+-            if (idx != ~0ULL) { xi = idx + s * p.N; break; }
+-            y = gf2f_mul(y, p.delta, qlow, d);
+-        }
+-        if (xi >= p.P) return ~0ULL;
++        u64 xi = ph_part_log(p, acc[i] ? acc[i] : 1, qlow, d);
++        if (xi == ~0ULL) return ~0ULL;
+         v += gf2f_mulmod_m(xi, p.K, d, M);
+         if (v >= M) v -= M;
+     }
+@@ -362,6 +688,7 @@
+ #include <vector>
+ #include <algorithm>
+ #include <functional>
++#include <cmath>
+ 
+ struct TowerHost {
+     int m = 0, nb = 0;
+@@ -371,10 +698,10 @@
+ };
+ 
+ // Byte tables for e -> (coordK(a) | coordK(b) << m), and LK/AK for K*.
+-// T (the 2^m logs log(c + w)) is filled on the device (k_tower_T).
+-// Returns false if any internal consistency check fails.
++// T (the 2^m logs log(h^l + w)) is filled on the device (k_tower_T); AK
++// stays on the host.  Returns false if any internal consistency check fails.
+ static bool tower_build_host(int d, u64 q, TowerHost &W) {
+-    if (d < 4 || (d & 1) || d > 46) return false;
++    if (d < 4 || (d & 1) || d > 54) return false;
+     const int m = d / 2;
+     const u64 M = ((u64)1 << d) - 1, MK = ((u64)1 << m) - 1;
+     std::vector<u64> sig(d);                    // sigma(x^i) = x^(i*2^m)
+@@ -461,21 +788,101 @@
+ }
+ 
+ struct PHPartHost { u64 P = 0, E = 0, K = 0, N = 0, G = 1, delta = 1, gamma = 1; int sbits = 1; };
+-struct PHHost { int nparts = 0, chain = 0; PHPartHost part[PH_MAXPARTS]; size_t table_bytes = 0; };
++struct PHHost {
++    int nparts = 0, chain = 0;
++    PHPartHost part[PH_MAXPARTS];
++    size_t table_bytes = 0;
++    double cost = 0;                     // model estimate, instructions/class
++};
+ 
+-// slot count 2^s >= 2N (load <= 1/2): 8-byte key + 4-byte value per slot
++// slot count 2^s >= 2N (load <= 1/2), one PHSlot (16 bytes) each
+ static inline size_t ph_table_bytes(u64 N, int *sbits_out) {
+     int s = 1;
+     while (((u64)1 << s) < 2 * N) s++;
+     if (sbits_out) *sbits_out = s;
+-    return ((size_t)1 << s) * 12;
++    return ((size_t)1 << s) * sizeof(PHSlot);
+ }
+ 
+-// Plan Pohlig-Hellman: coprime split of M into <= 2 parts (as balanced as
+-// possible), cheapest exponents, CRT constants, and table sizes within
+-// budget_bytes (shrinking the largest table into baby-step/giant-step if
+-// needed).  Returns false if even small tables do not fit.
+-static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H) {
++// Cost of one Pohlig-Hellman log, in rough GPU instructions per class:
++//   scalar (one class per thread, round-2 kernel): a multiply costs ~2
++//     squarings and all parts share one squaring chain;
++//   bit-sliced (round-3 kernel): a multiply ~73, a squaring ~3, each part
++//     its own chain, plus a transpose per part.
++// A lookup in a table larger than ~1 MB is a DRAM access (~300 equivalent
++// instructions); smaller tables stay in cache.  A giant step is a scalar
++// multiply plus another lookup.  Table memory is charged 1 per MB, so a
++// plan only takes gigabytes for a real gain (and small tables cache better).
++struct PHCostModel {
++    double mul, sqr, lookup_dram, lookup_cached, giant, per_part;
++    bool shared_chain;
++    bool legacy;          // round 2's planner: the most balanced 2-part split
++};
++static const PHCostModel kPHCostScalar    = {250, 125, 300, 60, 550, 0, true, false};
++static const PHCostModel kPHCostBitsliced = {73, 3, 300, 60, 550, 60, false, false};
++static const PHCostModel kPHCostRound2    = {2, 1, 0, 0, 0, 0, true, true};
++
++// The exponent for one part: E = c * (M/P) mod M over c coprime to P (and
++// its rotations c * 2^-r), minimizing the model cost of x^E.
++static u64 ph_best_exponent(int d, u64 M, u64 P, const std::vector<u64> &primes,
++                            const PHCostModel &cm) {
++    const u64 C = M / P;
++    std::vector<u64> pf;
++    for (u64 p : primes) if (P % p == 0) pf.push_back(p);
++    const u64 lim = std::min<u64>(P, (u64)1 << 22);
++    u64 E = 0, bestE = C;
++    double best = 1e300;
++    for (u64 c = 1; c < lim; c++) {
++        E += C; if (E >= M) E -= M;
++        const int pc = __builtin_popcountll(E);
++        if ((pc - 1) * cm.mul >= best) continue;
++        bool cop = true;
++        for (u64 p : pf) if (c % p == 0) { cop = false; break; }
++        if (!cop) continue;
++        u64 Er = E;
++        for (int r = 0; r < d; r++) {            // rotations: same popcount
++            const int top = 63 - __builtin_clzll(Er);
++            const double cost = (pc - 1) * cm.mul + top * cm.sqr;
++            if (cost < best) { best = cost; bestE = Er; }
++            Er = (Er >> 1) | ((Er & 1) << (d - 1));      // * 2^-1 mod M
++        }
++    }
++    return bestE;
++}
++
++// Table sizes for parts P[0..n): every N_i = P_i if that fits the budget,
++// else the largest tables are halved (baby-step/giant-step).  False if even
++// that fails, or would need more than max_giant giant steps somewhere.
++static bool ph_fit_tables(const u64 *P, int n, size_t budget, u64 max_giant,
++                          u64 *N, size_t *bytes) {
++    for (int i = 0; i < n; i++) N[i] = P[i];
++    auto total = [&]() {
++        size_t t = 0;
++        for (int i = 0; i < n; i++) t += ph_table_bytes(N[i], nullptr);
++        return t;
++    };
++    while (total() > budget) {
++        int big = 0;
++        for (int i = 1; i < n; i++) if (N[i] > N[big]) big = i;
++        int sb;
++        ph_table_bytes(N[big], &sb);
++        if (sb <= 12) return false;
++        N[big] = (u64)1 << (sb - 2);             // half the slots, load 1/2
++    }
++    for (int i = 0; i < n; i++)
++        if ((P[i] + N[i] - 1) / N[i] > max_giant) return false;
++    *bytes = total();
++    return true;
++}
++
++// Plan Pohlig-Hellman: a coprime split of M into 1..4 parts, table sizes
++// within budget_bytes, the cheapest exponents, CRT constants -- the split
++// with the least model cost over all splits whose tables fit (each distinct
++// part gets one exponent search, ~4M candidates at most).  False if none
++// fits (e.g. d=49: 2^49-1 = 127 * 4432676798593 would need ~16,000 giant
++// steps per log with any table that fits on a card).
++static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H,
++                         const PHCostModel &cm = kPHCostScalar,
++                         u64 max_giant = 64) {
+     const u64 M = ((u64)1 << d) - 1;
+     std::vector<u64> primes = factor_u64(M), pp;   // prime powers p^k || M
+     u64 rest = M;
+@@ -484,74 +891,74 @@
+         while (rest % p == 0) { rest /= p; pk *= p; }
+         pp.push_back(pk);
+     }
+-    std::vector<u64> parts;
+-    if (pp.size() == 1) parts.push_back(M);
+-    else {
+-        const int n = (int)pp.size();
+-        u64 bestA = 1, bestmax = ~0ULL;
++    const int n = (int)pp.size();
++    std::vector<std::pair<u64, u64>> ecache;        // P -> best exponent
++    auto exponent_for = [&](u64 P) {
++        for (auto &e : ecache) if (e.first == P) return e.second;
++        u64 E = ph_best_exponent(d, M, P, primes, cm);
++        ecache.push_back({P, E});
++        return E;
++    };
++    bool have = false;
++    // round 2 used the most balanced coprime pair (largest part minimal)
++    u64 legacy_max = M;
++    if (cm.legacy && n > 1)
+         for (u64 mask = 1; mask + 1 < ((u64)1 << n); mask++) {
+             u64 A = 1;
+             for (int i = 0; i < n; i++) if (mask >> i & 1) A *= pp[i];
+-            u64 mx = std::max(A, M / A);
+-            if (mx < bestmax) { bestmax = mx; bestA = A; }
++            legacy_max = std::min(legacy_max, std::max(A, M / A));
+         }
+-        parts.push_back(std::max(bestA, M / bestA));
+-        parts.push_back(std::min(bestA, M / bestA));
+-    }
+-    H = PHHost();
+-    H.nparts = (int)parts.size();
+-    for (int i = 0; i < H.nparts; i++) {
+-        PHPartHost &pt = H.part[i];
+-        const u64 P = parts[i], C = M / P;
+-        std::vector<u64> pf;
+-        for (u64 p : primes) if (P % p == 0) pf.push_back(p);
+-        // E = c*C mod M over c coprime to P (and its rotations, i.e.
+-        // c*2^-r): few set bits (general multiplies) in a low window
+-        // (squarings); cost ~ 2*(popcount-1) + highest bit
+-        const u64 lim = std::min<u64>(P, (u64)1 << 22);
+-        u64 E = 0, bestE = C;
+-        int bestcost = 1 << 30;
+-        for (u64 c = 1; c < lim; c++) {
+-            E += C; if (E >= M) E -= M;
+-            int pc = __builtin_popcountll(E);
+-            if (3 * (pc - 1) >= bestcost) continue;     // span >= pc-1
+-            bool cop = true;
+-            for (u64 p : pf) if (c % p == 0) { cop = false; break; }
+-            if (!cop) continue;
+-            u64 Er = E;
+-            for (int r = 0; r < d; r++) {
+-                int cost = 2 * (pc - 1) + (63 - __builtin_clzll(Er));
+-                if (cost < bestcost) { bestcost = cost; bestE = Er; }
+-                Er = (Er >> 1) | ((Er & 1) << (d - 1));  // * 2^-1 mod M
++    std::vector<int> g(n, 0);
++    // every split into k <= 4 groups, each once (restricted growth strings)
++    std::function<void(int, int)> rec = [&](int i, int used) {
++        if (i < n) {
++            for (int j = 0; j <= used && j < PH_MAXPARTS; j++) {
++                g[i] = j;
++                rec(i + 1, std::max(used, j + 1));
+             }
++            return;
+         }
+-        pt.P = P;
+-        pt.E = bestE;
+-        pt.K = mulmod_u64(C, P == 1 ? 0 : inv_mod(C % P, P), M);
+-        pt.gamma = gf_pow(2, bestE, q, d);
+-        pt.N = P;
+-        H.chain = std::max(H.chain, 63 - __builtin_clzll(bestE));
+-    }
+-    auto total = [&]() {
+-        size_t t = 0;
+-        for (int i = 0; i < H.nparts; i++) t += ph_table_bytes(H.part[i].N, nullptr);
+-        return t;
++        u64 P[PH_MAXPARTS], N[PH_MAXPARTS];
++        for (int j = 0; j < used; j++) P[j] = 1;
++        for (int j = 0; j < n; j++) P[g[j]] *= pp[j];
++        if (cm.legacy) {                             // round 2: balanced pair
++            u64 mx = 0;
++            for (int j = 0; j < used; j++) mx = std::max(mx, P[j]);
++            if (used != std::min(n, 2) || mx > legacy_max) return;
++        }
++        size_t bytes;
++        if (!ph_fit_tables(P, used, budget_bytes, max_giant, N, &bytes)) return;
++        PHHost T;
++        T.nparts = used;
++        double cost = bytes / 1048576.0;            // 1 per MB
++        for (int j = 0; j < used; j++) {
++            PHPartHost &pt = T.part[j];
++            pt.P = P[j];
++            pt.E = exponent_for(P[j]);
++            pt.N = N[j];
++            pt.G = (pt.P + pt.N - 1) / pt.N;
++            const int top = 63 - __builtin_clzll(pt.E);
++            T.chain = std::max(T.chain, top);
++            const size_t tb = ph_table_bytes(pt.N, &pt.sbits);
++            cost += (__builtin_popcountll(pt.E) - 1) * cm.mul + cm.per_part
++                  + (cm.shared_chain ? 0 : top * cm.sqr)
++                  + (tb <= ((size_t)1 << 20) ? cm.lookup_cached : cm.lookup_dram)
++                  + (pt.G - 1) / 2.0 * cm.giant;
++        }
++        if (cm.shared_chain) cost += T.chain * cm.sqr;
++        T.table_bytes = bytes;
++        T.cost = cost;
++        if (!have || cost < H.cost) { H = T; have = true; }
+     };
+-    while (total() > budget_bytes) {
+-        int big = 0;
+-        for (int i = 1; i < H.nparts; i++) if (H.part[i].N > H.part[big].N) big = i;
+-        int sb;
+-        ph_table_bytes(H.part[big].N, &sb);
+-        if (sb <= 12) return false;
+-        H.part[big].N = (u64)1 << (sb - 2);           // half the slots, load 1/2
+-    }
+-    for (int i = 0; i < H.nparts; i++) {
+-        PHPartHost &pt = H.part[i];
+-        ph_table_bytes(pt.N, &pt.sbits);
+-        pt.G = (pt.P + pt.N - 1) / pt.N;
++    rec(0, 0);
++    if (!have) return false;
++    for (int j = 0; j < H.nparts; j++) {             // CRT constants, tables
++        PHPartHost &pt = H.part[j];
++        const u64 C = M / pt.P;
++        pt.K = mulmod_u64(C, pt.P == 1 ? 0 : inv_mod(C % pt.P, pt.P), M);
++        pt.gamma = gf_pow(2, pt.E, q, d);
+         pt.delta = (pt.N >= pt.P) ? 1 : gf_pow(pt.gamma, pt.P - pt.N, q, d);
+     }
+-    H.table_bytes = total();
+     return true;
+ }
+ 
+--- a/gf2_dlog_selftest.cpp	2026-10-20 23:03:43.543374949 -0400
++++ b/gf2_dlog_selftest.cpp	2026-10-20 23:03:43.557958275 -0400
+@@ -1,37 +1,58 @@
+-// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve round 2)
++// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, round 3)
+ //
+-//   g++ -O2 -march=native -I. -Icommon -o gf2_dlog_selftest gf2_dlog_selftest.cpp
+-//   ./gf2_dlog_selftest [dlo dhi [budget_MB [samples]]]     (default 2 47 1536 20000)
++//   g++ -O2 -march=native -std=c++17 -I. -Icommon -o gf2_dlog_selftest gf2_dlog_selftest.cpp
++//   (or: make gf2_dlog_selftest)
++//   ./gf2_dlog_selftest [dlo dhi [budget_MB [samples [tower_dmax]]]]
++//                                      (default 2 55 1536 20000 44)
+ //
+-// 1. fast arithmetic vs the bit-serial reference in gf2_wide_field.h, d=2..47:
++// 1. fast arithmetic vs the bit-serial reference in gf2_wide_field.h, d=2..55:
+ //    gf2f_mul / gf2f_sqr / gf2f_antilog vs gf_mul / gf_sqr / repeated
+ //    multiplies, Mersenne mulmod vs mulmod_u64, inverses by phi(M)-1 and by
+ //    Carmichael lambda(M)-1, exact-division tests
+-// 2. the necklace (rotation-minimality) test vs the all-rotations reference:
+-//    exhaustive over odd u < 2^(d-1) for d <= 22 (and the class count vs the
+-//    necklace formula), random u with spread leading-zero counts for d <= 47
+-// 3. both discrete-log engines: every element for d <= 20, `samples` random
+-//    elements above; PH tables are limited to budget_MB (so the large prime
+-//    factors at d = 31, 37, 41 run as baby-step/giant-step, as on an 8 GB card)
++// 2. the necklace (rotation-minimality) test vs the all-rotations reference
++// 3. FKM (Lyndon words in order) vs brute force: every word for d <= 22, and
++//    stretches at every density for d <= 55
++// 4. bit-sliced arithmetic vs scalar for D = 2..55: multiply, square,
++//    selected multiply-by-x, g^u with per-slot u, X^E, transposes; and the
++//    compile-time moduli vs find_primitive_poly
++// 5. both discrete-log engines with the tables the sieve builds (tower: T by
++//    log_h; PH: 16-byte slots), for the bit-sliced and the round-2 planner:
++//    every element for d <= 20, `samples` random elements above; PH tables
++//    limited to budget_MB (d = 31, 37, 41 then use baby-step/giant-step, as
++//    on an 8 GB card), tower up to tower_dmax (default 44, as the tables
++//    take a while to build on the CPU above that; the device test does all
++//    even d <= 54, and tower_dmax = 54 does them here too: ~3 GB, minutes)
++// 6. the whole per-class computation at every d up to 55: for random classes
++//    u, the Zech log, j = u r^-1, the progression start s0 = v j^-1 (lambda
++//    exponent) and the minimal polynomial f of g^j -- then checks directly
++//    that f divides x^r + x^s0 + 1 (r = 136279841), by arithmetic mod f
++// 7. the packed best[] key format for d <= 55 (order and round trip)
+ //
+-// Exit status 0 iff everything matches.  The same engines run on the GPU in
++// Exit status 0 iff everything matches.  The same code runs on the GPU in
+ // coarse_sieve_wide --selftest-logs; this is the CPU-side cross-check.
+ #include "gf2_dlog.h"
++#include <algorithm>
++#include <vector>
+ #include <random>
+ #include <chrono>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <string>
+ 
++typedef unsigned long long ull;
++
+ static double now() {
+     return std::chrono::duration<double>(
+         std::chrono::steady_clock::now().time_since_epoch()).count();
+ }
+ 
++static std::mt19937_64 rng(20261020);
++static u64 g_bad = 0;
++
+ // ---------------------------------------------------------------- part 1
+-static u64 test_arith(std::mt19937_64 &rng, u64 &n) {
++static u64 test_arith(u64 &n) {
+     u64 bad = 0;
+-    for (int d = 2; d <= 47; d++) {
++    for (int d = 2; d <= 55; d++) {
+         u64 q = find_primitive_poly(d), ql = q ^ ((u64)1 << d), M = ((u64)1 << d) - 1;
+         if (!gf2f_usable(q, d)) { printf("d=%d: fast path not usable\n", d); bad++; continue; }
+         u64 gp[64]; gp[0] = 2;
+@@ -83,7 +104,7 @@
+     return bad;
+ }
+ 
+-// ---------------------------------------------------------------- part 2
++// ---------------------------------------------------------------- parts 2, 3
+ static u64 necklaces(int d) {           // (1/d) sum_{k|d} phi(k) 2^(d/k)
+     u64 s = 0;
+     for (int k = 1; k <= d; k++) {
+@@ -99,38 +120,110 @@
+     return s / d;
+ }
+ 
+-static u64 test_rotation(std::mt19937_64 &rng, u64 &n) {
++// odd u < 2^(n-1), least of its rotations and aperiodic
++static bool is_lyndon_ref(u64 u, int n) {
++    const u64 M = ((u64)1 << n) - 1;
++    if (!(u & 1) || u >= ((u64)1 << (n - 1))) return false;
++    u64 x = u;
++    for (int i = 1; i < n; i++) {
++        x = ((x << 1) | (x >> (n - 1))) & M;
++        if (x <= u) return false;
++    }
++    return true;
++}
++
++static void fkm_range(u64 lo, u64 hi, int n, std::vector<u64> &out) {
++    int p;
++    u64 w = fkm_seek(lo, n, &p);
++    while (w < hi) {
++        if (p == n) out.push_back(w);
++        w = fkm_next(w, n, &p);
++    }
++}
++
++static u64 test_necklace(u64 &n) {
+     u64 bad = 0;
+     for (int d = 2; d <= 22; d++) {
+         const u64 M = ((u64)1 << d) - 1;
+         u64 reps = 0;
++        std::vector<u64> ref, got;
+         for (u64 u = 1; u < ((u64)1 << (d - 1)); u += 2) {
+             bool f = gf2f_is_min_rotation(u, d, M), r = gf2f_min_rotation_ref(u, d, M);
+             n++;
+             bad += (f != r);
+             reps += r;
++            if (is_lyndon_ref(u, d)) ref.push_back(u);
+         }
+-        // minimal odd rotations < 2^(d-1) = all necklaces but 0...0 and 1...1
+-        if (reps != necklaces(d) - 2) {
+-            printf("d=%d: %llu representatives, expected %llu\n", d,
+-                   (unsigned long long)reps, (unsigned long long)(necklaces(d) - 2));
+-            bad++;
+-        }
++        if (reps != necklaces(d) - 2) { printf("d=%d: %llu reps\n", d, (ull)reps); bad++; }
++        fkm_range(0, (u64)1 << (d - 1), d, got);
++        n++;
++        if (got != ref) { printf("d=%d: FKM %zu vs %zu Lyndon words\n", d, got.size(), ref.size()); bad++; }
++        std::vector<u64> cuts = {0, (u64)1 << (d - 1)}, got2;
++        for (int i = 0; i < 20; i++) cuts.push_back(rng() % ((u64)1 << (d - 1)));
++        std::sort(cuts.begin(), cuts.end());
++        for (size_t i = 0; i + 1 < cuts.size(); i++) fkm_range(cuts[i], cuts[i + 1], d, got2);
++        n++;
++        if (got2 != ref) { printf("d=%d: FKM over sub-ranges differs\n", d); bad++; }
+     }
+-    for (int d = 23; d <= 47; d++) {
++    for (int d = 23; d <= 55; d++) {
+         const u64 M = ((u64)1 << d) - 1;
+-        for (int i = 0; i < 1000000; i++) {
+-            int sh = (64 - (d - 1)) + (int)(rng() % (u64)(d - 1));    // spread z
++        for (int i = 0; i < 400000; i++) {
++            int sh = (64 - (d - 1)) + (int)(rng() % (u64)(d - 1));
+             u64 u = (rng() >> sh) | 1;
+             n++;
+             bad += (gf2f_is_min_rotation(u, d, M) != gf2f_min_rotation_ref(u, d, M));
+         }
++        for (int t = 0; t < 30; t++) {          // FKM stretches at every density
++            int z = 1 + (int)(rng() % (u64)(d - 2));
++            u64 lo = ((u64)1 << (d - 1 - z)) + (rng() & (((u64)1 << (d - 1 - z)) - 1));
++            u64 hi = std::min<u64>(lo + ((u64)1 << (8 + rng() % 9)), (u64)1 << (d - 1));
++            std::vector<u64> got, ref;
++            fkm_range(lo, hi, d, got);
++            for (u64 u = lo | 1; u < hi; u += 2) if (is_lyndon_ref(u, d)) ref.push_back(u);
++            n++;
++            if (got != ref) { printf("d=%d: FKM [%llx,%llx) differs\n", d, (ull)lo, (ull)hi); bad++; }
++        }
+     }
+     return bad;
+ }
+ 
+-// ---------------------------------------------------------------- part 3
+-struct PHTabs { std::vector<u64> keys[PH_MAXPARTS]; std::vector<u32> vals[PH_MAXPARTS]; };
++// ---------------------------------------------------------------- part 4
++static u64 g_bs_n = 0, g_bs_bad = 0;
++#define BSCHECK(c) do { g_bs_n++; if (!(c)) g_bs_bad++; } while (0)
++
++template <int D> static void test_bs() {
++    const u64 q = find_primitive_poly(D), ql = q ^ ((u64)1 << D), M = ((u64)1 << D) - 1;
++    BSCHECK(ql == gf2_qlow(D));
++    for (int rep = 0; rep < 24; rep++) {
++        u64 a[32], b[32], r[32], u[32];
++        for (int k = 0; k < 32; k++) { a[k] = rng() & M; b[k] = rng() & M; u[k] = (rng() & M) >> 1; }
++        if (rep == 0) { a[0] = 0; a[1] = 1; a[2] = M; b[3] = 0; b[4] = 1; b[5] = M; u[0] = 0; u[1] = 1; u[2] = M >> 1; }
++        u32 A[D], B[D], R[D], U[D], G[D];
++        bs_load<D>(a, A); bs_load<D>(b, B);
++        bs_store<D>(A, r);
++        for (int k = 0; k < 32; k++) BSCHECK(r[k] == a[k]);
++        for (int i = 0; i < D; i++) for (int k = 0; k < 32; k += 5)
++            BSCHECK(((A[i] >> k) & 1) == ((a[k] >> i) & 1));
++        bs_mul<D>(A, B, R); bs_store<D>(R, r);
++        for (int k = 0; k < 32; k++) BSCHECK(r[k] == gf_mul(a[k], b[k], q, D));
++        bs_sqr<D>(A, R); bs_store<D>(R, r);
++        for (int k = 0; k < 32; k++) BSCHECK(r[k] == gf_sqr(a[k], q, D));
++        const u32 sel = (u32)rng();
++        for (int i = 0; i < D; i++) G[i] = A[i];
++        bs_mulx_sel<D>(G, sel); bs_store<D>(G, r);
++        for (int k = 0; k < 32; k++) BSCHECK(r[k] == ((sel >> k) & 1 ? gf_mulx(a[k], q, D) : a[k]));
++        bs_load<D>(u, U); bs_pow_g<D>(U, G); bs_store<D>(G, r);
++        for (int k = 0; k < 32; k++) BSCHECK(r[k] == gf_pow(2, u[k], q, D));
++        u64 E = rep == 1 ? 1 : rep == 2 ? M - 1 : 1 + rng() % M;
++        bs_pow<D>(A, E, R); bs_store<D>(R, r);
++        for (int k = 0; k < 32; k++) BSCHECK(r[k] == gf_pow(a[k], E, q, D));
++    }
++}
++template <int D> struct BSAll { static void go() { BSAll<D - 1>::go(); test_bs<D>(); } };
++template <> struct BSAll<1> { static void go() {} };
++
++// ---------------------------------------------------------------- part 5
++struct PHTabs { std::vector<PHSlot> slots[PH_MAXPARTS]; };
+ 
+ static void ph_fill_host(const PHHost &H, u64 ql, int d, PHTabs &tb, PHDev &D) {
+     D.nparts = H.nparts;
+@@ -138,103 +231,208 @@
+     for (int i = 0; i < H.nparts; i++) {
+         const PHPartHost &p = H.part[i];
+         const size_t S = (size_t)1 << p.sbits;
+-        tb.keys[i].assign(S, 0);
+-        tb.vals[i].assign(S, 0);
++        tb.slots[i].assign(S, PHSlot{0, 0});
+         u64 y = 1;
+         for (u64 k = 0; k < p.N; k++, y = gf2f_mul(y, p.gamma, ql, d)) {
+             u64 h = ph_slot(y, p.sbits);
+-            while (tb.keys[i][h]) h = (h + 1) & (S - 1);
+-            tb.keys[i][h] = y;
+-            tb.vals[i][h] = (u32)k;
++            while (tb.slots[i][h].key) h = (h + 1) & (S - 1);
++            tb.slots[i][h] = PHSlot{y, k};
+         }
+-        D.part[i] = PHPart{p.P, p.E, p.K, p.N, p.G, p.delta,
+-                           tb.keys[i].data(), tb.vals[i].data(), p.sbits};
++        D.part[i] = PHPart{p.P, p.E, p.K, p.N, p.G, p.delta, tb.slots[i].data(), p.sbits};
+     }
+ }
+ 
+-static int test_dlog(int dlo, int dhi, size_t budget, u64 samples, std::mt19937_64 &rng) {
++struct TowerTabs { TowerHost W; std::vector<u64> T; TowerDev dev; };
++
++// T by log_h(c), filled by the same coupon-collector sweep as k_tower_T
++static bool tower_fill_host(int d, u64 q, TowerTabs &tt) {
++    if (!tower_build_host(d, q, tt.W)) return false;
++    const u64 M = ((u64)1 << d) - 1, MK = tt.W.MK;
++    tt.T.assign((size_t)MK + 1, ~0ULL);
++    tt.dev = TowerDev{tt.W.m, tt.W.nb, MK, tt.W.btab.data(), tt.W.LK.data(), tt.T.data()};
++    u64 left = MK + 1, x = 1;
++    for (u64 u = 0; u < M && left; u++, x = gf_mulx(x, q, d)) {
++        u64 pk = tower_coords(x, tt.dev), ac = pk & MK, bc = pk >> tt.W.m;
++        if (!bc) continue;
++        u64 lb = tt.W.LK[bc], l = MK;
++        if (ac) { u64 la = tt.W.LK[ac]; l = la >= lb ? la - lb : la + MK - lb; }
++        if (tt.T[l] == ~0ULL) {
++            u64 h = (MK + 2) * lb;
++            tt.T[l] = u >= h ? u - h : u + M - h;
++            left--;
++        }
++    }
++    return left == 0;
++}
++
++static int test_dlog(int dlo, int dhi, size_t budget, u64 samples, int tower_dmax) {
+     int fails = 0;
+-    for (int d = dlo; d <= dhi; d++) {
++    for (int d = std::max(dlo, 2); d <= dhi; d++) {
+         const u64 q = find_primitive_poly(d), ql = q ^ ((u64)1 << d), M = ((u64)1 << d) - 1;
+         u64 gp[64]; gp[0] = 2;
+         for (int t = 1; t < d; t++) gp[t] = gf_sqr(gp[t - 1], q, d);
+         const bool exh = d <= 20;
+         const u64 nchk = exh ? M : samples;
+-        // Pohlig-Hellman
+-        double t0 = now();
+-        PHHost H; PHTabs tb; PHDev D{};
+-        if (!ph_plan_host(d, q, budget, H)) { printf("d=%2d PH plan FAILED\n", d); fails++; continue; }
+-        ph_fill_host(H, ql, d, tb, D);
+-        double tb_ph = now() - t0;
+-        u64 bad = 0, e = 1;
+-        for (u64 k = 0; k < nchk; k++) {
+-            u64 u = exh ? k : rng() % M;
+-            if (!exh) e = gf2f_antilog(u, ql, d, gp);
+-            if (ph_log(e, M, d, ql, D) != u) bad++;
+-            if (exh) e = gf_mulx(e, q, d);
+-        }
+-        printf("d=%2d PH    %s %8llu logs: %llu wrong |", d, exh ? "all    " : "sampled",
+-               (unsigned long long)nchk, (unsigned long long)bad);
+-        for (int i = 0; i < H.nparts; i++)
+-            printf(" %llu(pc %d%s)", (unsigned long long)H.part[i].P,
+-                   __builtin_popcountll(H.part[i].E),
+-                   H.part[i].G > 1 ? (", BSGS G=" + std::to_string(H.part[i].G)).c_str() : "");
+-        printf(" chain %d, %.0f MB, %.1fs\n", H.chain, H.table_bytes / 1048576.0, tb_ph);
+-        if (bad) fails++;
+-        // tower
+-        if (d >= 4 && !(d & 1) && d <= 46) {
+-            t0 = now();
+-            TowerHost W;
+-            if (!tower_build_host(d, q, W)) { printf("d=%2d tower build FAILED\n", d); fails++; continue; }
+-            std::vector<u64> T((size_t)W.MK + 1, ~0ULL);
+-            u64 left = W.MK + 1, x = 1;
+-            TowerDev TD{W.m, W.nb, W.MK, W.btab.data(), W.LK.data(), W.AK.data(), T.data()};
+-            for (u64 u = 0; u < M && left; u++, x = gf_mulx(x, q, d)) {   // coupon collector
+-                u64 pk = tower_coords(x, TD), ac = pk & W.MK, bc = pk >> W.m;
+-                if (!bc) continue;
+-                u64 lb = W.LK[bc], la = W.LK[ac];
+-                u64 cc = ac ? W.AK[la >= lb ? la - lb : la + W.MK - lb] : 0;
+-                if (T[cc] == ~0ULL) {
+-                    u64 t = (W.MK + 2) * lb;
+-                    T[cc] = u >= t ? u - t : u + M - t;
+-                    left--;
+-                }
++        for (int model = 0; model < 2; model++) {
++            double t0 = now();
++            PHHost H; PHTabs tb; PHDev D{};
++            if (!ph_plan_host(d, q, budget, H, model ? kPHCostRound2 : kPHCostBitsliced)) {
++                printf("d=%2d PH (%s planner): no feasible plan%s\n", d, model ? "round-2" : "bit-sliced",
++                       d == 49 ? " (expected: 2^49-1 has the prime factor 4432676798593)" : "  <-- FAIL");
++                if (d != 49) fails++;
++                continue;
+             }
+-            double tb_tw = now() - t0;
+-            bad = 0; e = 1;
++            ph_fill_host(H, ql, d, tb, D);
++            u64 bad = 0, e = 1;
+             for (u64 k = 0; k < nchk; k++) {
+                 u64 u = exh ? k : rng() % M;
+                 if (!exh) e = gf2f_antilog(u, ql, d, gp);
+-                if (tower_log(e, M, TD) != u) bad++;
++                if (ph_log(e, M, d, ql, D) != u) bad++;
+                 if (exh) e = gf_mulx(e, q, d);
+             }
+-            printf("d=%2d tower %s %8llu logs: %llu wrong | m=%d, %.1fs\n", d,
+-                   exh ? "all    " : "sampled", (unsigned long long)nchk,
+-                   (unsigned long long)bad, W.m, tb_tw);
+-            if (bad || left) fails++;
++            printf("d=%2d PH    %s %8llu logs: %llu wrong | %-10s:", d, exh ? "all    " : "sampled",
++                   (ull)nchk, (ull)bad, model ? "round-2" : "bit-sliced");
++            for (int i = 0; i < H.nparts; i++)
++                printf(" %llu(pc %d%s)", (ull)H.part[i].P, __builtin_popcountll(H.part[i].E),
++                       H.part[i].G > 1 ? (", G=" + std::to_string(H.part[i].G)).c_str() : "");
++            printf(", %.0f MB, %.1fs\n", H.table_bytes / 1048576.0, now() - t0);
++            if (bad) fails++;
++        }
++        if (d >= 4 && !(d & 1) && d <= tower_dmax) {
++            double t0 = now();
++            TowerTabs tt;
++            if (!tower_fill_host(d, q, tt)) { printf("d=%2d tower build FAILED\n", d); fails++; continue; }
++            u64 bad = 0, e = 1;
++            for (u64 k = 0; k < nchk; k++) {
++                u64 u = exh ? k : rng() % M;
++                if (!exh) e = gf2f_antilog(u, ql, d, gp);
++                if (tower_log(e, M, tt.dev) != u) bad++;
++                if (exh) e = gf_mulx(e, q, d);
++            }
++            printf("d=%2d tower %s %8llu logs: %llu wrong | m=%d, %.1fs\n", d, exh ? "all    " : "sampled",
++                   (ull)nchk, (ull)bad, tt.W.m, now() - t0);
++            if (bad) fails++;
+         }
+         fflush(stdout);
+     }
+     return fails;
+ }
+ 
++// ---------------------------------------------------------------- part 6
++// minimal polynomial of a (coefficient mask), as in coarse_sieve's kernels
++static u64 minpoly_mask(u64 a, u64 q, int d) {
++    u64 P[64] = {0};
++    P[0] = 1;
++    u64 root = a;
++    for (int i = 0; i < d; i++) {
++        for (int k = i + 1; k >= 1; k--) P[k] = P[k - 1] ^ gf_mul(root, P[k], q, d);
++        P[0] = gf_mul(root, P[0], q, d);
++        root = gf_sqr(root, q, d);
++    }
++    u64 mask = 0;
++    for (int k = 0; k <= d; k++) {
++        if (P[k] > 1) return 0;
++        mask |= P[k] << k;
++    }
++    return mask;
++}
++
++// x^e mod f (f of degree d given as a mask with bit d set), bit-serial
++static u64 xpow_mod(u64 e, u64 f, int d) {
++    u64 r = 1, b = 2;                          // x
++    for (; e; e >>= 1) {
++        if (e & 1) r = gf_mul(r, b, f, d);
++        b = gf_mul(b, b, f, d);
++    }
++    return r;
++}
++
++static int test_classes(int dlo, int dhi, size_t budget, int per_degree) {
++    const u64 r = 136279841;
++    int fails = 0;
++    for (int d = std::max(dlo, 3); d <= dhi; d++) {
++        if (d == 49) continue;
++        const u64 q = find_primitive_poly(d), ql = q ^ ((u64)1 << d), M = ((u64)1 << d) - 1;
++        if (gcd_u64(r % M, M) != 1) continue;
++        u64 gp[64]; gp[0] = 2;
++        for (int t = 1; t < d; t++) gp[t] = gf_sqr(gp[t - 1], q, d);
++        PHHost H; PHTabs tb; PHDev D{};
++        if (!ph_plan_host(d, q, budget, H, kPHCostBitsliced)) { printf("d=%d: no PH plan\n", d); fails++; continue; }
++        ph_fill_host(H, ql, d, tb, D);
++        const u64 rinv = inv_mod(r % M, M);
++        u64 lam = 1, mm = M;
++        for (u64 p : factor_u64(M)) {
++            u64 pk = 1;
++            while (mm % p == 0) { mm /= p; pk *= p; }
++            u64 ph = pk / p * (p - 1);
++            lam = lam / gcd_u64(lam, ph) * ph;
++        }
++        int done = 0, bad = 0, tries = 0;
++        while (done < per_degree && tries++ < 100 * per_degree) {
++            int p;
++            u64 u = fkm_seek((rng() % ((u64)1 << (d - 1))) | 1, d, &p);
++            while (p != d && u < ((u64)1 << (d - 1))) u = fkm_next(u, d, &p);
++            if (u >= ((u64)1 << (d - 1)) || gcd_u64(u, M) != 1) continue;
++            const u64 x = gf2f_antilog(u, ql, d, gp) ^ 1;     // g^u + 1
++            const u64 v = ph_log(x, M, d, ql, D);
++            const u64 j = gf2f_mulmod_m(u, rinv, d, M);
++            const u64 s0 = gf2f_mulmod_m(v, gf2f_powmod_m(j, lam - 1, d, M), d, M);
++            const u64 f = minpoly_mask(gf2f_antilog(j, ql, d, gp), q, d);
++            // f must be irreducible of degree d with f | x^r + x^s0 + 1
++            const u64 s = s0 ? s0 : M;
++            const bool ok = f != 0 && (f >> d) == 1 &&
++                            (xpow_mod(r, f, d) ^ xpow_mod(s, f, d) ^ 1) == 0;
++            if (!ok) { if (bad < 3) printf("d=%d u=%llx: f=%llx s0=%llu does not divide\n", d, (ull)u, (ull)f, (ull)s0); bad++; }
++            done++;
++        }
++        if (bad || done < per_degree) fails++;
++        printf("d=%2d classes: %d checked, f | x^r + x^s0 + 1 for %d\n", d, done, done - bad);
++        fflush(stdout);
++    }
++    return fails;
++}
++
++// ---------------------------------------------------------------- part 7
++static ull key_pack_h(int d, u64 mask) {
++    return d <= 47 ? ((ull)d << 48) | mask : (0xFull << 60) | ((ull)(d - 48) << 56) | mask;
++}
++static int test_keys() {
++    int bad = 0;
++    ull prev = 0;
++    for (int d = 2; d <= 55; d++) {
++        const u64 lo = ((u64)1 << d) | 1, hi = ((u64)2 << d) - 1;   // monic masks, ends
++        const ull k0 = key_pack_h(d, lo), k1 = key_pack_h(d, hi);
++        if (!(k0 > prev && k1 > k0 && k1 < ~0ULL)) bad++;
++        prev = k1;
++    }
++    return bad;
++}
++
+ int main(int argc, char **argv) {
+-    int dlo = argc > 1 ? atoi(argv[1]) : 2, dhi = argc > 2 ? atoi(argv[2]) : 47;
++    int dlo = argc > 1 ? atoi(argv[1]) : 2, dhi = argc > 2 ? atoi(argv[2]) : 55;
+     size_t budget = (size_t)(argc > 3 ? atol(argv[3]) : 1536) << 20;
+     u64 samples = argc > 4 ? strtoull(argv[4], 0, 10) : 20000;
++    int tower_dmax = argc > 5 ? atoi(argv[5]) : 44;
++    if (tower_dmax > 54) tower_dmax = 54;
+     if (dlo < 2) dlo = 2;
+-    if (dhi > 47) dhi = 47;
+-    std::mt19937_64 rng(20261019);
++    if (dhi > 55) dhi = 55;
++    double t0 = now();
+     u64 n1 = 0, n2 = 0;
+-    u64 b1 = test_arith(rng, n1);
+-    printf("1. fast arithmetic vs reference, d=2..47: %llu checks, %llu mismatches\n",
+-           (unsigned long long)n1, (unsigned long long)b1);
+-    u64 b2 = test_rotation(rng, n2);
+-    printf("2. necklace test vs all rotations, d=2..47: %llu checks, %llu mismatches\n",
+-           (unsigned long long)n2, (unsigned long long)b2);
+-    printf("3. discrete logs, d=%d..%d (PH tables <= %zu MB):\n", dlo, dhi, budget >> 20);
+-    int f3 = test_dlog(dlo, dhi, budget, samples, rng);
+-    bool ok = !b1 && !b2 && !f3;
+-    printf("gf2_dlog_selftest: %s\n", ok ? "ALL OK" : "FAILURES");
++    u64 b1 = test_arith(n1);
++    printf("1. fast arithmetic vs reference, d=2..55: %llu checks, %llu mismatches\n", (ull)n1, (ull)b1);
++    u64 b2 = test_necklace(n2);
++    printf("2./3. necklace test and FKM vs brute force: %llu checks, %llu mismatches\n", (ull)n2, (ull)b2);
++    BSAll<55>::go();
++    printf("4. bit-sliced arithmetic D=2..55: %llu checks, %llu mismatches\n", (ull)g_bs_n, (ull)g_bs_bad);
++    fflush(stdout);
++    printf("5. discrete logs, d=%d..%d (PH tables <= %zu MB):\n", dlo, dhi, budget >> 20);
++    int f5 = test_dlog(dlo, dhi, budget, samples, tower_dmax);
++    printf("6. per-class computation vs direct division, d=%d..%d:\n", std::max(dlo, 3), dhi);
++    int f6 = test_classes(dlo, dhi, budget, 40);
++    int f7 = test_keys();
++    printf("7. packed keys d=2..55: %s\n", f7 ? "FAILED" : "ok");
++    bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7;
++    printf("gf2_dlog_selftest: %s (%.0fs)\n", ok ? "ALL OK" : "FAILURES", now() - t0);
++    (void)g_bad;
+     return ok ? 0 : 1;
+ }

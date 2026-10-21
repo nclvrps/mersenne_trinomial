@@ -1,35 +1,40 @@
 // gf2_dlog.h
-// Table-light discrete logarithms in GF(2^d), d <= 47, for coarse_sieve's
+// Table-light discrete logarithms in GF(2^d), d <= 55, for coarse_sieve's
 // "logs" path (-DWIDE_FIELD build only).  The sieve needs, per cyclotomic
 // class, one Zech logarithm log(g^u + 1); instead of a 2^d-entry log table
 // (or its bucketed slices) it computes that one log directly:
 //
 //   tower  (even d = 2m): GF(2^d) = K(w), K = GF(2^m), w = x.  Every element
 //          is a + b*w with a, b in K; for b != 0 it equals b*(c + w),
-//          c = a/b, so  log e = (2^m+1)*logK(b) + T[c].  The split e -> (a,b)
-//          is GF(2)-linear (byte tables); tables have 2^m entries.
+//          c = a/b, so  log e = (2^m+1)*logK(b) + T[logK(c)].  The split
+//          e -> (a,b) is GF(2)-linear (byte tables); tables have 2^m entries.
 //   ph     (any d): Pohlig-Hellman over a coprime split M = P_1*...*P_n of
-//          M = 2^d - 1 (n <= 4, typically 2 balanced parts of ~2^(d/2)):
-//          e^(E_i) lies in the order-P_i subgroup and a hash table (with
-//          baby-step/giant-step when P_i exceeds the table budget) gives
-//          v mod P_i; CRT gives v.  The exponents E_i = c_i * M/P_i are
-//          chosen (over c_i coprime to P_i, and rotations) to have few set
-//          bits in a short window: few general multiplies, short squaring
-//          chain.
+//          M = 2^d - 1 (n <= 4): e^(E_i) lies in the order-P_i subgroup and
+//          a hash table of 16-byte slots (with baby-step/giant-step when P_i
+//          exceeds the table budget) gives v mod P_i; CRT gives v.  The
+//          exponents E_i = c_i * M/P_i are chosen (over c_i coprime to P_i,
+//          and rotations) to have few set bits in a short window: few
+//          general multiplies, short squaring chain.  The planner picks the
+//          split by estimated cost per class, for the kernel that will run
+//          it (cost models below).
 //
 // Also here: carry-less arithmetic that is ~8x cheaper than gf_mul's
 // bit-serial loops (integer-multiply clmul with 4-bit holes, BearSSL-style;
-// two-fold reduction by the sparse low part of the modulus), and the u64
-// helpers the sweep needs (Mersenne mulmod/powmod, exact-division tests).
+// two-fold reduction by the sparse low part of the modulus); bit-sliced
+// arithmetic for 32 elements at once (round 3: one u32 per coefficient,
+// the modulus fixed at compile time); the FKM enumeration of class
+// representatives (Lyndon words); and the u64 helpers the sweep needs
+// (Mersenne mulmod/powmod, exact-division tests).
 // Everything is plain host+device code: no tables in shared memory, no
 // warp intrinsics, so cuda_emul.h validates it exactly.
 
 #ifndef GF2_DLOG_H
 #define GF2_DLOG_H
 #include "gf2_wide_field.h"
+#include <utility>        // std::integer_sequence (bit-sliced arithmetic)
 
 // ---------------------------------------------------------------------------
-// fast field arithmetic (d <= 47, modulus q = x^d + qlow, deg(qlow) <= 16)
+// fast field arithmetic (d <= 55, modulus q = x^d + qlow, deg(qlow) <= 16)
 
 // 32x32 -> 64 carry-less product via integer multiplies.  Each operand is
 // split into 4 bit-classes (bits = k mod 4); an integer product of two
@@ -84,7 +89,7 @@ GF2_HD int gf2f_clz64(u64 x) {              // x != 0
 }
 
 // p * qlow for p < 2^(64 - deg qlow): XOR of shifted copies, one per set
-// bit of qlow (2..6 for every d <= 47; uniform across threads).  qlow has
+// bit of qlow (2..6 for every d <= 55; uniform across threads).  qlow has
 // degree <= 8 here (< 2^25 whenever gf2f_usable holds), so the loop runs on
 // 32-bit control: ~10 instead of ~18 instructions per term on the GPU.
 GF2_HD u64 gf2f_mul_low(u64 p, u64 qlow) {
@@ -143,9 +148,11 @@ GF2_HD u64 gf2f_pow(u64 base, u64 e, u64 qlow, int d) {
     return r;
 }
 
-// host check: can the fast path handle this modulus?
+// host check: can the fast path handle this modulus?  (d <= 55: the
+// packed best[] key's limit; the two-fold reduction holds there for the
+// smallest primitive polynomials, whose low part has degree <= 8)
 static inline bool gf2f_usable(u64 q, int d) {
-    if (d < 2 || d > 47) return false;
+    if (d < 2 || d > 55) return false;
     u64 ql = q ^ ((u64)1 << d);
     if (!ql) return false;
     int dl = 63 - __builtin_clzll(ql);
@@ -221,7 +228,8 @@ GF2_HD bool odd_div_test(u64 x, const OddDiv &o, u64 *quot) {
 // count kept warps busy for ~30 iterations per u, most of the sweep's time
 // at large d; the result is the same for every such u (checked against
 // gf2f_min_rotation_ref exhaustively for d <= 24 and on random u for every
-// d <= 47 by t_rot.cpp, and on the device by --selftest-logs).
+// d <= 55 by t_rot.cpp / gf2_dlog_selftest.cpp, and on the device by
+// --selftest-logs).
 GF2_HD u64 gf2f_zero_runs(u64 w, int k) {    // k >= 1
     int m = 1;
     while (2 * m <= k) { w &= w >> m; m *= 2; }
@@ -251,11 +259,315 @@ GF2_HD bool gf2f_min_rotation_ref(u64 u, int d, u64 M) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Lyndon words in increasing order (Fredricksen-Kessler-Maiorana).
+//
+// The degree-d classes are exactly the binary Lyndon words of length n = d
+// (aperiodic, and least among their rotations), read MSB first; as numbers
+// they are the odd representatives u < 2^(d-1).  FKM visits the
+// pre-necklaces of length n in lexicographic = numeric order; a pre-
+// necklace has a "period" p, and the Lyndon words are those with p == n.
+// There are about twice as many pre-necklaces as Lyndon words, so a sweep
+// costs ~2 cheap steps per class -- instead of a test of every odd u
+// (~12 per class at d=47, most of them where there are almost no classes:
+// half of all u start with "01" and hold only the classes without "00").
+//
+// The top n bits of the infinite repetition of the j-bit word P:
+GF2_HD u64 fkm_extend(u64 P, int j, int n) {
+    if (j >= n) return P;
+    u64 X = P << (64 - j);
+    for (int f = j; f < n; f *= 2) X |= X >> f;
+    return X >> (64 - n);
+}
+
+// The least pre-necklace >= lo (lo < 2^n); *p receives its period.
+// FKM's recurrence a_i >= a_(i-p) fails at the first i with a_i < a_(i-p);
+// the least pre-necklace above then repeats a_1..a_p (its prefix up to i-1
+// already does).
+GF2_HD u64 fkm_seek(u64 lo, int n, int *p) {
+    int pp = 1;
+    for (int i = 2; i <= n; i++) {
+        const int ai = (int)((lo >> (n - i)) & 1);
+        const int aq = (int)((lo >> (n - i + pp)) & 1);
+        if (ai < aq) { *p = pp; return fkm_extend(lo >> (n - pp), pp, n); }
+        if (ai > aq) pp = i;
+    }
+    *p = pp;
+    return lo;
+}
+
+// The next pre-necklace after w (w < 2^n - 1); *p receives its period:
+// raise the last 0 to 1 and repeat the prefix up to it.
+GF2_HD u64 fkm_next(u64 w, int n, int *p) {
+    const int b = gf2f_ctz64(~w);              // last 0, as a bit index (< n)
+    *p = n - b;
+    return fkm_extend((w >> b) | 1, n - b, n);
+}
+
 #if defined(__CUDACC__)
 #define GF2D_UNROLL _Pragma("unroll")
 #else
 #define GF2D_UNROLL
 #endif
+
+// ---------------------------------------------------------------------------
+// The moduli as compile-time constants: q_d = x^d + gf2_qlow(d) is the
+// smallest primitive polynomial of degree d, i.e. exactly what
+// find_primitive_poly(d) returns (the host code checks this before using
+// the bit-sliced kernels, which need the taps at compile time).
+GF2_HD constexpr u64 gf2_qlow(int d) {
+    switch (d) {
+    case  2: return 0x3;   case  3: return 0x3;   case  4: return 0x3;
+    case  5: return 0x5;   case  6: return 0x3;   case  7: return 0x3;
+    case  8: return 0x1d;  case  9: return 0x11;  case 10: return 0x9;
+    case 11: return 0x5;   case 12: return 0x53;  case 13: return 0x1b;
+    case 14: return 0x2b;  case 15: return 0x3;   case 16: return 0x2d;
+    case 17: return 0x9;   case 18: return 0x27;  case 19: return 0x27;
+    case 20: return 0x9;   case 21: return 0x5;   case 22: return 0x3;
+    case 23: return 0x21;  case 24: return 0x1b;  case 25: return 0x9;
+    case 26: return 0x47;  case 27: return 0x27;  case 28: return 0x9;
+    case 29: return 0x5;   case 30: return 0x53;  case 31: return 0x9;
+    case 32: return 0xaf;  case 33: return 0x53;  case 34: return 0xe7;
+    case 35: return 0x5;   case 36: return 0x77;  case 37: return 0x3f;
+    case 38: return 0x63;  case 39: return 0x11;  case 40: return 0x39;
+    case 41: return 0x9;   case 42: return 0x3f;  case 43: return 0x59;
+    case 44: return 0x65;  case 45: return 0x1b;  case 46: return 0x12f;
+    case 47: return 0x21;  case 48: return 0xb7;  case 49: return 0x71;
+    case 50: return 0x1d;  case 51: return 0x4b;  case 52: return 0x9;
+    case 53: return 0x47;  case 54: return 0x7d;  case 55: return 0x47;
+    default: return 0;
+    }
+}
+
+GF2_HD constexpr int gf2_deg(u64 x) {
+    int d = -1;
+    while (x) { x >>= 1; d++; }
+    return d;
+}
+
+// ---------------------------------------------------------------------------
+// Bit-sliced arithmetic: 32 field elements at once, one u32 per coefficient
+// ("plane"): bit k of plane i is coefficient i of element k.  A product is
+// then sum_(i+j=m) a_i & b_j per output plane -- one 3-input LOP3 per term,
+// d^2 for 32 products, against ~250 instructions for ONE scalar product --
+// and reduction mod q_D only XORs whole planes.  A squaring is a fixed
+// permutation of planes plus that reduction: nearly free.  D is a template
+// parameter so every plane index is a compile-time constant and the planes
+// live in registers (3D+ registers for a product: the PH kernels use ~160-
+// 250 registers per thread, i.e. 8-12 warps per SM, which is plenty for
+// LOP3 streams).
+
+// Every plane index must be a compile-time constant for the planes to stay
+// in registers.  Loops would need to be fully unrolled for that, and the
+// unrollers' size limits are exceeded at large D (clang gives up at D = 55),
+// so the plane computations are expanded by folds over index sequences
+// instead: no loops at all in a product or a square.
+template <int D> struct BSRed {               // reduction by q_D = x^D + QL
+    static constexpr u64 QL = gf2_qlow(D);
+    static constexpr int T = gf2_deg(QL);       // taps: x^D = QL, deg QL = T
+    static constexpr int NH = T > 1 ? T - 1 : 1;  // pending planes D..D+T-2
+};
+
+// x^M = x^(M-D) * QL (M >= D): tap S sends plane M to plane M - D + S
+// (the helpers take plain pointers: with array references, GCC's identical-
+// code folding of the empty taps across D produces bogus -Warray-bounds
+// warnings; on the device everything is inlined and indexed by constants)
+template <int D, int M, int S>
+GF2_HD void bs_tap(u32 t, u32 *r, u32 *hp) {
+    if constexpr ((BSRed<D>::QL >> S) & 1) {
+        constexpr int g = M - D + S;
+        if constexpr (g >= D) hp[g - D] ^= t; else r[g] ^= t;
+    }
+}
+
+template <int D, int M, int... S>
+GF2_HD void bs_taps(u32 t, u32 *r, u32 *hp, std::integer_sequence<int, S...>) {
+    (bs_tap<D, M, S>(t, r, hp), ...);
+}
+
+// fold plane M (value t) into the result; a plane M >= D first collects
+// what higher planes folded into it
+template <int D, int M>
+GF2_HD void bs_fold_plane(u32 t, u32 *r, u32 *hp) {
+    if constexpr (M >= D) {
+        if constexpr (M - D < BSRed<D>::T - 1) t ^= hp[M - D];
+        bs_taps<D, M>(t, r, hp, std::make_integer_sequence<int, BSRed<D>::T + 1>{});
+    } else {
+        r[M] ^= t;
+    }
+}
+
+// plane M of a*b: XOR of a[i] & b[M-i] over I0 <= i <= I0 + #J - 1
+template <int D, int M, int I0, int... J>
+GF2_HD u32 bs_conv(const u32 *a, const u32 *b, std::integer_sequence<int, J...>) {
+    return (0u ^ ... ^ (a[I0 + J] & b[M - I0 - J]));
+}
+
+template <int D, int M>
+GF2_HD void bs_mul_plane(const u32 *a, const u32 *b, u32 *r, u32 *hp) {
+    constexpr int I0 = M >= D ? M - D + 1 : 0, I1 = M < D ? M : D - 1;
+    bs_fold_plane<D, M>(
+        bs_conv<D, M, I0>(a, b, std::make_integer_sequence<int, I1 - I0 + 1>{}),
+        r, hp);
+}
+
+template <int D, int... K>
+GF2_HD void bs_mul_planes(const u32 *a, const u32 *b, u32 *r, u32 *hp,
+                          std::integer_sequence<int, K...>) {
+    (bs_mul_plane<D, 2 * D - 2 - K>(a, b, r, hp), ...);   // M = 2D-2 .. 0
+}
+
+// r = a * b  (r must not alias a or b)
+template <int D>
+GF2_HD void bs_mul(const u32 (&a)[D], const u32 (&b)[D], u32 (&r)[D]) {
+    u32 hp[BSRed<D>::NH];
+    GF2D_UNROLL
+    for (int k = 0; k < BSRed<D>::NH; k++) hp[k] = 0;
+    GF2D_UNROLL
+    for (int k = 0; k < D; k++) r[k] = 0;
+    bs_mul_planes<D>(a, b, r, hp, std::make_integer_sequence<int, 2 * D - 1>{});
+}
+
+// plane M of a^2 is a[M/2] for even M and 0 for odd M -- but an odd M >= D
+// still has to pass down what higher planes folded into it
+template <int D, int M>
+GF2_HD void bs_sqr_plane(const u32 *a, u32 *r, u32 *hp) {
+    if constexpr (M & 1) {
+        if constexpr (M >= D) bs_fold_plane<D, M>(0u, r, hp);
+    } else {
+        bs_fold_plane<D, M>(a[M / 2], r, hp);
+    }
+}
+
+template <int D, int... K>
+GF2_HD void bs_sqr_planes(const u32 *a, u32 *r, u32 *hp,
+                          std::integer_sequence<int, K...>) {
+    (bs_sqr_plane<D, 2 * D - 2 - K>(a, r, hp), ...);       // M = 2D-2 .. 0
+}
+
+// r = a^2  (r must not alias a)
+template <int D>
+GF2_HD void bs_sqr(const u32 (&a)[D], u32 (&r)[D]) {
+    u32 hp[BSRed<D>::NH];
+    GF2D_UNROLL
+    for (int k = 0; k < BSRed<D>::NH; k++) hp[k] = 0;
+    GF2D_UNROLL
+    for (int k = 0; k < D; k++) r[k] = 0;
+    bs_sqr_planes<D>(a, r, hp, std::make_integer_sequence<int, 2 * D - 1>{});
+}
+
+// g = g * x in the slots selected by sel, unchanged elsewhere
+template <int D>
+GF2_HD void bs_mulx_sel(u32 (&g)[D], u32 sel) {
+    constexpr u64 QL = gf2_qlow(D);
+    const u32 top = g[D - 1] & sel;
+    GF2D_UNROLL
+    for (int k = D - 1; k >= 1; k--) g[k] = (g[k - 1] & sel) | (g[k] & ~sel);
+    g[0] &= ~sel;
+    GF2D_UNROLL
+    for (int s = 0; s < D; s++)
+        if ((QL >> s) & 1) g[s] ^= top;
+}
+
+// G = g^u per slot, g = x; U holds the exponents as planes (bit k of U[b] =
+// bit b of u_k), every u_k < 2^(D-1).  Left to right: square, then multiply
+// by x where the bit is set -- a plane shift, so no general multiplies.
+// The loop over b stays rolled on purpose: unrolled it would be ~15k
+// instructions of straight-line code per kernel, far beyond the instruction
+// cache; rolled, U[b] is one local-memory (L1) load per ~4D instructions.
+template <int D>
+GF2_HD void bs_pow_g(const u32 (&U)[D], u32 (&G)[D]) {
+    GF2D_UNROLL
+    for (int k = 0; k < D; k++) G[k] = 0;
+    G[0] = ~0u;                                  // 1 in every slot
+#if defined(__CUDACC__)
+#pragma unroll 1
+#endif
+    for (int b = D - 2; b >= 0; b--) {
+        u32 R[D];
+        bs_sqr<D>(G, R);
+        GF2D_UNROLL
+        for (int k = 0; k < D; k++) G[k] = R[k];
+        bs_mulx_sel<D>(G, U[b]);
+    }
+}
+
+// A = X^E in every slot (E >= 1, the same for all slots)
+template <int D>
+GF2_HD void bs_pow(const u32 (&X)[D], u64 E, u32 (&A)[D]) {
+    GF2D_UNROLL
+    for (int k = 0; k < D; k++) A[k] = X[k];
+    for (int b = 62 - gf2f_clz64(E); b >= 0; b--) {
+        u32 R[D];
+        bs_sqr<D>(A, R);
+        if ((E >> b) & 1) {
+            bs_mul<D>(R, X, A);
+        } else {
+            GF2D_UNROLL
+            for (int k = 0; k < D; k++) A[k] = R[k];
+        }
+    }
+}
+
+// 32x32 bit transpose in place: afterwards bit k of w[i] is the former bit
+// i of w[k]
+GF2_HD void bs_transpose32(u32 (&w)[32]) {
+    GF2D_UNROLL
+    for (int jj = 4; jj >= 0; jj--) {           // j = 16, 8, 4, 2, 1
+        const int j = 1 << jj;
+        const u32 m = j == 16 ? 0x0000FFFFu : j == 8 ? 0x00FF00FFu
+                    : j == 4 ? 0x0F0F0F0Fu : j == 2 ? 0x33333333u : 0x55555555u;
+        GF2D_UNROLL
+        for (int k = 0; k < 32; k++) {
+            if (k & j) continue;
+            const u32 t = ((w[k] >> j) ^ w[k | j]) & m;
+            w[k | j] ^= t;
+            w[k] ^= t << j;
+        }
+    }
+}
+
+// 32 scalars (bits 0..D-1 used) -> D planes
+template <int D>
+GF2_HD void bs_load(const u64 *v, u32 (&P)[D]) {
+    constexpr int D0 = D < 32 ? D : 32;
+    u32 w[32];
+    GF2D_UNROLL
+    for (int k = 0; k < 32; k++) w[k] = (u32)v[k];
+    bs_transpose32(w);
+    GF2D_UNROLL
+    for (int i = 0; i < D0; i++) P[i] = w[i];
+    if (D > 32) {
+        GF2D_UNROLL
+        for (int k = 0; k < 32; k++) w[k] = (u32)(v[k] >> 32);
+        bs_transpose32(w);
+        GF2D_UNROLL
+        for (int i = 32; i < D; i++) P[i] = w[i - 32];
+    }
+}
+
+// D planes -> 32 scalars
+template <int D>
+GF2_HD void bs_store(const u32 (&P)[D], u64 *v) {
+    constexpr int D0 = D < 32 ? D : 32;
+    u32 w[32];
+    GF2D_UNROLL
+    for (int i = 0; i < D0; i++) w[i] = P[i];
+    GF2D_UNROLL
+    for (int i = D0; i < 32; i++) w[i] = 0;
+    bs_transpose32(w);
+    GF2D_UNROLL
+    for (int k = 0; k < 32; k++) v[k] = w[k];
+    if (D > 32) {
+        GF2D_UNROLL
+        for (int i = 32; i < D; i++) w[i - 32] = P[i];
+        GF2D_UNROLL
+        for (int i = (D > 32 ? D - 32 : 0); i < 32; i++) w[i] = 0;
+        bs_transpose32(w);
+        GF2D_UNROLL
+        for (int k = 0; k < 32; k++) v[k] |= (u64)w[k] << 32;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // tower logs (d = 2m).  All pointers are device pointers; structs are
@@ -265,8 +577,8 @@ struct TowerDev {
     u64 MK;               // 2^m - 1 (also the coordinate mask)
     const u64 *btab;      // [nb][256]: packed coords coordK(a) | coordK(b)<<m
     const u32 *LK;        // [2^m]   coordinate -> log base h (h = g^(2^m+1))
-    const u32 *AK;        // [2^m-1] log base h -> coordinate
-    const u64 *T;         // [2^m]   c -> log_g(c + w)
+    const u64 *T;         // [2^m]   T[l] = log_g(h^l + w) for l < MK, and
+                          //         T[MK] = log_g(w)  (c = 0)
 };
 
 GF2_HD u64 tower_coords(u64 x, const TowerDev &t) {
@@ -275,18 +587,20 @@ GF2_HD u64 tower_coords(u64 x, const TowerDev &t) {
     return pk;
 }
 
-// log_g(x) for x != 0
+// log_g(x) for x != 0.  T is indexed by log_h(c) rather than by c, so the
+// quotient c = a/b is never formed: three table reads (two in LK, one in
+// T) instead of four.
 GF2_HD u64 tower_log(u64 x, u64 M, const TowerDev &t) {
     u64 pk = tower_coords(x, t);
     u64 ac = pk & t.MK, bc = pk >> t.m;
     u64 h1 = t.MK + 2;                          // 2^m + 1 = log_g(h)
     if (bc == 0) return h1 * t.LK[ac];          // x in K*;  < M
-    u64 lb = t.LK[bc], cc = 0;
+    u64 lb = t.LK[bc], l = t.MK;                // c = a/b; slot MK: c = 0
     if (ac) {
         u64 la = t.LK[ac];
-        cc = t.AK[la >= lb ? la - lb : la + t.MK - lb];   // c = a / b
+        l = la >= lb ? la - lb : la + t.MK - lb;          // log_h(c)
     }
-    u64 v = h1 * lb + t.T[cc];                  // h1*lb < M, T < M
+    u64 v = h1 * lb + t.T[l];                   // h1*lb < M, T < M
     return v >= M ? v - M : v;
 }
 
@@ -294,14 +608,17 @@ GF2_HD u64 tower_log(u64 x, u64 M, const TowerDev &t) {
 // Pohlig-Hellman logs
 #define PH_MAXPARTS 4
 
+// One hash slot: key and value side by side, so a probe is one 16-byte
+// read (one memory sector) instead of two.
+struct alignas(16) PHSlot { u64 key, val; };
+
 struct PHPart {
     u64 P;                // order of the subgroup this part resolves
     u64 E;                // exponent: x^E = gamma^(log x mod P)
     u64 K;                // CRT constant: log x = sum (log x mod P_i)*K_i mod M
     u64 N, G;             // baby table holds gamma^0..gamma^(N-1); G = ceil(P/N)
     u64 delta;            // gamma^(-N): one giant step
-    const u64 *keys;      // 2^sbits slots, 0 = empty (subgroup elements != 0)
-    const u32 *vals;
+    const PHSlot *slots;  // 2^sbits slots, key 0 = empty (subgroup elems != 0)
     int sbits;
 };
 
@@ -318,10 +635,24 @@ GF2_HD u64 ph_slot(u64 key, int sbits) {
 GF2_HD u64 ph_lookup(const PHPart &p, u64 y) {
     const u64 mask = ((u64)1 << p.sbits) - 1;
     for (u64 h = ph_slot(y, p.sbits);; h = (h + 1) & mask) {
-        u64 k = p.keys[h];
-        if (k == y) return p.vals[h];
-        if (k == 0) return ~0ULL;
+        const PHSlot e = p.slots[h];
+        if (e.key == y) return e.val;
+        if (e.key == 0) return ~0ULL;
     }
+}
+
+// log of the subgroup element y (= x^E) mod P, by baby-step/giant-step if
+// the table holds fewer than P entries; ~0 if not found (an error)
+GF2_HD u64 ph_part_log(const PHPart &p, u64 y, u64 qlow, int d) {
+    for (u64 s = 0; s < p.G; s++) {
+        u64 idx = ph_lookup(p, y);
+        if (idx != ~0ULL) {
+            idx += s * p.N;
+            return idx < p.P ? idx : ~0ULL;
+        }
+        y = gf2f_mul(y, p.delta, qlow, d);
+    }
+    return ~0ULL;
 }
 
 // log_g(x) for x != 0, or ~0 on an internal inconsistency (never expected;
@@ -343,13 +674,8 @@ GF2_HD u64 ph_log(u64 x, u64 M, int d, u64 qlow, const PHDev &ph) {
     for (int i = 0; i < PH_MAXPARTS; i++) {
         if (i >= ph.nparts) continue;
         const PHPart &p = ph.part[i];
-        u64 y = acc[i], xi = ~0ULL;
-        for (u64 s = 0; s < p.G; s++) {
-            u64 idx = ph_lookup(p, y);
-            if (idx != ~0ULL) { xi = idx + s * p.N; break; }
-            y = gf2f_mul(y, p.delta, qlow, d);
-        }
-        if (xi >= p.P) return ~0ULL;
+        u64 xi = ph_part_log(p, acc[i] ? acc[i] : 1, qlow, d);
+        if (xi == ~0ULL) return ~0ULL;
         v += gf2f_mulmod_m(xi, p.K, d, M);
         if (v >= M) v -= M;
     }
@@ -362,6 +688,7 @@ GF2_HD u64 ph_log(u64 x, u64 M, int d, u64 qlow, const PHDev &ph) {
 #include <vector>
 #include <algorithm>
 #include <functional>
+#include <cmath>
 
 struct TowerHost {
     int m = 0, nb = 0;
@@ -371,10 +698,10 @@ struct TowerHost {
 };
 
 // Byte tables for e -> (coordK(a) | coordK(b) << m), and LK/AK for K*.
-// T (the 2^m logs log(c + w)) is filled on the device (k_tower_T).
-// Returns false if any internal consistency check fails.
+// T (the 2^m logs log(h^l + w)) is filled on the device (k_tower_T); AK
+// stays on the host.  Returns false if any internal consistency check fails.
 static bool tower_build_host(int d, u64 q, TowerHost &W) {
-    if (d < 4 || (d & 1) || d > 46) return false;
+    if (d < 4 || (d & 1) || d > 54) return false;
     const int m = d / 2;
     const u64 M = ((u64)1 << d) - 1, MK = ((u64)1 << m) - 1;
     std::vector<u64> sig(d);                    // sigma(x^i) = x^(i*2^m)
@@ -461,21 +788,101 @@ static bool tower_build_host(int d, u64 q, TowerHost &W) {
 }
 
 struct PHPartHost { u64 P = 0, E = 0, K = 0, N = 0, G = 1, delta = 1, gamma = 1; int sbits = 1; };
-struct PHHost { int nparts = 0, chain = 0; PHPartHost part[PH_MAXPARTS]; size_t table_bytes = 0; };
+struct PHHost {
+    int nparts = 0, chain = 0;
+    PHPartHost part[PH_MAXPARTS];
+    size_t table_bytes = 0;
+    double cost = 0;                     // model estimate, instructions/class
+};
 
-// slot count 2^s >= 2N (load <= 1/2): 8-byte key + 4-byte value per slot
+// slot count 2^s >= 2N (load <= 1/2), one PHSlot (16 bytes) each
 static inline size_t ph_table_bytes(u64 N, int *sbits_out) {
     int s = 1;
     while (((u64)1 << s) < 2 * N) s++;
     if (sbits_out) *sbits_out = s;
-    return ((size_t)1 << s) * 12;
+    return ((size_t)1 << s) * sizeof(PHSlot);
 }
 
-// Plan Pohlig-Hellman: coprime split of M into <= 2 parts (as balanced as
-// possible), cheapest exponents, CRT constants, and table sizes within
-// budget_bytes (shrinking the largest table into baby-step/giant-step if
-// needed).  Returns false if even small tables do not fit.
-static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H) {
+// Cost of one Pohlig-Hellman log, in rough GPU instructions per class:
+//   scalar (one class per thread, round-2 kernel): a multiply costs ~2
+//     squarings and all parts share one squaring chain;
+//   bit-sliced (round-3 kernel): a multiply ~73, a squaring ~3, each part
+//     its own chain, plus a transpose per part.
+// A lookup in a table larger than ~1 MB is a DRAM access (~300 equivalent
+// instructions); smaller tables stay in cache.  A giant step is a scalar
+// multiply plus another lookup.  Table memory is charged 1 per MB, so a
+// plan only takes gigabytes for a real gain (and small tables cache better).
+struct PHCostModel {
+    double mul, sqr, lookup_dram, lookup_cached, giant, per_part;
+    bool shared_chain;
+    bool legacy;          // round 2's planner: the most balanced 2-part split
+};
+static const PHCostModel kPHCostScalar    = {250, 125, 300, 60, 550, 0, true, false};
+static const PHCostModel kPHCostBitsliced = {73, 3, 300, 60, 550, 60, false, false};
+static const PHCostModel kPHCostRound2    = {2, 1, 0, 0, 0, 0, true, true};
+
+// The exponent for one part: E = c * (M/P) mod M over c coprime to P (and
+// its rotations c * 2^-r), minimizing the model cost of x^E.
+static u64 ph_best_exponent(int d, u64 M, u64 P, const std::vector<u64> &primes,
+                            const PHCostModel &cm) {
+    const u64 C = M / P;
+    std::vector<u64> pf;
+    for (u64 p : primes) if (P % p == 0) pf.push_back(p);
+    const u64 lim = std::min<u64>(P, (u64)1 << 22);
+    u64 E = 0, bestE = C;
+    double best = 1e300;
+    for (u64 c = 1; c < lim; c++) {
+        E += C; if (E >= M) E -= M;
+        const int pc = __builtin_popcountll(E);
+        if ((pc - 1) * cm.mul >= best) continue;
+        bool cop = true;
+        for (u64 p : pf) if (c % p == 0) { cop = false; break; }
+        if (!cop) continue;
+        u64 Er = E;
+        for (int r = 0; r < d; r++) {            // rotations: same popcount
+            const int top = 63 - __builtin_clzll(Er);
+            const double cost = (pc - 1) * cm.mul + top * cm.sqr;
+            if (cost < best) { best = cost; bestE = Er; }
+            Er = (Er >> 1) | ((Er & 1) << (d - 1));      // * 2^-1 mod M
+        }
+    }
+    return bestE;
+}
+
+// Table sizes for parts P[0..n): every N_i = P_i if that fits the budget,
+// else the largest tables are halved (baby-step/giant-step).  False if even
+// that fails, or would need more than max_giant giant steps somewhere.
+static bool ph_fit_tables(const u64 *P, int n, size_t budget, u64 max_giant,
+                          u64 *N, size_t *bytes) {
+    for (int i = 0; i < n; i++) N[i] = P[i];
+    auto total = [&]() {
+        size_t t = 0;
+        for (int i = 0; i < n; i++) t += ph_table_bytes(N[i], nullptr);
+        return t;
+    };
+    while (total() > budget) {
+        int big = 0;
+        for (int i = 1; i < n; i++) if (N[i] > N[big]) big = i;
+        int sb;
+        ph_table_bytes(N[big], &sb);
+        if (sb <= 12) return false;
+        N[big] = (u64)1 << (sb - 2);             // half the slots, load 1/2
+    }
+    for (int i = 0; i < n; i++)
+        if ((P[i] + N[i] - 1) / N[i] > max_giant) return false;
+    *bytes = total();
+    return true;
+}
+
+// Plan Pohlig-Hellman: a coprime split of M into 1..4 parts, table sizes
+// within budget_bytes, the cheapest exponents, CRT constants -- the split
+// with the least model cost over all splits whose tables fit (each distinct
+// part gets one exponent search, ~4M candidates at most).  False if none
+// fits (e.g. d=49: 2^49-1 = 127 * 4432676798593 would need ~16,000 giant
+// steps per log with any table that fits on a card).
+static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H,
+                         const PHCostModel &cm = kPHCostScalar,
+                         u64 max_giant = 64) {
     const u64 M = ((u64)1 << d) - 1;
     std::vector<u64> primes = factor_u64(M), pp;   // prime powers p^k || M
     u64 rest = M;
@@ -484,74 +891,74 @@ static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H) {
         while (rest % p == 0) { rest /= p; pk *= p; }
         pp.push_back(pk);
     }
-    std::vector<u64> parts;
-    if (pp.size() == 1) parts.push_back(M);
-    else {
-        const int n = (int)pp.size();
-        u64 bestA = 1, bestmax = ~0ULL;
+    const int n = (int)pp.size();
+    std::vector<std::pair<u64, u64>> ecache;        // P -> best exponent
+    auto exponent_for = [&](u64 P) {
+        for (auto &e : ecache) if (e.first == P) return e.second;
+        u64 E = ph_best_exponent(d, M, P, primes, cm);
+        ecache.push_back({P, E});
+        return E;
+    };
+    bool have = false;
+    // round 2 used the most balanced coprime pair (largest part minimal)
+    u64 legacy_max = M;
+    if (cm.legacy && n > 1)
         for (u64 mask = 1; mask + 1 < ((u64)1 << n); mask++) {
             u64 A = 1;
             for (int i = 0; i < n; i++) if (mask >> i & 1) A *= pp[i];
-            u64 mx = std::max(A, M / A);
-            if (mx < bestmax) { bestmax = mx; bestA = A; }
+            legacy_max = std::min(legacy_max, std::max(A, M / A));
         }
-        parts.push_back(std::max(bestA, M / bestA));
-        parts.push_back(std::min(bestA, M / bestA));
-    }
-    H = PHHost();
-    H.nparts = (int)parts.size();
-    for (int i = 0; i < H.nparts; i++) {
-        PHPartHost &pt = H.part[i];
-        const u64 P = parts[i], C = M / P;
-        std::vector<u64> pf;
-        for (u64 p : primes) if (P % p == 0) pf.push_back(p);
-        // E = c*C mod M over c coprime to P (and its rotations, i.e.
-        // c*2^-r): few set bits (general multiplies) in a low window
-        // (squarings); cost ~ 2*(popcount-1) + highest bit
-        const u64 lim = std::min<u64>(P, (u64)1 << 22);
-        u64 E = 0, bestE = C;
-        int bestcost = 1 << 30;
-        for (u64 c = 1; c < lim; c++) {
-            E += C; if (E >= M) E -= M;
-            int pc = __builtin_popcountll(E);
-            if (3 * (pc - 1) >= bestcost) continue;     // span >= pc-1
-            bool cop = true;
-            for (u64 p : pf) if (c % p == 0) { cop = false; break; }
-            if (!cop) continue;
-            u64 Er = E;
-            for (int r = 0; r < d; r++) {
-                int cost = 2 * (pc - 1) + (63 - __builtin_clzll(Er));
-                if (cost < bestcost) { bestcost = cost; bestE = Er; }
-                Er = (Er >> 1) | ((Er & 1) << (d - 1));  // * 2^-1 mod M
+    std::vector<int> g(n, 0);
+    // every split into k <= 4 groups, each once (restricted growth strings)
+    std::function<void(int, int)> rec = [&](int i, int used) {
+        if (i < n) {
+            for (int j = 0; j <= used && j < PH_MAXPARTS; j++) {
+                g[i] = j;
+                rec(i + 1, std::max(used, j + 1));
             }
+            return;
         }
-        pt.P = P;
-        pt.E = bestE;
-        pt.K = mulmod_u64(C, P == 1 ? 0 : inv_mod(C % P, P), M);
-        pt.gamma = gf_pow(2, bestE, q, d);
-        pt.N = P;
-        H.chain = std::max(H.chain, 63 - __builtin_clzll(bestE));
-    }
-    auto total = [&]() {
-        size_t t = 0;
-        for (int i = 0; i < H.nparts; i++) t += ph_table_bytes(H.part[i].N, nullptr);
-        return t;
+        u64 P[PH_MAXPARTS], N[PH_MAXPARTS];
+        for (int j = 0; j < used; j++) P[j] = 1;
+        for (int j = 0; j < n; j++) P[g[j]] *= pp[j];
+        if (cm.legacy) {                             // round 2: balanced pair
+            u64 mx = 0;
+            for (int j = 0; j < used; j++) mx = std::max(mx, P[j]);
+            if (used != std::min(n, 2) || mx > legacy_max) return;
+        }
+        size_t bytes;
+        if (!ph_fit_tables(P, used, budget_bytes, max_giant, N, &bytes)) return;
+        PHHost T;
+        T.nparts = used;
+        double cost = bytes / 1048576.0;            // 1 per MB
+        for (int j = 0; j < used; j++) {
+            PHPartHost &pt = T.part[j];
+            pt.P = P[j];
+            pt.E = exponent_for(P[j]);
+            pt.N = N[j];
+            pt.G = (pt.P + pt.N - 1) / pt.N;
+            const int top = 63 - __builtin_clzll(pt.E);
+            T.chain = std::max(T.chain, top);
+            const size_t tb = ph_table_bytes(pt.N, &pt.sbits);
+            cost += (__builtin_popcountll(pt.E) - 1) * cm.mul + cm.per_part
+                  + (cm.shared_chain ? 0 : top * cm.sqr)
+                  + (tb <= ((size_t)1 << 20) ? cm.lookup_cached : cm.lookup_dram)
+                  + (pt.G - 1) / 2.0 * cm.giant;
+        }
+        if (cm.shared_chain) cost += T.chain * cm.sqr;
+        T.table_bytes = bytes;
+        T.cost = cost;
+        if (!have || cost < H.cost) { H = T; have = true; }
     };
-    while (total() > budget_bytes) {
-        int big = 0;
-        for (int i = 1; i < H.nparts; i++) if (H.part[i].N > H.part[big].N) big = i;
-        int sb;
-        ph_table_bytes(H.part[big].N, &sb);
-        if (sb <= 12) return false;
-        H.part[big].N = (u64)1 << (sb - 2);           // half the slots, load 1/2
-    }
-    for (int i = 0; i < H.nparts; i++) {
-        PHPartHost &pt = H.part[i];
-        ph_table_bytes(pt.N, &pt.sbits);
-        pt.G = (pt.P + pt.N - 1) / pt.N;
+    rec(0, 0);
+    if (!have) return false;
+    for (int j = 0; j < H.nparts; j++) {             // CRT constants, tables
+        PHPartHost &pt = H.part[j];
+        const u64 C = M / pt.P;
+        pt.K = mulmod_u64(C, pt.P == 1 ? 0 : inv_mod(C % pt.P, pt.P), M);
+        pt.gamma = gf_pow(2, pt.E, q, d);
         pt.delta = (pt.N >= pt.P) ? 1 : gf_pow(pt.gamma, pt.P - pt.N, q, d);
     }
-    H.table_bytes = total();
     return true;
 }
 
