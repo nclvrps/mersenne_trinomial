@@ -17,12 +17,19 @@ static inline cudaError_t cudaGetLastError() { return 0; }
 static inline cudaError_t cudaSetDevice(int) { return 0; }
 static inline cudaError_t cudaGetDevice(int* d) { *d = 0; return 0; }
 // launch-shape queries: a small pretend GPU (4 SMs, 2 resident blocks per SM
-// for any kernel) -- only the work split changes, never the results
-enum cudaDeviceAttr { cudaDevAttrMultiProcessorCount = 16 };
+// for any kernel, 64 KB of shared memory per block) -- only the work split
+// changes, never the results
+enum cudaDeviceAttr { cudaDevAttrMaxSharedMemoryPerBlockOptin = 97,
+                      cudaDevAttrMultiProcessorCount = 16 };
 static inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int) {
-    *v = a == cudaDevAttrMultiProcessorCount ? 4 : 0; return 0; }
+    *v = a == cudaDevAttrMultiProcessorCount ? 4
+       : a == cudaDevAttrMaxSharedMemoryPerBlockOptin ? 65536 : 0; return 0; }
 template <class F> static inline cudaError_t
 cudaOccupancyMaxActiveBlocksPerMultiprocessor(int* n, F, int, size_t) { *n = 2; return 0; }
+enum cudaFuncAttribute { cudaFuncAttributeMaxDynamicSharedMemorySize = 8 };
+template <class F> static inline cudaError_t
+cudaFuncSetAttribute(F, cudaFuncAttribute, int) { return 0; }
+#define __launch_bounds__(...)
 // test hooks: EMUL_NDEV=n pretends to have n devices (all the same host
 // memory); EMUL_FREE_MB=m reports m MB free (default 64 GB) so the
 // memory-dependent paths (coarse_sieve buckets / logs tables) can be hit
@@ -65,7 +72,10 @@ template <class F> struct Launcher {
     }
 };
 template <class F> Launcher<F> make_launcher(unsigned B, unsigned T, F f) { return {B, T, f}; }
-#define EMUL_LAUNCH(fn, B, T) make_launcher((unsigned)(B), (unsigned)(T), fn)
+// (a third launch parameter -- dynamic shared memory -- is accepted and
+// ignored: kernels only use shared memory in their device-only code)
+#define EMUL_LAUNCH(...) EMUL_LAUNCH_(__VA_ARGS__, 0)
+#define EMUL_LAUNCH_(fn, B, T, ...) make_launcher((unsigned)(B), (unsigned)(T), fn)
 // templated-kernel launch interception (see GF2C_LAUNCH in gf2_cantor_cuda.h)
 #define GF2C_LAUNCH(kern, B, T, ...) \
     make_launcher((unsigned)(B), (unsigned)(T), kern)(__VA_ARGS__)

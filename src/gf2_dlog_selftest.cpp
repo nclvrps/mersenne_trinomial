@@ -16,7 +16,9 @@
 //    selected multiply-by-x, g^u with per-slot u, X^E, transposes; and the
 //    compile-time moduli vs find_primitive_poly
 // 5. both discrete-log engines with the tables the sieve builds (tower: T by
-//    log_h; PH: 16-byte slots), for the bit-sliced and the round-2 planner:
+//    log_h, classic or with the subfield tower inside K -- automatic choice,
+//    and for d <= 36 every other subfield; PH: 16-byte slots), for the
+//    bit-sliced and the round-2 planner:
 //    every element for d <= 20, `samples` random elements above; PH tables
 //    limited to budget_MB (d = 31, 37, 41 then use baby-step/giant-step, as
 //    on an 8 GB card), tower up to tower_dmax (default 44, as the tables
@@ -25,7 +27,8 @@
 // 6. the whole per-class computation at every d up to 55: for random classes
 //    u, the Zech log, j = u r^-1, the progression start s0 = v j^-1 (lambda
 //    exponent) and the minimal polynomial f of g^j -- then checks directly
-//    that f divides x^r + x^s0 + 1 (r = 136279841), by arithmetic mod f
+//    that f divides x^r + x^s0 + 1 (r = 136279841), by arithmetic mod f;
+//    for even d <= tower_dmax also that the tower's log is the same
 // 7. the packed best[] key format for d <= 55 (order and round trip)
 //
 // Exit status 0 iff everything matches.  The same code runs on the GPU in
@@ -244,18 +247,18 @@ static void ph_fill_host(const PHHost &H, u64 ql, int d, PHTabs &tb, PHDev &D) {
 
 struct TowerTabs { TowerHost W; std::vector<u64> T; TowerDev dev; };
 
-// T by log_h(c), filled by the same coupon-collector sweep as k_tower_T
-static bool tower_fill_host(int d, u64 q, TowerTabs &tt) {
-    if (!tower_build_host(d, q, tt.W)) return false;
+// T by log_h(c), filled by the same coupon-collector sweep as k_tower_T;
+// sub: -1 automatic (subfield tower when m is composite), 0 classic, n
+static bool tower_fill_host(int d, u64 q, TowerTabs &tt, int sub = -1) {
+    if (!tower_build_host(d, q, tt.W, sub)) return false;
     const u64 M = ((u64)1 << d) - 1, MK = tt.W.MK;
     tt.T.assign((size_t)MK + 1, ~0ULL);
-    tt.dev = TowerDev{tt.W.m, tt.W.nb, MK, tt.W.btab.data(), tt.W.LK.data(), tt.T.data()};
+    tt.dev = tower_dev(tt.W, tt.W.btab.data(), tt.W.LK.data(), tt.T.data(),
+                       tt.W.LKn.data(), tt.W.TP.data());
     u64 left = MK + 1, x = 1;
     for (u64 u = 0; u < M && left; u++, x = gf_mulx(x, q, d)) {
-        u64 pk = tower_coords(x, tt.dev), ac = pk & MK, bc = pk >> tt.W.m;
-        if (!bc) continue;
-        u64 lb = tt.W.LK[bc], l = MK;
-        if (ac) { u64 la = tt.W.LK[ac]; l = la >= lb ? la - lb : la + MK - lb; }
+        u64 lb, l;
+        if (!tower_split(tower_coords(x, tt.dev), tt.dev, &lb, &l)) continue;
         if (tt.T[l] == ~0ULL) {
             u64 h = (MK + 2) * lb;
             tt.T[l] = u >= h ? u - h : u + M - h;
@@ -298,10 +301,21 @@ static int test_dlog(int dlo, int dhi, size_t budget, u64 samples, int tower_dma
             printf(", %.0f MB, %.1fs\n", H.table_bytes / 1048576.0, now() - t0);
             if (bad) fails++;
         }
+        // towers: the classic one, the automatic subfield tower, and (for
+        // d <= 36) every other inner subfield K_n, n | m
+        std::vector<int> subs;
         if (d >= 4 && !(d & 1) && d <= tower_dmax) {
+            subs.push_back(0);
+            if (tower_sub_choice(d / 2, -1, nullptr)) subs.push_back(-1);
+            if (d <= 36)
+                for (int n = 2; n < d / 2; n++)
+                    if ((d / 2) % n == 0 && n != tower_sub_choice(d / 2, -1, nullptr))
+                        subs.push_back(n);
+        }
+        for (int sub : subs) {
             double t0 = now();
             TowerTabs tt;
-            if (!tower_fill_host(d, q, tt)) { printf("d=%2d tower build FAILED\n", d); fails++; continue; }
+            if (!tower_fill_host(d, q, tt, sub)) { printf("d=%2d tower build FAILED\n", d); fails++; continue; }
             u64 bad = 0, e = 1;
             for (u64 k = 0; k < nchk; k++) {
                 u64 u = exh ? k : rng() % M;
@@ -309,8 +323,12 @@ static int test_dlog(int dlo, int dhi, size_t budget, u64 samples, int tower_dma
                 if (tower_log(e, M, tt.dev) != u) bad++;
                 if (exh) e = gf_mulx(e, q, d);
             }
-            printf("d=%2d tower %s %8llu logs: %llu wrong | m=%d, %.1fs\n", d, exh ? "all    " : "sampled",
-                   (ull)nchk, (ull)bad, tt.W.m, now() - t0);
+            char how[48];
+            if (tt.W.sub_k) snprintf(how, sizeof how, "inner GF(2^%d), k=%d%s", tt.W.sub_n,
+                                     tt.W.sub_k, sub < 0 ? "" : " (forced)");
+            else snprintf(how, sizeof how, "classic");
+            printf("d=%2d tower %s %8llu logs: %llu wrong | m=%d, %s, %.1fs\n", d, exh ? "all    " : "sampled",
+                   (ull)nchk, (ull)bad, tt.W.m, how, now() - t0);
             if (bad) fails++;
         }
         fflush(stdout);
@@ -347,7 +365,8 @@ static u64 xpow_mod(u64 e, u64 f, int d) {
     return r;
 }
 
-static int test_classes(int dlo, int dhi, size_t budget, int per_degree) {
+static int test_classes(int dlo, int dhi, size_t budget, int per_degree,
+                        int tower_dmax) {
     const u64 r = 136279841;
     int fails = 0;
     for (int d = std::max(dlo, 3); d <= dhi; d++) {
@@ -359,6 +378,10 @@ static int test_classes(int dlo, int dhi, size_t budget, int per_degree) {
         PHHost H; PHTabs tb; PHDev D{};
         if (!ph_plan_host(d, q, budget, H, kPHCostBitsliced)) { printf("d=%d: no PH plan\n", d); fails++; continue; }
         ph_fill_host(H, ql, d, tb, D);
+        // even d: the production engine is the tower -- its log must agree
+        TowerTabs tt;
+        const bool tw = d >= 4 && !(d & 1) && d <= tower_dmax && tower_fill_host(d, q, tt);
+        int twbad = 0;
         const u64 rinv = inv_mod(r % M, M);
         u64 lam = 1, mm = M;
         for (u64 p : factor_u64(M)) {
@@ -375,6 +398,7 @@ static int test_classes(int dlo, int dhi, size_t budget, int per_degree) {
             if (u >= ((u64)1 << (d - 1)) || gcd_u64(u, M) != 1) continue;
             const u64 x = gf2f_antilog(u, ql, d, gp) ^ 1;     // g^u + 1
             const u64 v = ph_log(x, M, d, ql, D);
+            if (tw && tower_log(x, M, tt.dev) != v) twbad++;
             const u64 j = gf2f_mulmod_m(u, rinv, d, M);
             const u64 s0 = gf2f_mulmod_m(v, gf2f_powmod_m(j, lam - 1, d, M), d, M);
             const u64 f = minpoly_mask(gf2f_antilog(j, ql, d, gp), q, d);
@@ -385,8 +409,10 @@ static int test_classes(int dlo, int dhi, size_t budget, int per_degree) {
             if (!ok) { if (bad < 3) printf("d=%d u=%llx: f=%llx s0=%llu does not divide\n", d, (ull)u, (ull)f, (ull)s0); bad++; }
             done++;
         }
-        if (bad || done < per_degree) fails++;
-        printf("d=%2d classes: %d checked, f | x^r + x^s0 + 1 for %d\n", d, done, done - bad);
+        if (bad || twbad || done < per_degree) fails++;
+        printf("d=%2d classes: %d checked, f | x^r + x^s0 + 1 for %d", d, done, done - bad);
+        if (tw) printf("; tower log %s", twbad ? "DIFFERS" : "agrees");
+        printf("\n");
         fflush(stdout);
     }
     return fails;
@@ -428,7 +454,7 @@ int main(int argc, char **argv) {
     printf("5. discrete logs, d=%d..%d (PH tables <= %zu MB):\n", dlo, dhi, budget >> 20);
     int f5 = test_dlog(dlo, dhi, budget, samples, tower_dmax);
     printf("6. per-class computation vs direct division, d=%d..%d:\n", std::max(dlo, 3), dhi);
-    int f6 = test_classes(dlo, dhi, budget, 40);
+    int f6 = test_classes(dlo, dhi, budget, 40, tower_dmax);
     int f7 = test_keys();
     printf("7. packed keys d=2..55: %s\n", f7 ? "FAILED" : "ok");
     bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7;

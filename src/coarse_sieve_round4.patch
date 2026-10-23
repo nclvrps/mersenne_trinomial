@@ -1,0 +1,881 @@
+--- a/coarse_sieve.cu	2026-10-22 02:22:48.197798506 -0400
++++ b/coarse_sieve.cu	2026-10-22 02:22:48.204272661 -0400
+@@ -89,7 +89,11 @@
+ //         round-3 batched kernel (default) or the round-2 one (A/B timing,
+ //         fallback).  Checkpoints do not depend on it: either kernel can
+ //         resume the other's.
+-//         Tests only: COARSE_LOGS_CHUNK_LOG2=k caps logs-path chunks at 2^k
++//         COARSE_TOWER_SUBN=0 uses the round-3 tower (one table of all logs
++//         in K) even where the subfield tower applies (A/B timing).
++//         Tests only: COARSE_TOWER_SUBN=n forces the inner subfield
++//         GF(2^n) (any n | m, 2 <= n < m); COARSE_LOGS_CHUNK_LOG2=k caps
++//         logs-path chunks at 2^k
+ //         values (a resume must use the same k); COARSE_SELFTEST_LOGS_DMAX
+ //         limits the engine checks of --selftest-logs;
+ //         COARSE_TEST_FAULT_EVERY=n corrupts the log of every class with
+@@ -207,9 +211,17 @@
+ // Z(u) = log(g^u + 1) per cyclotomic class.  The logs path computes that
+ // log directly, from tables of ~2^(d/2) entries (gf2_dlog.h):
+ //   tower (even d = 2m):  GF(2^d) = K(w), K = GF(2^m); a + b*w = b*(c + w),
+-//          c = a/b, so log = (2^m+1) log_K(b) + T[log_h(c)] with 2^m-entry
+-//          tables (96 MB at d=46, 1.5 GB at d=54) and a GF(2)-linear split
+-//          (byte tables).
++//          c = a/b, so log = (2^m+1) log_K(b) + T[log_h(c)] with a 2^m-entry
++//          table T (64 MB at d=46, 1 GB at d=54) and a GF(2)-linear split
++//          (byte tables).  The two logs in K come from the same trick one
++//          level down whenever m is composite (round 4): K is an extension
++//          of a subfield K_n, n | m, and a log in K is one read of a table
++//          of 2^n logs in K_n plus one of a table indexed by the projective
++//          point Y/lambda (2^n entries for even m; 16512 / 1082400 /
++//          262656 for m = 21 / 25 / 27).  Those tables are small enough to
++//          sit in shared memory or cache, so a tower log costs one DRAM read
++//          (T) instead of three.  For prime m (d = 34, 38, 46) K's logs come
++//          from a 2^m-entry table LK as in round 3.
+ //   Pohlig-Hellman (odd d): M = 2^d - 1 = P_1 * ... * P_k (k <= 4) split
+ //          into coprime parts; x^E_i lands in the order-P_i subgroup, a hash
+ //          table gives log mod P_i, CRT combines.  A planner picks the split
+@@ -834,6 +846,7 @@
+ 
+ template <int D, int METHOD>
+ __device__ __forceinline__ void logs_batch(const LogsParams &L,
++                                           const TowerDev &tw,
+                                            const fw *gpow2, u64 (&ub)[LB],
+                                            u64 (&vb)[LB], u64 (&tb)[LB], int n,
+                                            bool verify, ull *best,
+@@ -868,7 +881,7 @@
+         }
+     } else {
+         bs_store<D>(X, vb);
+-        for (int k = 0; k < n; k++) vb[k] = tower_log(vb[k], M, L.tw);
++        for (int k = 0; k < n; k++) vb[k] = tower_log(vb[k], M, tw);
+     }
+     if (L.check) {                              // selftest: log(g^u) == u?
+         for (int k = 0; k < n; k++) if (vb[k] != ub[k]) (*err)++;
+@@ -911,14 +924,53 @@
+     }
+ }
+ 
++#if defined(__CUDA_ARCH__)
++// Copy the tower's small tables -- btab, and for the subfield tower LKn and
++// (if t.shm_tp) TP -- into dynamic shared memory and point t at the copies.
++// Every thread of the block must call this; __syncthreads() follows.
++__device__ __forceinline__ void tower_stage_shared(TowerDev &t,
++                                                   unsigned char *shm) {
++    u64 *bt = (u64 *)shm;
++    const int nbw = t.nb * 256;
++    for (int i = threadIdx.x; i < nbw; i += blockDim.x) bt[i] = t.btab[i];
++    t.btab = bt;
++    unsigned char *p = shm + (size_t)nbw * sizeof(u64);
++    if (t.sub_k) {
++        const int nw = 1 << (t.sub_n - 1);      // 2^n u16 = 2^(n-1) u32
++        u32 *lk = (u32 *)p;
++        const u32 *src = (const u32 *)t.LKn;
++        for (int i = threadIdx.x; i < nw; i += blockDim.x) lk[i] = src[i];
++        t.LKn = (const uint16_t *)p;
++        p += (size_t)nw * sizeof(u32);
++        if (t.shm_tp) {
++            u32 *tp = (u32 *)p;
++            for (u32 i = threadIdx.x; i < t.tp_n; i += blockDim.x) tp[i] = t.TP[i];
++            t.TP = tp;
++        }
++    }
++}
++#endif
++
+ // sweep the Lyndon words in [ulo, uhi), runs of `run` u-values per step of
+-// the grid-stride loop; partial batches carry over between runs
++// the grid-stride loop; partial batches carry over between runs.  Tower
++// kernels run 512-thread blocks (one per SM, sharing one copy of the small
++// tables in shared memory), PH kernels 128-thread blocks (up to ~250
++// registers).
+ template <int D, int METHOD>
+-__global__ void k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
+-                             u64 run, ull *best, Heavy *heavy,
+-                             unsigned *nheavy, unsigned *overflow,
+-                             unsigned long long *nsurv,
+-                             unsigned long long *nerr) {
++__global__ void __launch_bounds__(METHOD == LM_TOWER ? 512 : 128, 1)
++k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
++             u64 run, ull *best, Heavy *heavy,
++             unsigned *nheavy, unsigned *overflow,
++             unsigned long long *nsurv,
++             unsigned long long *nerr) {
++    TowerDev tw = L.tw;
++#if defined(__CUDA_ARCH__)
++    if (METHOD == LM_TOWER && tw.shm_bytes) {
++        extern __shared__ __align__(16) unsigned char logs_shm[];
++        tower_stage_shared(tw, logs_shm);
++        __syncthreads();
++    }
++#endif
+     const u64 nruns = (uhi - ulo + run - 1) / run;
+     u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+     const u64 stride = (u64)gridDim.x * blockDim.x;
+@@ -946,8 +998,8 @@
+         }
+         if (n == 0) break;
+         my_surv += n;
+-        logs_batch<D, METHOD>(L, gpow2, ub, vb, tb, n, (nb++ & 7) == 0, best,
+-                              heavy, nheavy, overflow, P, &my_err);
++        logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, n, (nb++ & 7) == 0,
++                              best, heavy, nheavy, overflow, P, &my_err);
+     }
+     if (my_surv) atomicAdd(nsurv, my_surv);
+     if (my_err) atomicAdd(nerr, my_err);
+@@ -979,13 +1031,8 @@
+         u64 uend = u + run; if (uend > u0 + count) uend = u0 + count;
+         u64 e = gf2f_antilog(u, qlow, d, gpow2);
+         for (; u < uend; u++, e = gf_mulx(e, q, d)) {
+-            u64 pk = tower_coords(e, t), ac = pk & t.MK, bc = pk >> t.m;
+-            if (!bc) continue;
+-            u64 lb = t.LK[bc], l = t.MK;
+-            if (ac) {
+-                u64 la = t.LK[ac];
+-                l = la >= lb ? la - lb : la + t.MK - lb;
+-            }
++            u64 lb, l;
++            if (!tower_split(tower_coords(e, t), t, &lb, &l)) continue;
+             u64 h = (t.MK + 2) * lb;
+             T[l] = u >= h ? u - h : u + M - h;
+         }
+@@ -1084,7 +1131,8 @@
+     // logs path (per-degree tables + error counter)
+     unsigned long long *d_nerr = nullptr;
+     u64 *d_btab = nullptr, *d_T = nullptr;
+-    u32 *d_LK = nullptr;
++    u32 *d_LK = nullptr, *d_TP = nullptr;
++    uint16_t *d_LKn = nullptr;
+ #if defined(WIDE_FIELD)
+     PHSlot *d_slots[4] = {nullptr, nullptr, nullptr, nullptr};
+ #endif
+@@ -1758,6 +1806,7 @@
+ static int g_force_method = FM_AUTO;
+ static bool g_logs_selfcheck = false;    // selftest: verify every log on device
+ static bool g_logs_r2 = false;           // COARSE_LOGS_KERNEL=r2: round-2 kernel
++static int g_tower_sub = -1;             // COARSE_TOWER_SUBN: -1 auto, 0 classic, n
+ 
+ #if defined(WIDE_FIELD)
+ // ---------------------------------------------------------------------------
+@@ -1853,8 +1902,12 @@
+     bool tower_ok = d >= 4 && !(d & 1) && d <= 54;
+     if (want == FM_TOWER && !tower_ok) return false;
+     if (want != FM_PH && tower_ok) {
+-        // LK (4 B) + T (8 B) per K-element, byte tables, slack
+-        size_t need = ((size_t)12 << (d / 2)) + ((size_t)((d + 7) / 8) << 11) + 65536;
++        // T (8 B per K-element) and the byte tables, plus LK (4 B per
++        // K-element) for the classic tower or LKn + TP for the subfield one
++        u64 tp = 0;
++        const int n = tower_sub_choice(d / 2, g_tower_sub, &tp);
++        size_t need = ((size_t)8 << (d / 2)) + ((size_t)((d + 7) / 8) << 11) + 65536;
++        need += n ? ((size_t)2 << n) + 4 * (size_t)tp : (size_t)4 << (d / 2);
+         if (need <= budget) {
+             pl.method = LM_TOWER;
+             pl.bytes = need;
+@@ -1922,12 +1975,36 @@
+         CUCHK(cudaMalloc(&G.d_btab, W.btab.size() * sizeof(u64)));
+         CUCHK(cudaMemcpy(G.d_btab, W.btab.data(), W.btab.size() * sizeof(u64),
+                          cudaMemcpyHostToDevice));
+-        CUCHK(cudaMalloc(&G.d_LK, W.LK.size() * sizeof(u32)));
+-        CUCHK(cudaMemcpy(G.d_LK, W.LK.data(), W.LK.size() * sizeof(u32),
+-                         cudaMemcpyHostToDevice));
++        if (W.sub_k) {                          // subfield tower: LKn, TP
++            CUCHK(cudaMalloc(&G.d_LKn, W.LKn.size() * sizeof(uint16_t)));
++            CUCHK(cudaMemcpy(G.d_LKn, W.LKn.data(),
++                             W.LKn.size() * sizeof(uint16_t),
++                             cudaMemcpyHostToDevice));
++            CUCHK(cudaMalloc(&G.d_TP, W.TP.size() * sizeof(u32)));
++            CUCHK(cudaMemcpy(G.d_TP, W.TP.data(), W.TP.size() * sizeof(u32),
++                             cudaMemcpyHostToDevice));
++        } else {                                // classic: LK
++            CUCHK(cudaMalloc(&G.d_LK, W.LK.size() * sizeof(u32)));
++            CUCHK(cudaMemcpy(G.d_LK, W.LK.data(), W.LK.size() * sizeof(u32),
++                             cudaMemcpyHostToDevice));
++        }
+         const u64 slots = W.MK + 1;
+         CUCHK(cudaMalloc(&G.d_T, slots * sizeof(u64)));
+-        L.tw = TowerDev{W.m, W.nb, W.MK, G.d_btab, G.d_LK, G.d_T};
++        L.tw = tower_dev(W, G.d_btab, G.d_LK, G.d_T, G.d_LKn, G.d_TP);
++        // the batched kernel stages the small tables in shared memory: the
++        // byte tables, and for the subfield tower LKn and, if it fits, TP
++        {
++            int optin = 48 << 10;
++            cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin,
++                                   G.dev);
++            size_t shm = W.btab.size() * sizeof(u64);
++            if (W.sub_k) {
++                shm += W.LKn.size() * sizeof(uint16_t);
++                const size_t tpb = W.TP.size() * sizeof(u32);
++                if (shm + tpb <= (size_t)optin) { shm += tpb; L.tw.shm_tp = 1; }
++            }
++            L.tw.shm_bytes = shm <= (size_t)optin ? (u32)shm : 0;
++        }
+         if (Th.empty()) {                       // coupon-collector sweeps
+             launch_dims(slots, blocks, threads);
+             k_fill<<<blocks, threads>>>((ull *)G.d_T, slots, ~0ULL);
+@@ -1977,7 +2054,8 @@
+ 
+ static void logs_free_device(GpuCtx &G) {
+     cudaFree(G.d_btab); cudaFree(G.d_LK); cudaFree(G.d_T);
+-    G.d_btab = G.d_T = nullptr; G.d_LK = nullptr;
++    cudaFree(G.d_LKn); cudaFree(G.d_TP);
++    G.d_btab = G.d_T = nullptr; G.d_LK = G.d_TP = nullptr; G.d_LKn = nullptr;
+     for (int i = 0; i < 4; i++) {
+         cudaFree(G.d_slots[i]);
+         G.d_slots[i] = nullptr;
+@@ -1986,20 +2064,26 @@
+ 
+ // launch shape for the batched kernel: ONE full wave of resident blocks
+ // (from the occupancy calculator, so it follows whatever register count the
+-// compiler gave this instantiation), each thread grid-striding over ~10-20
++// compiler gave this instantiation), each thread grid-striding over its
+ // runs and carrying partial batches from run to run; fewer blocks if there
+ // are fewer runs.  A grid of several waves would leave its last wave partly
+-// idle: e.g. 3.2 waves of PH blocks take as long as 4.  Smaller blocks for
+-// the register-heavy PH variant.
++// idle: e.g. 3.2 waves of PH blocks take as long as 4.  PH: 128-thread
++// blocks (register-heavy); tower: 512-thread blocks, one per SM, sharing
++// the tables staged in `shm` bytes of shared memory.
+ static void logs_batch_dims(LogsBatchFn kfn, u64 nruns, int method,
+-                            int &blocks, int &threads) {
+-    threads = method == LM_PH ? 128 : 256;
++                            const LogsParams &L, int &blocks, int &threads,
++                            size_t &shm) {
++    threads = method == LM_PH ? 128 : 512;
++    shm = method == LM_TOWER ? L.tw.shm_bytes : 0;
++    if (shm > ((size_t)48 << 10))
++        CUCHK(cudaFuncSetAttribute(kfn, cudaFuncAttributeMaxDynamicSharedMemorySize,
++                                   (int)shm));
+     int dev = 0, nsm = 0, per_sm = 0;
+     if (cudaGetDevice(&dev) != cudaSuccess) dev = 0;
+     if (cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, dev) !=
+             cudaSuccess || nsm < 1)
+         nsm = 1;
+-    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kfn, threads, 0)
++    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kfn, threads, shm)
+             != cudaSuccess || per_sm < 1)
+         per_sm = 1;
+     const u64 wave = (u64)nsm * (u64)per_sm;
+@@ -2044,9 +2128,11 @@
+     L.check = 1;
+     const u64 run = 1024;
+     int blocks, threads;
+-    logs_batch_dims(kfn, (uhi - ulo + run - 1) / run, pl.method, blocks, threads);
+-    kfn<<<blocks, threads>>>(L, G.dgp, ulo, uhi, run, nullptr, nullptr, nullptr,
+-                             nullptr, dns, dne);
++    size_t shm;
++    logs_batch_dims(kfn, (uhi - ulo + run - 1) / run, pl.method, L, blocks,
++                    threads, shm);
++    kfn<<<blocks, threads, shm>>>(L, G.dgp, ulo, uhi, run, nullptr, nullptr,
++                                  nullptr, nullptr, dns, dne);
+     launch_dims((uhi - ulo) / 2, blocks, threads);
+     k_rep_count<<<blocks, threads>>>(L, ulo, uhi, dnc);
+     CUCHK(cudaMemcpy(&ns, dns, 8, cudaMemcpyDeviceToHost));
+@@ -2128,7 +2214,7 @@
+             CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
+             LogsParams L = logs_params_base(d, r, 1, q, pl.method);
+             TowerHost W;
+-            if (pl.method == LM_TOWER && !tower_build_host(d, q, W)) {
++            if (pl.method == LM_TOWER && !tower_build_host(d, q, W, g_tower_sub)) {
+                 fprintf(stderr, "  d=%d: tower construction failed\n", d);
+                 fails++;
+                 cudaFree(G.dgp); G.dgp = nullptr;
+@@ -2166,6 +2252,10 @@
+             if (pl.batched)
+                 fprintf(stderr, "; batched: %" PRIu64 " classes, %s", ncls,
+                         bfail ? "FAILED" : "ok");
++            if (pl.method == LM_TOWER && W.sub_k)
++                fprintf(stderr, "; over GF(2^%d)", W.sub_n);
++            else if (pl.method == LM_TOWER)
++                fprintf(stderr, "; classic");
+             fprintf(stderr, ", %.2fs]\n", now_s() - t0);
+             fails += bad + bfail;
+         }
+@@ -2197,7 +2287,7 @@
+ 
+     double t0 = now_s();
+     TowerHost W;
+-    if (pl.method == LM_TOWER && !tower_build_host(d, q, W)) {
++    if (pl.method == LM_TOWER && !tower_build_host(d, q, W, g_tower_sub)) {
+         fprintf(stderr, "d=%d: tower construction failed -- internal error\n", d);
+         exit(1);
+     }
+@@ -2220,10 +2310,13 @@
+             Lg.back().fault = strtoull(e, nullptr, 10);
+         logs_setup_device(G, d, q, pl, W, Th, Lg.back());
+     }
++    char inner[48] = "";                        // the inner tower, if any
++    if (pl.method == LM_TOWER && W.sub_k)
++        snprintf(inner, sizeof inner, " over GF(2^%d)", W.sub_n);
+     W = TowerHost();                            // host copies no longer needed
+     Th.clear(); Th.shrink_to_fit();
+-    fprintf(stderr, "d=%2d logs (%s%s, %.0f MB tables, built in %.1fs), %d "
+-            "chunk%s", d, mname, kfn ? ", batched" : ", round-2 kernel",
++    fprintf(stderr, "d=%2d logs (%s%s%s, %.0f MB tables, built in %.1fs), %d "
++            "chunk%s", d, mname, inner, kfn ? ", batched" : ", round-2 kernel",
+             pl.bytes / 1048576.0, now_s() - t0, nchunks, nchunks == 1 ? "" : "s");
+     if (NG > 1) fprintf(stderr, " on %d GPUs", NG);
+     fprintf(stderr, ": ");
+@@ -2265,11 +2358,16 @@
+             CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
+             int blocks, threads;
+             if (kfn) {
+-                logs_batch_dims(kfn, (uhi - ulo + run - 1) / run, pl.method,
+-                                blocks, threads);
+-                kfn<<<blocks, threads>>>(Lg[g], G.dgp, ulo, uhi, run, G.d_best,
+-                                         G.d_heavy, G.d_nheavy, G.d_overflow,
+-                                         G.d_nsurv, G.d_nerr);
++                // runs of krun = run/8 u-values: ~50 per thread, so threads
++                // finish together (the chunk itself is unchanged)
++                const u64 krun = run >= 512 ? run / 8 : run;
++                size_t shm;
++                logs_batch_dims(kfn, (uhi - ulo + krun - 1) / krun, pl.method,
++                                Lg[g], blocks, threads, shm);
++                kfn<<<blocks, threads, shm>>>(Lg[g], G.dgp, ulo, uhi, krun,
++                                              G.d_best, G.d_heavy, G.d_nheavy,
++                                              G.d_overflow, G.d_nsurv,
++                                              G.d_nerr);
+             } else {
+                 launch_dims((uhi - ulo + run - 1) / run, blocks, threads);
+                 k_logs_sweep<<<blocks, threads>>>(Lg[g], G.dgp, ulo, uhi, run,
+@@ -2402,18 +2500,15 @@
+         // bytes/element: 8*2^d in the narrow build, 16*2^d in the wide build.
+         size_t need = (((size_t)2 * sizeof(fw)) << d) + 16;
+         // size for the most constrained device so every device fits
+-        size_t freeb = (size_t)-1, totb = 0;
++        size_t freeb = (size_t)-1;
+         for (size_t g = 0; g < g_gpus.size(); g++) {
+             size_t f = 0, t = 0;
+             CUCHK(cudaSetDevice(g_gpus[g].dev));
+             cudaMemGetInfo(&f, &t);
+-            if (f < freeb) { freeb = f; totb = t; }
++            if (f < freeb) freeb = f;
+         }
+         CUCHK(cudaSetDevice(g_gpus[0].dev));
+-
+-        const size_t budget = freeb > GPU_MEM_RESERVE ? freeb - GPU_MEM_RESERVE : 0;
+         const int fm = g_force_method;
+-        (void)budget; (void)totb;
+ #if defined(WIDE_FIELD)
+         // logs path: chosen (forced) engine or automatic; true if it ran
+         auto try_logs = [&](int want, int start_chunk, bool must) -> bool {
+@@ -2610,6 +2705,9 @@
+             return 1;
+         }
+     }
++    // COARSE_TOWER_SUBN=0 uses the classic (round-3) tower; =n forces the
++    // subfield K_n of the inner tower (tests); default: automatic
++    if (const char *e = getenv("COARSE_TOWER_SUBN")) g_tower_sub = atoi(e);
+     if (const char *e = getenv("COARSE_METHOD")) {
+         if (!strcmp(e, "dense")) g_force_method = FM_DENSE;
+         else if (!strcmp(e, "buckets")) g_force_method = FM_BUCKETS;
+--- a/cuda_emul.h	2026-10-22 02:22:48.561798497 -0400
++++ b/cuda_emul.h	2026-10-22 02:22:48.565645485 -0400
+@@ -17,12 +17,19 @@
+ static inline cudaError_t cudaSetDevice(int) { return 0; }
+ static inline cudaError_t cudaGetDevice(int* d) { *d = 0; return 0; }
+ // launch-shape queries: a small pretend GPU (4 SMs, 2 resident blocks per SM
+-// for any kernel) -- only the work split changes, never the results
+-enum cudaDeviceAttr { cudaDevAttrMultiProcessorCount = 16 };
++// for any kernel, 64 KB of shared memory per block) -- only the work split
++// changes, never the results
++enum cudaDeviceAttr { cudaDevAttrMaxSharedMemoryPerBlockOptin = 97,
++                      cudaDevAttrMultiProcessorCount = 16 };
+ static inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int) {
+-    *v = a == cudaDevAttrMultiProcessorCount ? 4 : 0; return 0; }
++    *v = a == cudaDevAttrMultiProcessorCount ? 4
++       : a == cudaDevAttrMaxSharedMemoryPerBlockOptin ? 65536 : 0; return 0; }
+ template <class F> static inline cudaError_t
+ cudaOccupancyMaxActiveBlocksPerMultiprocessor(int* n, F, int, size_t) { *n = 2; return 0; }
++enum cudaFuncAttribute { cudaFuncAttributeMaxDynamicSharedMemorySize = 8 };
++template <class F> static inline cudaError_t
++cudaFuncSetAttribute(F, cudaFuncAttribute, int) { return 0; }
++#define __launch_bounds__(...)
+ // test hooks: EMUL_NDEV=n pretends to have n devices (all the same host
+ // memory); EMUL_FREE_MB=m reports m MB free (default 64 GB) so the
+ // memory-dependent paths (coarse_sieve buckets / logs tables) can be hit
+@@ -65,7 +72,10 @@
+     }
+ };
+ template <class F> Launcher<F> make_launcher(unsigned B, unsigned T, F f) { return {B, T, f}; }
+-#define EMUL_LAUNCH(fn, B, T) make_launcher((unsigned)(B), (unsigned)(T), fn)
++// (a third launch parameter -- dynamic shared memory -- is accepted and
++// ignored: kernels only use shared memory in their device-only code)
++#define EMUL_LAUNCH(...) EMUL_LAUNCH_(__VA_ARGS__, 0)
++#define EMUL_LAUNCH_(fn, B, T, ...) make_launcher((unsigned)(B), (unsigned)(T), fn)
+ // templated-kernel launch interception (see GF2C_LAUNCH in gf2_cantor_cuda.h)
+ #define GF2C_LAUNCH(kern, B, T, ...) \
+     make_launcher((unsigned)(B), (unsigned)(T), kern)(__VA_ARGS__)
+--- a/gf2_dlog.h	2026-10-22 02:22:48.325798503 -0400
++++ b/gf2_dlog.h	2026-10-22 02:22:48.331929351 -0400
+@@ -7,7 +7,11 @@
+ //   tower  (even d = 2m): GF(2^d) = K(w), K = GF(2^m), w = x.  Every element
+ //          is a + b*w with a, b in K; for b != 0 it equals b*(c + w),
+ //          c = a/b, so  log e = (2^m+1)*logK(b) + T[logK(c)].  The split
+-//          e -> (a,b) is GF(2)-linear (byte tables); tables have 2^m entries.
++//          e -> (a,b) is GF(2)-linear (byte tables); T has 2^m entries.
++//          logK itself is either a 2^m-entry table (classic, prime m) or
++//          (round 4) the same construction one level down, over a subfield
++//          K_n of K, with tables of ~2^n entries: then a log costs one read
++//          of a large table (T) instead of three.
+ //   ph     (any d): Pohlig-Hellman over a coprime split M = P_1*...*P_n of
+ //          M = 2^d - 1 (n <= 4): e^(E_i) lies in the order-P_i subgroup and
+ //          a hash table of 16-byte slots (with baby-step/giant-step when P_i
+@@ -25,8 +29,9 @@
+ // the modulus fixed at compile time); the FKM enumeration of class
+ // representatives (Lyndon words); and the u64 helpers the sweep needs
+ // (Mersenne mulmod/powmod, exact-division tests).
+-// Everything is plain host+device code: no tables in shared memory, no
+-// warp intrinsics, so cuda_emul.h validates it exactly.
++// Everything is plain host+device code with no warp intrinsics, so
++// cuda_emul.h validates it exactly (coarse_sieve's batched kernel copies the
++// small tower tables to shared memory first -- device-only code).
+ 
+ #ifndef GF2_DLOG_H
+ #define GF2_DLOG_H
+@@ -572,13 +577,42 @@
+ // ---------------------------------------------------------------------------
+ // tower logs (d = 2m).  All pointers are device pointers; structs are
+ // passed to kernels by value.
++//
++// log e = (2^m+1) log_h(b) + T[log_h(a) - log_h(b)] for e = a + b w, so a
++// log needs log_h (h = g^(2^m+1), generating K*) of two elements of K:
++//   classic (round 3): one table LK of all 2^m elements of K -- two random
++//          DRAM reads per class, plus the read of T;
++//   subfield tower (round 4, whenever m has a divisor n with 2 <= n < m):
++//          the same trick once more, inside K.  K is a degree-k extension of
++//          K_n = GF(2^n) (k = m/n), with basis 1, h, ..., h^(k-1).  Writing
++//          Y = lambda * Y', lambda the last nonzero coordinate of Y, gives
++//          log_h Y = (2^m-1)/(2^n-1) * log_hn(lambda) + TP[Y'], where
++//          hn = h^((2^m-1)/(2^n-1)) generates K_n*, LKn (2^n entries) holds
++//          log_hn, and TP the logs of the normalized Y' (one per point of
++//          the projective space P^(k-1)(K_n), (2^m-1)/(2^n-1) of them).
++//          For even m (k = 2) both are tiny: 2^n entries.  So the two K logs
++//          cost a few reads of small (cached / shared-memory) tables, and
++//          the class one DRAM read (T) instead of three.
++//          Normalized points are indexed by the logs of their coordinates:
++//          Y' = (y'_0, ..., y'_(j-1), 1, 0, ..., 0) has digits
++//          l_i = log_hn(y'_i), or 2^n - 1 for y'_i = 0, at bits n*i of the
++//          index, after the 2^n + ... + 2^(n(j-1)) entries for smaller j.
+ struct TowerDev {
+     int m, nb;            // nb = ceil(d/8) byte tables
+     u64 MK;               // 2^m - 1 (also the coordinate mask)
+-    const u64 *btab;      // [nb][256]: packed coords coordK(a) | coordK(b)<<m
+-    const u32 *LK;        // [2^m]   coordinate -> log base h (h = g^(2^m+1))
++    const u64 *btab;      // [nb][256]: packed coords coord(a) | coord(b)<<m
++    const u32 *LK;        // classic: [2^m] coordinate -> log base h
+     const u64 *T;         // [2^m]   T[l] = log_g(h^l + w) for l < MK, and
+                           //         T[MK] = log_g(w)  (c = 0)
++    int sub_n, sub_k;     // subfield tower (sub_k = 0: classic); coord(y)
++                          // is then k digits of n bits: y's K_n-coordinates
++                          // in the basis hn^0..hn^(n-1) (digit i: coeff of h^i)
++    u64 sub_mult;         // (2^m - 1) / (2^n - 1)
++    const uint16_t *LKn;  // [2^n]   n-bit K_n element -> log base hn
++    const u32 *TP;        // logs of the normalized points (see above)
++    u32 tp_n;             // number of TP entries
++    u32 shm_bytes;        // device: stage btab, LKn (and TP if shm_tp) in
++    int shm_tp;           //   shared memory (0: read them from global)
+ };
+ 
+ GF2_HD u64 tower_coords(u64 x, const TowerDev &t) {
+@@ -587,20 +621,60 @@
+     return pk;
+ }
+ 
+-// log_g(x) for x != 0.  T is indexed by log_h(c) rather than by c, so the
+-// quotient c = a/b is never formed: three table reads (two in LK, one in
+-// T) instead of four.
+-GF2_HD u64 tower_log(u64 x, u64 M, const TowerDev &t) {
+-    u64 pk = tower_coords(x, t);
+-    u64 ac = pk & t.MK, bc = pk >> t.m;
+-    u64 h1 = t.MK + 2;                          // 2^m + 1 = log_g(h)
+-    if (bc == 0) return h1 * t.LK[ac];          // x in K*;  < M
+-    u64 lb = t.LK[bc], l = t.MK;                // c = a/b; slot MK: c = 0
++// log_h(Y) for Y in K given coord(Y) (subfield tower); ~0 for Y = 0
++GF2_HD u64 tower_sub_log(u64 yc, const TowerDev &t) {
++    const int n = t.sub_n;
++    const u32 MKn = (1u << n) - 1;
++    int j = t.sub_k - 1;
++    u32 lam;
++    while ((lam = (u32)(yc >> (n * j)) & MKn) == 0)
++        if (--j < 0) return ~0ULL;
++    const u32 ll = t.LKn[lam];
++    u64 v = t.sub_mult * ll;                    // log_h(lambda) < MK
++    if (j > 0) {
++        u64 idx = 0, off = 0;
++        for (int i = 0; i < j; i++) {
++            const u32 yi = (u32)(yc >> (n * i)) & MKn;
++            u32 li = MKn;                       // digit for a zero coordinate
++            if (yi) {
++                const u32 l = t.LKn[yi];
++                li = l >= ll ? l - ll : l + MKn - ll;   // log_hn(yi / lambda)
++            }
++            idx |= (u64)li << (n * i);
++            if (i) off += (u64)1 << (n * i);    // entries of smaller j
++        }
++        v += t.TP[off + idx];                   // < MK
++        if (v >= t.MK) v -= t.MK;
++    }
++    return v;
++}
++
++GF2_HD u64 tower_klog(u64 yc, const TowerDev &t) {   // log_h, Y != 0
++    return t.sub_k ? tower_sub_log(yc, t) : (u64)t.LK[yc];
++}
++
++// e -> (lb = log_h(b), l = T index) for b != 0; false if b == 0
++GF2_HD bool tower_split(u64 pk, const TowerDev &t, u64 *lb, u64 *l) {
++    const u64 ac = pk & t.MK, bc = pk >> t.m;
++    if (!bc) return false;
++    *lb = tower_klog(bc, t);
++    *l = t.MK;                                  // c = a/b = 0: slot MK
+     if (ac) {
+-        u64 la = t.LK[ac];
+-        l = la >= lb ? la - lb : la + t.MK - lb;          // log_h(c)
++        const u64 la = tower_klog(ac, t);
++        *l = la >= *lb ? la - *lb : la + t.MK - *lb;    // log_h(c)
+     }
+-    u64 v = h1 * lb + t.T[l];                   // h1*lb < M, T < M
++    return true;
++}
++
++// log_g(x) for x != 0.  T is indexed by log_h(c) rather than by c, so the
++// quotient c = a/b is never formed.
++GF2_HD u64 tower_log(u64 x, u64 M, const TowerDev &t) {
++    const u64 pk = tower_coords(x, t);
++    const u64 h1 = t.MK + 2;                    // 2^m + 1 = log_g(h)
++    u64 lb, l;
++    if (!tower_split(pk, t, &lb, &l))           // x in K*;  < M
++        return h1 * tower_klog(pk & t.MK, t);
++    const u64 v = h1 * lb + t.T[l];             // h1*lb < M, T < M
+     return v >= M ? v - M : v;
+ }
+ 
+@@ -685,6 +759,7 @@
+ // ---------------------------------------------------------------------------
+ // host-side builders (one-off per degree; bit-serial gf_mul is fine here)
+ #include "gf2_wide_setup.h"
++#include <cstring>
+ #include <vector>
+ #include <algorithm>
+ #include <functional>
+@@ -694,13 +769,38 @@
+     int m = 0, nb = 0;
+     u64 MK = 0;
+     std::vector<u64> btab;               // nb*256
+-    std::vector<u32> LK, AK;             // 2^m, 2^m - 1
++    std::vector<u32> LK, AK;             // 2^m, 2^m - 1 (host; LK also on the
++                                         // device for the classic tower)
++    int sub_n = 0, sub_k = 0;            // subfield tower, 0 = classic
++    u64 sub_mult = 0;
++    std::vector<uint16_t> LKn;                // 2^n
++    std::vector<u32> TP;                 // sum_{j=1}^{k-1} 2^(n j)
+ };
+ 
+-// Byte tables for e -> (coordK(a) | coordK(b) << m), and LK/AK for K*.
+-// T (the 2^m logs log(h^l + w)) is filled on the device (k_tower_T); AK
+-// stays on the host.  Returns false if any internal consistency check fails.
+-static bool tower_build_host(int d, u64 q, TowerHost &W) {
++// The subfield K_n used for the inner tower: the largest proper divisor n of
++// m with 2 <= n (so k = m/n >= 2 is smallest and TP smallest), or 0 if m is
++// prime (or m = 2): then the classic tower.  want: -1 automatic, 0 classic,
++// n > 0 a specific divisor (tests).  *tp_entries: size of TP.
++static int tower_sub_choice(int m, int want, u64 *tp_entries) {
++    int n = 0;
++    if (want > 0) {
++        if (want >= 2 && want < m && m % want == 0) n = want;
++    } else if (want < 0) {
++        for (int c = m / 2; c >= 2; c--) if (m % c == 0) { n = c; break; }
++    }
++    u64 tp = 0;
++    if (n) for (int j = 1; j < m / n; j++) tp += (u64)1 << (n * j);
++    if (tp > ((u64)1 << 26)) n = 0, tp = 0;     // keep TP <= 256 MB
++    if (tp_entries) *tp_entries = tp;
++    return n;
++}
++
++// Byte tables for e -> (coord(a) | coord(b) << m), and the logs in K: the
++// table LK (classic), or LKn/TP (subfield tower, sub_want != 0 and m has a
++// divisor 2 <= n < m).  T (the 2^m logs log(h^l + w)) is filled on the
++// device (k_tower_T).  AK and LK stay on the host either way (TP is built
++// from LK).  Returns false if any internal consistency check fails.
++static bool tower_build_host(int d, u64 q, TowerHost &W, int sub_want = -1) {
+     if (d < 4 || (d & 1) || d > 54) return false;
+     const int m = d / 2;
+     const u64 M = ((u64)1 << d) - 1, MK = ((u64)1 << m) - 1;
+@@ -746,17 +846,8 @@
+         for (int k = 0; k < m; k++) if (c >> k & 1) e ^= rows[k];
+         return e;
+     };
++    W = TowerHost();
+     W.m = m; W.MK = MK; W.nb = (d + 7) / 8;
+-    W.btab.assign((size_t)W.nb * 256, 0);
+-    for (int k = 0; k < W.nb; k++)
+-        for (int byte = 0; byte < 256; byte++) {
+-            u64 e = ((u64)byte << (8 * k)) & M;
+-            u64 b = gf_mul(e ^ lin_sigma(e), inv_den, q, d);
+-            u64 a = e ^ gf_mul(b, 2, q, d);
+-            u64 ca = coordK(a), cb = coordK(b);
+-            if (embedK(ca) != a || embedK(cb) != b) return false;   // a,b in K
+-            W.btab[(size_t)k * 256 + byte] = ca | (cb << m);
+-        }
+     // K* = <h>: step by h in coordinates (a linear map) -> AK, LK
+     std::vector<u64> hcol(m);
+     for (int k = 0; k < m; k++) {
+@@ -775,16 +866,109 @@
+         }
+     W.LK.assign((size_t)MK + 1, 0xFFFFFFFFu);
+     W.AK.assign((size_t)MK, 0);
+-    u64 c = coordK(1);
+-    for (u64 k = 0; k < MK; k++) {
+-        if (!c || c > MK || W.LK[c] != 0xFFFFFFFFu) return false;   // h not of order MK?!
+-        W.AK[k] = (u32)c;
+-        W.LK[c] = (u32)k;
+-        u64 nc = 0;
+-        for (int kb = 0; kb < mb; kb++) nc ^= hb[(size_t)kb * 256 + ((c >> (8 * kb)) & 255)];
+-        c = nc;
++    {
++        u64 c = coordK(1);
++        for (u64 k = 0; k < MK; k++) {
++            if (!c || c > MK || W.LK[c] != 0xFFFFFFFFu) return false;   // h not of order MK?!
++            W.AK[k] = (u32)c;
++            W.LK[c] = (u32)k;
++            u64 nc = 0;
++            for (int kb = 0; kb < mb; kb++) nc ^= hb[(size_t)kb * 256 + ((c >> (8 * kb)) & 255)];
++            c = nc;
++        }
++        if (c != coordK(1)) return false;
+     }
+-    return c == coordK(1);
++    // coordinates of the elements of K handed to the device
++    std::function<u64(u64)> coord = coordK;
++    std::vector<u64> fv, lab;                   // subfield tower: labelled RREF
++    std::vector<int> fpiv;
++    const int n = tower_sub_choice(m, sub_want, nullptr);
++    if (n) {
++        const int k = m / n;
++        const u64 MKn = ((u64)1 << n) - 1, mult = MK / MKn;
++        const u64 hn = gf_pow(h, mult, q, d);   // generates K_n*
++        // basis of K over GF(2): h^i * hn^jj (i < k, jj < n); label bit
++        // n*i + jj, so a vector's label is its packed coordinate
++        u64 hi = 1;
++        for (int i = 0; i < k; i++, hi = gf_mul(hi, h, q, d)) {
++            u64 z = hi;
++            for (int jj = 0; jj < n; jj++, z = gf_mul(z, hn, q, d)) {
++                fv.push_back(z);
++                lab.push_back((u64)1 << (n * i + jj));
++            }
++        }
++        for (int r = 0; r < m; r++) {           // full reduction, labels along
++            int best = -1;
++            for (int t = r; t < m; t++)
++                if (fv[t] && (best < 0 || fv[t] > fv[best])) best = t;
++            if (best < 0) return false;         // not a basis
++            std::swap(fv[r], fv[best]); std::swap(lab[r], lab[best]);
++            const int p = 63 - __builtin_clzll(fv[r]);
++            for (int t = 0; t < m; t++)
++                if (t != r && (fv[t] >> p & 1)) { fv[t] ^= fv[r]; lab[t] ^= lab[r]; }
++            fpiv.push_back(p);
++        }
++        coord = [&fv, &lab, &fpiv, m](u64 e) {
++            u64 c = 0, r = 0;
++            for (int t = 0; t < m; t++)
++                if (e >> fpiv[t] & 1) { c ^= lab[t]; r ^= fv[t]; }
++            return r == e ? c : ~0ULL;          // ~0: e not in K
++        };
++        // LKn: n-bit coordinates of hn^l (a K_n element: digit 0 only)
++        W.LKn.assign((size_t)MKn + 1, 0xFFFF);
++        std::vector<u64> hnp(MKn);
++        u64 z = 1;
++        for (u64 l = 0; l < MKn; l++, z = gf_mul(z, hn, q, d)) {
++            const u64 c = coord(z);
++            if (c == 0 || c > MKn || W.LKn[c] != 0xFFFF) return false;
++            W.LKn[c] = (uint16_t)l;
++            hnp[l] = z;
++        }
++        if (z != 1) return false;
++        // TP: log_h of each normalized point, by its digit index
++        std::vector<u64> hp(k + 1);
++        hp[0] = 1;
++        for (int i = 1; i <= k; i++) hp[i] = gf_mul(hp[i - 1], h, q, d);
++        std::vector<std::vector<u64>> prod(k, std::vector<u64>((size_t)MKn + 1, 0));
++        for (int i = 0; i < k; i++)              // prod[i][MKn] = 0 (zero digit)
++            for (u64 l = 0; l < MKn; l++) prod[i][l] = gf_mul(hnp[l], hp[i], q, d);
++        for (int j = 1; j < k; j++) {
++            const u64 cnt = (u64)1 << (n * j);
++            for (u64 idx = 0; idx < cnt; idx++) {
++                u64 e = hp[j];
++                for (int i = 0; i < j; i++) e ^= prod[i][(idx >> (n * i)) & MKn];
++                const u64 ce = coordK(e);
++                if (embedK(ce) != e || !ce) return false;
++                W.TP.push_back(W.LK[ce]);
++            }
++        }
++        W.sub_n = n; W.sub_k = k; W.sub_mult = mult;
++    }
++    W.btab.assign((size_t)W.nb * 256, 0);
++    for (int kk = 0; kk < W.nb; kk++)
++        for (int byte = 0; byte < 256; byte++) {
++            u64 e = ((u64)byte << (8 * kk)) & M;
++            u64 b = gf_mul(e ^ lin_sigma(e), inv_den, q, d);
++            u64 a = e ^ gf_mul(b, 2, q, d);
++            u64 ca = coord(a), cb = coord(b);
++            if (ca == ~0ULL || cb == ~0ULL) return false;
++            if (!n && (embedK(ca) != a || embedK(cb) != b)) return false;   // a,b in K
++            W.btab[(size_t)kk * 256 + byte] = ca | (cb << m);
++        }
++    return true;
++}
++
++// A TowerDev over the given table pointers (device or host memory)
++static inline TowerDev tower_dev(const TowerHost &W, const u64 *btab,
++                                 const u32 *LK, const u64 *T,
++                                 const uint16_t *LKn, const u32 *TP) {
++    TowerDev t;
++    memset(&t, 0, sizeof t);
++    t.m = W.m; t.nb = W.nb; t.MK = W.MK;
++    t.btab = btab; t.LK = LK; t.T = T;
++    t.sub_n = W.sub_n; t.sub_k = W.sub_k; t.sub_mult = W.sub_mult;
++    t.LKn = LKn; t.TP = TP; t.tp_n = (u32)W.TP.size();
++    return t;
+ }
+ 
+ struct PHPartHost { u64 P = 0, E = 0, K = 0, N = 0, G = 1, delta = 1, gamma = 1; int sbits = 1; };
+--- a/gf2_dlog_selftest.cpp	2026-10-22 02:22:48.441798500 -0400
++++ b/gf2_dlog_selftest.cpp	2026-10-22 02:22:48.448412945 -0400
+@@ -16,7 +16,9 @@
+ //    selected multiply-by-x, g^u with per-slot u, X^E, transposes; and the
+ //    compile-time moduli vs find_primitive_poly
+ // 5. both discrete-log engines with the tables the sieve builds (tower: T by
+-//    log_h; PH: 16-byte slots), for the bit-sliced and the round-2 planner:
++//    log_h, classic or with the subfield tower inside K -- automatic choice,
++//    and for d <= 36 every other subfield; PH: 16-byte slots), for the
++//    bit-sliced and the round-2 planner:
+ //    every element for d <= 20, `samples` random elements above; PH tables
+ //    limited to budget_MB (d = 31, 37, 41 then use baby-step/giant-step, as
+ //    on an 8 GB card), tower up to tower_dmax (default 44, as the tables
+@@ -25,7 +27,8 @@
+ // 6. the whole per-class computation at every d up to 55: for random classes
+ //    u, the Zech log, j = u r^-1, the progression start s0 = v j^-1 (lambda
+ //    exponent) and the minimal polynomial f of g^j -- then checks directly
+-//    that f divides x^r + x^s0 + 1 (r = 136279841), by arithmetic mod f
++//    that f divides x^r + x^s0 + 1 (r = 136279841), by arithmetic mod f;
++//    for even d <= tower_dmax also that the tower's log is the same
+ // 7. the packed best[] key format for d <= 55 (order and round trip)
+ //
+ // Exit status 0 iff everything matches.  The same code runs on the GPU in
+@@ -244,18 +247,18 @@
+ 
+ struct TowerTabs { TowerHost W; std::vector<u64> T; TowerDev dev; };
+ 
+-// T by log_h(c), filled by the same coupon-collector sweep as k_tower_T
+-static bool tower_fill_host(int d, u64 q, TowerTabs &tt) {
+-    if (!tower_build_host(d, q, tt.W)) return false;
++// T by log_h(c), filled by the same coupon-collector sweep as k_tower_T;
++// sub: -1 automatic (subfield tower when m is composite), 0 classic, n
++static bool tower_fill_host(int d, u64 q, TowerTabs &tt, int sub = -1) {
++    if (!tower_build_host(d, q, tt.W, sub)) return false;
+     const u64 M = ((u64)1 << d) - 1, MK = tt.W.MK;
+     tt.T.assign((size_t)MK + 1, ~0ULL);
+-    tt.dev = TowerDev{tt.W.m, tt.W.nb, MK, tt.W.btab.data(), tt.W.LK.data(), tt.T.data()};
++    tt.dev = tower_dev(tt.W, tt.W.btab.data(), tt.W.LK.data(), tt.T.data(),
++                       tt.W.LKn.data(), tt.W.TP.data());
+     u64 left = MK + 1, x = 1;
+     for (u64 u = 0; u < M && left; u++, x = gf_mulx(x, q, d)) {
+-        u64 pk = tower_coords(x, tt.dev), ac = pk & MK, bc = pk >> tt.W.m;
+-        if (!bc) continue;
+-        u64 lb = tt.W.LK[bc], l = MK;
+-        if (ac) { u64 la = tt.W.LK[ac]; l = la >= lb ? la - lb : la + MK - lb; }
++        u64 lb, l;
++        if (!tower_split(tower_coords(x, tt.dev), tt.dev, &lb, &l)) continue;
+         if (tt.T[l] == ~0ULL) {
+             u64 h = (MK + 2) * lb;
+             tt.T[l] = u >= h ? u - h : u + M - h;
+@@ -298,10 +301,21 @@
+             printf(", %.0f MB, %.1fs\n", H.table_bytes / 1048576.0, now() - t0);
+             if (bad) fails++;
+         }
++        // towers: the classic one, the automatic subfield tower, and (for
++        // d <= 36) every other inner subfield K_n, n | m
++        std::vector<int> subs;
+         if (d >= 4 && !(d & 1) && d <= tower_dmax) {
++            subs.push_back(0);
++            if (tower_sub_choice(d / 2, -1, nullptr)) subs.push_back(-1);
++            if (d <= 36)
++                for (int n = 2; n < d / 2; n++)
++                    if ((d / 2) % n == 0 && n != tower_sub_choice(d / 2, -1, nullptr))
++                        subs.push_back(n);
++        }
++        for (int sub : subs) {
+             double t0 = now();
+             TowerTabs tt;
+-            if (!tower_fill_host(d, q, tt)) { printf("d=%2d tower build FAILED\n", d); fails++; continue; }
++            if (!tower_fill_host(d, q, tt, sub)) { printf("d=%2d tower build FAILED\n", d); fails++; continue; }
+             u64 bad = 0, e = 1;
+             for (u64 k = 0; k < nchk; k++) {
+                 u64 u = exh ? k : rng() % M;
+@@ -309,8 +323,12 @@
+                 if (tower_log(e, M, tt.dev) != u) bad++;
+                 if (exh) e = gf_mulx(e, q, d);
+             }
+-            printf("d=%2d tower %s %8llu logs: %llu wrong | m=%d, %.1fs\n", d, exh ? "all    " : "sampled",
+-                   (ull)nchk, (ull)bad, tt.W.m, now() - t0);
++            char how[48];
++            if (tt.W.sub_k) snprintf(how, sizeof how, "inner GF(2^%d), k=%d%s", tt.W.sub_n,
++                                     tt.W.sub_k, sub < 0 ? "" : " (forced)");
++            else snprintf(how, sizeof how, "classic");
++            printf("d=%2d tower %s %8llu logs: %llu wrong | m=%d, %s, %.1fs\n", d, exh ? "all    " : "sampled",
++                   (ull)nchk, (ull)bad, tt.W.m, how, now() - t0);
+             if (bad) fails++;
+         }
+         fflush(stdout);
+@@ -347,7 +365,8 @@
+     return r;
+ }
+ 
+-static int test_classes(int dlo, int dhi, size_t budget, int per_degree) {
++static int test_classes(int dlo, int dhi, size_t budget, int per_degree,
++                        int tower_dmax) {
+     const u64 r = 136279841;
+     int fails = 0;
+     for (int d = std::max(dlo, 3); d <= dhi; d++) {
+@@ -359,6 +378,10 @@
+         PHHost H; PHTabs tb; PHDev D{};
+         if (!ph_plan_host(d, q, budget, H, kPHCostBitsliced)) { printf("d=%d: no PH plan\n", d); fails++; continue; }
+         ph_fill_host(H, ql, d, tb, D);
++        // even d: the production engine is the tower -- its log must agree
++        TowerTabs tt;
++        const bool tw = d >= 4 && !(d & 1) && d <= tower_dmax && tower_fill_host(d, q, tt);
++        int twbad = 0;
+         const u64 rinv = inv_mod(r % M, M);
+         u64 lam = 1, mm = M;
+         for (u64 p : factor_u64(M)) {
+@@ -375,6 +398,7 @@
+             if (u >= ((u64)1 << (d - 1)) || gcd_u64(u, M) != 1) continue;
+             const u64 x = gf2f_antilog(u, ql, d, gp) ^ 1;     // g^u + 1
+             const u64 v = ph_log(x, M, d, ql, D);
++            if (tw && tower_log(x, M, tt.dev) != v) twbad++;
+             const u64 j = gf2f_mulmod_m(u, rinv, d, M);
+             const u64 s0 = gf2f_mulmod_m(v, gf2f_powmod_m(j, lam - 1, d, M), d, M);
+             const u64 f = minpoly_mask(gf2f_antilog(j, ql, d, gp), q, d);
+@@ -385,8 +409,10 @@
+             if (!ok) { if (bad < 3) printf("d=%d u=%llx: f=%llx s0=%llu does not divide\n", d, (ull)u, (ull)f, (ull)s0); bad++; }
+             done++;
+         }
+-        if (bad || done < per_degree) fails++;
+-        printf("d=%2d classes: %d checked, f | x^r + x^s0 + 1 for %d\n", d, done, done - bad);
++        if (bad || twbad || done < per_degree) fails++;
++        printf("d=%2d classes: %d checked, f | x^r + x^s0 + 1 for %d", d, done, done - bad);
++        if (tw) printf("; tower log %s", twbad ? "DIFFERS" : "agrees");
++        printf("\n");
+         fflush(stdout);
+     }
+     return fails;
+@@ -428,7 +454,7 @@
+     printf("5. discrete logs, d=%d..%d (PH tables <= %zu MB):\n", dlo, dhi, budget >> 20);
+     int f5 = test_dlog(dlo, dhi, budget, samples, tower_dmax);
+     printf("6. per-class computation vs direct division, d=%d..%d:\n", std::max(dlo, 3), dhi);
+-    int f6 = test_classes(dlo, dhi, budget, 40);
++    int f6 = test_classes(dlo, dhi, budget, 40, tower_dmax);
+     int f7 = test_keys();
+     printf("7. packed keys d=2..55: %s\n", f7 ? "FAILED" : "ok");
+     bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7;
