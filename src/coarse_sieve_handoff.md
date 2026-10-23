@@ -55,7 +55,7 @@ The `Makefile`, `cuda_emul.h` and the other headers are unchanged from round 4.
 * **Validation done here:**
   - 67 emulated regression checks, all byte-identical or passing.
   - Host selftest ALL OK.
-  - Two longer emulator runs were still going when I sent this: RR at d=49 end to end, and RR against the round-4 paths at d = 30..33. I'll post their results (section 7).
+  - RR at d=49 end to end in the emulator: PASS. RR against the round-4 paths at d = 30..33: byte-identical (section 7).
   - nvcc 13.3 sm_75: both builds warning-free, no spills.
 * Your PS questions are in section 10, and my opinion on "last round?" is in section 9.
 
@@ -215,7 +215,7 @@ On the "auto-configure for modern GPUs" idea: nothing else in the code is specif
 
 ## 7. Validation done here
 
-* **Host, `gf2_dlog_selftest`: ALL OK (226 s).** Part 8:
+* **Host, `gf2_dlog_selftest`: ALL OK (4-6 min here).** Part 8:
   - the half-gcd contract (r = t·y, both degrees ≤ d/2, and the fast and generic splits agree) at every d = 3..55, 159,000 checks;
   - the factor-base sieve against trial division for d/2 ≤ 14;
   - RR logs at every d = 3..47 (every element up to d=20, 20,000 sampled elements above that): 0 wrong.
@@ -235,10 +235,14 @@ On the "auto-configure for modern GPUs" idea: nothing else in the code is specif
     - an RR run stopped and continued;
     - K1-K8 checkpoint tests (section 4).
   - `--selftest-logs` itself now also checks the irregular lift against extended Euclid at every d = 4..55.
-* **Still running when this was sent** (results to follow in a short note):
-  - **d = 49 in the emulator** (`--selftest-logs rr` with the RR checks raised to 49, the 4 GB plan): the table built through the real d=49 BSGS plan with every factor-base log verified, log(g^u) = u on a stretch of exponents, and the batched kernel's own check of every class in a stretch. In the emulator this is ~1.2 h of single-threaded BSGS.
-  - **d = 30..33, seeded, smax = 299,999:** RR + tower against PH + tower with the round-4 irregular path, which are entirely different code paths for every class; found.cert and survivors compared byte for byte.
+* **d = 49 in the emulator — PASSED.** This was `--selftest-logs rr` with the RR checks raised to 49 and the 4 GB plan an 8 GB card gets.
+  - The table was built through the real d=49 BSGS plan: 1,465,020 factor-base logs with up to 33,027 giant steps each, every one verified, then the fill (2.4 s) and the host spot check.
+  - The engine: 512 consecutive exponents with log(g^u) = u, 0 wrong. The batched kernel's own check of the 1,970 classes in a stretch: ok.
+  - The same run also passed the rotation test (d = 2..55), the irregular-lift check (163,014 lifted classes, 16,925 of them needing t > 0) and the depth-20 sieve against the CPU reference with RR at odd d.
+  - The factor-base logs took 81 min single-threaded in the emulator, ~2.4e10 giant steps at ~0.2 µs each. That is CPU emulation; the GPU should need a minute or so.
+* **d = 30..33, seeded, smax = 299,999 — PASSED.** RR + tower against PH + tower with the round-4 irregular path, which are entirely different code paths for every class: found.cert (3,401 factors) and survivors byte-identical.
 * **nvcc 13.3, sm_75:** both builds warning-free (`-Xcompiler -march=native`), no spills, registers as in section 3.
+* All of the above were rerun on the final sources, the files you have.
 * **What the emulator cannot tell me:**
   - real timings (every number in sections 6 and 8 is an estimate);
   - the shared-memory staging of the tower;
