@@ -47,10 +47,12 @@
 // Run:    ./coarse_sieve <r> <depth> <out_prefix>   (smax defaults to floor(r/2))
 //                        [--found] [--no-survivors]
 //                        [--load <file.found.bin>] [--min-depth <D>]
+//                        [--load-survivors <file.survivors.txt>]
 //                        [--checkpoint <file>] [--checkpoint-mins <N>]
-//                        [--resume <file>]
-//                        [--allow-degree-gap]
+//                        [--resume <file>] [--fresh] [--no-checkpoint]
+//                        [--allow-degree-gap | --seed-covers-49] [--no-tune]
 //                        [--selftest] [--selftest-lowmem [nbuckets]]
+//                        [--selftest-logs [logs|tower|ph|rr]]
 // Extend: --load seeds best[] from a prior run's .found.bin and --min-depth
 //         starts the sieve at degree D, so you compute only the new
 //         degrees.  Recommended for d>=33: run the FAST narrow binary to
@@ -61,27 +63,37 @@
 //         This avoids re-doing d<=32 in the slow u64 build (a degree-d
 //         factor only ever improves an s with no smaller-degree factor, so
 //         seeding from the depth-32 result and adding d=33 is exact).
-// Checkpoint/resume: for long runs on reclaimable (spot) instances, add
-//         --checkpoint <file> to save progress on SIGTERM/SIGINT -- and,
-//         with --checkpoint-mins <N>, every N minutes.  In low-memory mode
+// Checkpoint/resume (automatic since round 5): every run saves its progress
+//         to <out_prefix>.ckpt every 15 minutes and on SIGTERM/SIGINT (a
+//         second Ctrl-C exits at once), and running the same command again
+//         continues from that file -- after checking that it was written by
+//         the same run (r, smax, depth, --min-depth and the contents of the
+//         --load/--load-survivors file); a different run refuses to start
+//         rather than mix the two.  --fresh sets an old checkpoint aside
+//         (*.old) and starts over; --no-checkpoint turns it all off;
+//         --checkpoint <file> / --checkpoint-mins <N> (0 = on signals only)
+//         change the file and interval; a <file>.lock keeps a second run
+//         off the same checkpoint.  A finished run deletes its checkpoint.
+//         The rest of this paragraph describes the mechanism, which is
+//         unchanged.  In low-memory mode
 //         the save happens at bucket boundaries (mid-degree), so at most one
 //         bucket is redone; on SIGTERM the in-flight bucket is abandoned
 //         within ~100ms so the ~30s reclaim budget is met.  In logs mode
 //         saves happen at chunk boundaries, and a stop waits for the
-//         in-flight chunk (seconds at most).  Resume with
+//         in-flight chunk (seconds at most).  Explicit resume:
 //         --resume <file> (which keeps checkpointing to the same file):
 //           ./coarse_sieve_wide <r> 34 <smax> out34 --found
 //               --load out33.found.bin --min-depth 34
-//               --checkpoint out34.ckpt --checkpoint-mins 20
-//           # on reclaim, just:
+//           # on reclaim, the same command again -- or explicitly:
 //           ./coarse_sieve_wide <r> 34 <smax> out34 --found --resume out34.ckpt
 //         Low-memory runs print a per-bucket progress bar ('=' for buckets
 //         already done on resume, '.' as each new bucket completes).
 // Env:    COARSE_FORCE_BUCKETS=N forces the bucketed path with N buckets for
 //         every degree (manual override / testing).
-//         COARSE_METHOD=auto|dense|buckets|logs|tower|ph overrides the per-
-//         degree method choice (A/B timing; "logs" = tower for even d,
-//         Pohlig-Hellman for odd d).  COARSE_LOGS_MAX_MB=n caps the VRAM
+//         COARSE_METHOD=auto|dense|buckets|logs|tower|ph|rr overrides the
+//         per-degree method choice (A/B timing; "logs" = tower for even d,
+//         Pohlig-Hellman or RR (tuned; RR at d=49) for odd d; "rr" = RR for
+//         odd d, tower for even d).  COARSE_LOGS_MAX_MB=n caps the VRAM
 //         used by logs-path tables (default: free memory minus the reserve
 //         and min(free/8, 512 MB) of slack; less only means more giant
 //         steps for the PH parts that do not fit whole).
@@ -91,11 +103,21 @@
 //         resume the other's.
 //         COARSE_TOWER_SUBN=0 uses the round-3 tower (one table of all logs
 //         in K) even where the subfield tower applies (A/B timing).
+//         COARSE_IRREG=r4 makes the batched kernel handle the classes with
+//         gcd(u, 2^d-1) > 1 the round-4 way (a modular inverse by extended
+//         Euclid per class) instead of in the batch inversion (A/B timing;
+//         identical results).
 //         Tests only: COARSE_TOWER_SUBN=n forces the inner subfield
 //         GF(2^n) (any n | m, 2 <= n < m); COARSE_LOGS_CHUNK_LOG2=k caps
 //         logs-path chunks at 2^k
 //         values (a resume must use the same k); COARSE_SELFTEST_LOGS_DMAX
-//         limits the engine checks of --selftest-logs;
+//         limits the engine checks of --selftest-logs, COARSE_SELFTEST_RR_DMAX
+//         its RR checks (default 47; 49 adds the d=49 table and engine, a
+//         few minutes more) and COARSE_SELFTEST_RR_BSGS_D the
+//         degree of its RR check with a forced many-giant-step factor-base
+//         plan (default 41); COARSE_RR_FB_BUDGET_MB=m forces such plans
+//         (factor-base tables of at most m MB); COARSE_TUNE_PICK=i takes
+//         tuning candidate i;
 //         COARSE_TEST_FAULT_EVERY=n corrupts the log of every class with
 //         u = 1 mod n (the run must then stop with "discrete-log
 //         consistency errors"); COARSE_TEST_STOP_DEGREE=n acts as if
@@ -105,15 +127,15 @@
 //         the -DWIDE_FIELD build supports d <= 55: the packed best[] key
 //         holds d <= 55 (key_pack) and the logs path's fast arithmetic
 //         d <= 55 (main() enforces both limits).  Degrees 48..55 run only
-//         in the logs path, and d = 49 cannot be sieved at all (2^49 - 1 =
-//         127 * 4432676798593: too large a prime for any log table, and a
-//         bucketed pass would take decades), so main() refuses any run that
-//         includes it.  Degrees 50..55 can still be sieved, with
-//         --load-survivors and --min-depth 50 plus --allow-degree-gap: a
-//         factor found there is real, but it is the LEAST-degree factor of
-//         its trinomial only if degree-49 factors were ruled out some other
-//         way.  Low-memory mode fits any degree <= 47 into any card by
-//         raising the bucket count; see the cost note in LOW-MEMORY MODE.
+//         in the logs path; d = 49 (2^49 - 1 = 127 * 4432676798593) only
+//         with the RR engine (round 5; before that it could not be sieved
+//         at all).  A run starting above 49 must say whether its seed file
+//         covers degree 49: --seed-covers-49 (it came from a run through 49)
+//         or --allow-degree-gap (it did not: a factor found at 50..55 is
+//         then the LEAST-degree factor of its trinomial only where there is
+//         no degree-49 factor).  Low-memory mode fits any degree <= 47 into
+//         any card by raising the bucket count; see the cost note in
+//         LOW-MEMORY MODE.
 // Outputs: <prefix>.survivors.txt is written by default (--no-survivors
 //         suppresses it); it is just the list of s with no factor of
 //         degree <= depth, which is exactly the set of s missing from
@@ -134,15 +156,21 @@
 //         number of buckets, default 4) for every degree regardless of
 //         whether the dense tables would have fit, so the low-memory
 //         kernels get exercised and checked even at small, fast depths.
-//         --selftest-logs [logs|tower|ph] (wide build) forces the logs path
-//         instead, and additionally checks log(g^u) == u on the device for
-//         every u < min(2^d - 1, 2^24) at each degree; then, beyond the
+//         --selftest-logs [logs|tower|ph|rr] (wide build) forces the logs
+//         path instead, and additionally checks log(g^u) == u on the device
+//         for every u < min(2^d - 1, 2^24) at each degree; then, beyond the
 //         sieve's depth, it checks the chosen engine(s) on 2^20 exponents at
 //         every d = 21..55, the batched kernel end to end (log(g^u) == u for
 //         every class it enumerates in a stretch of u, and its class count
-//         against the necklace test's), and the necklace test against the
-//         all-rotations reference at every d <= 55 (gf2_dlog_selftest.cpp
-//         is the CPU counterpart).
+//         against the necklace test's, with the round-5 irregular-class
+//         handling checked against the round-4 one), and the necklace test
+//         against the all-rotations reference at every d <= 55
+//         (gf2_dlog_selftest.cpp is the CPU counterpart).  The RR engine
+//         is checked the same way (2^20 exponents and the batched kernel)
+//         at every odd d = 21..47, once (d = 41) with its factor-base logs
+//         forced through a many-giant-step plan, the d = 49 kind; "logs"
+//         (the default) checks all engines, "rr" sieves with RR at odd d
+//         and checks only RR, "tower" / "ph" only those.
 //
 // LOW-MEMORY MODE
 // ----------------
@@ -230,6 +258,27 @@
 //          large for the memory budget (d=31: M itself is prime; d=37:
 //          616318177; d=41: 164511353 on an 8 GB card) uses baby-step/
 //          giant-step.
+//   RR, rational reconstruction (odd d, round 5): the extended Euclidean
+//          algorithm on (q, y), stopped half way, writes y = r/t with r and
+//          t both of degree <= d/2, so log y = L[r] - L[t] with L the logs
+//          of ALL polynomials of degree <= d/2 (2^(d/2+1) entries: 256 MB
+//          at d=49, 2 GB at d=55): one half-gcd and two reads per class, no
+//          smoothness test, no failure.  L comes from the logs of the
+//          irreducible polynomials of degree <= d/2 (1.47M at d=49) by
+//          multiplicativity; those come from Pohlig-Hellman -- for d = 49,
+//          whose M = 127 * 4432676798593 has no table-sized parts, with up
+//          to ~8,000-33,000 giant steps per log (by card size), affordable
+//          for 1.47M elements (~2.4e10 giant steps on an 8 GB card: a
+//          minute or two, estimated) where it was not for 1.15e13 classes.
+//          So degree 49 can now be sieved.  A table that took over two
+//          minutes to build is cached in coarse_rr_d<d>.tbl (it does not
+//          depend on r).  At the other odd degrees the tuner picks PH or RR,
+//          whichever is faster on the card.
+// Tuning (round 5): for d >= 40 each degree starts with a few seconds of
+//         timing on GPU 0 -- the tower variants, PH vs RR, and the round-4
+//         irregular-class path as a reference -- and runs with the fastest
+//         (a line "[tune d=..: ... ns/class ... -> choice]" shows the
+//         numbers).  --no-tune, COARSE_TUNE=0 / COARSE_TUNE_MIN=d.
 // Classes: each class of degree d has exactly one representative u that is
 // a Lyndon word (aperiodic and least among its bit rotations, hence odd and
 // below 2^(d-1)); any representative yields the same factor and progression
@@ -240,7 +289,9 @@
 // trick).  The round-2 kernel (COARSE_LOGS_KERNEL=r2) tests every odd u with
 // the necklace test, steps g^u by LFSR and handles classes one at a time.
 // The progression start needs j^-1 mod M, computed as j^(lambda(M)-1)
-// (Carmichael exponent, much shorter than phi(M)).  Work is O(2^d) per
+// (Carmichael exponent, much shorter than phi(M)); since round 5 the
+// classes with gcd(u, M) > 1 join that batch inversion too (see "Irregular
+// classes, round 5").  Work is O(2^d) per
 // degree instead of O(4^d / VRAM); memory is
 // best[] + the tables.  The pass is cut into chunks of u-values (kernel
 // launches) for checkpointing; checkpoints record which method wrote them,
@@ -264,12 +315,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <cinttypes>
+#include <cmath>
 #include <vector>
 #include <string>
 #include <chrono>
 #include <csignal>
 #include <ctime>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/file.h>
 
 // fw ("field word") is the type of everything sized like a field element
 // or an index into the 2^d-element group: field elements, antilog/log
@@ -662,7 +716,7 @@ __global__ void k_resolve_slice(int d, u64 M64, u64 q, u64 rmodinv,
 }
 
 // logs-path engines (also the checkpoint method tags)
-enum { LM_NONE = 0, LM_TOWER = 1, LM_PH = 2 };
+enum { LM_NONE = 0, LM_TOWER = 1, LM_PH = 2, LM_RR = 3 };
 
 #if defined(WIDE_FIELD)
 // ---------------------------------------------------------------------------
@@ -686,16 +740,19 @@ struct LogsParams {
     u64 lam_m1;                    // lambda(M) - 1: j^-1 = j^(lambda-1) mod M
     u64 fault;                     // test hook: corrupt the log of u = 1 mod fault
     int check;                     // selftest: compute log(g^u), count != u
+    int irreg_r4;                  // COARSE_IRREG=r4: round-4 irregular path
     int nsub, npf;
     OddDiv sub[4];                 // subfield moduli M/(2^(d/p)-1)
     OddDiv pf[LOGS_MAXPF];         // prime factors of M ...
     int pk[LOGS_MAXPF];            // ... and their multiplicities
     TowerDev tw;
     PHDev ph;
+    RRDev rr;
 };
 
 GF2_HD u64 logs_dlog(u64 x, const LogsParams &L) {
     return L.method == LM_TOWER ? tower_log(x, L.M, L.tw)
+         : L.method == LM_RR    ? rr_log(x, L.q, L.d, L.M, L.rr)
                                 : ph_log(x, L.M, L.d, L.qlow, L.ph);
 }
 
@@ -712,31 +769,57 @@ GF2_HD u64 logs_mulx2(u64 e, u64 q, int d) {
     return gf_mulx(gf_mulx(e, q, d), q, d);
 }
 
-// The progression s, s+n, ... (start s in [1, n]) of the class with root
-// g^j: mark it, unless it is out of range or nothing on it can improve.
+// Rarely executed code stays out of line (round 5): the logs kernels are
+// 140-180 KB of SASS while Turing has a 16 KiB L0 and a 46 KiB L1
+// instruction cache, so every hot loop should be contiguous code.
+#if defined(__CUDACC__)
+#define CS_COLD __device__ __noinline__
+#else
+#define CS_COLD static __attribute__((noinline))
+#endif
+
+// The progression s, s+n, ... <= smax (start s in [1, n]) of the class with
+// root g^j: mark it unless nothing on it can improve.  Returns 1 on an
+// internal inconsistency (no degree-d minimal polynomial), else 0.
+CS_COLD int logs_mark_cold(u64 s, u64 n, u64 j, u64 smax, int d, u64 q,
+                           const fw *gpow2, ull *best, Heavy *heavy,
+                           unsigned *nheavy, unsigned *overflow, fw *P) {
+    u64 count = (smax - s) / n + 1;
+    if (count <= INLINE_MARKS && !progression_open(best, s, n, smax, d))
+        return 0;
+    fw seed = d_antilog(j, q, d, gpow2);        // root g^j
+    u64 mask = d_minpoly_seeded(seed, d, q, P);
+    if (mask == 0) return 1;
+    u64 packed = key_pack(d, mask);
+    if (count <= INLINE_MARKS) {
+        for (; s <= smax; s += n) atomicMin(&best[s], (ull)packed);
+    } else {
+        unsigned idx = atomicAdd(nheavy, 1u);
+        if (idx < HEAVY_CAP) heavy[idx] = {s, n, packed};
+        else atomicAdd(overflow, 1u);
+    }
+    return 0;
+}
+
+// ... unless it is out of range (almost always: the probability is smax/n)
 __device__ __forceinline__ void logs_mark(u64 s, u64 n, u64 j,
                                           const LogsParams &L,
                                           const fw *gpow2, ull *best,
                                           Heavy *heavy, unsigned *nheavy,
                                           unsigned *overflow, fw *P,
                                           unsigned long long *err) {
-    const int d = L.d;
     if (s > L.smax) return;
-    u64 count = (L.smax - s) / n + 1;
-    if (count <= INLINE_MARKS && !progression_open(best, s, n, L.smax, d))
-        return;
-    fw seed = d_antilog(j, L.q, d, gpow2);      // root g^j
-    u64 mask = d_minpoly_seeded(seed, d, L.q, P);
-    if (mask == 0) { (*err)++; return; }
-    u64 packed = key_pack(d, mask);
-    if (count <= INLINE_MARKS) {
-        for (; s <= L.smax; s += n) atomicMin(&best[s], (ull)packed);
-    } else {
-        unsigned idx = atomicAdd(nheavy, 1u);
-        if (idx < HEAVY_CAP) heavy[idx] = {s, n, packed};
-        else atomicAdd(overflow, 1u);
-    }
+    *err += logs_mark_cold(s, n, j, L.smax, L.d, L.q, gpow2, best, heavy,
+                           nheavy, overflow, P);
 }
+
+// spot check of a log: g^v == g^u + 1?  (once per 8 batches)
+CS_COLD bool logs_verify_bad(u64 v, u64 u, u64 qlow, int d, const fw *gpow2) {
+    return gf2f_antilog(v, qlow, d, gpow2) != (gf2f_antilog(u, qlow, d, gpow2) ^ 1);
+}
+
+// log_h of an element of K for x in K* (b = 0; probability 2^-m per class)
+CS_COLD u64 tower_klog_cold(u64 yc, TowerDev t) { return tower_klog(yc, t); }
 
 // gcd(u, M) == 1?  (gcd(u, M) = gcd(j, M) as r is a unit)
 GF2_HD bool logs_regular(u64 u, const LogsParams &L) {
@@ -768,6 +851,145 @@ __device__ __forceinline__ void logs_irregular(u64 u, u64 j, u64 v,
     u64 s0 = MULMOD(inv_mod(jg, n), vg, n);
     logs_mark(s0 == 0 ? n : s0, n, j, L, gpow2, best, heavy, nheavy, overflow,
               P, err);
+}
+
+// ---------------------------------------------------------------------------
+// Irregular classes, round 5.  logs_irregular above spends, per class that
+// reaches its last line, an extended Euclid of ~25-29 iterations (each a
+// call of the software 64-bit division, ~80 instructions in the SASS) plus a
+// ~40-step double-and-add.  At even d some lane of nearly every warp step
+// has such a class (40-60% of the classes are irregular, ~15% need the
+// inverse), so the whole warp waits through it: ~3000-3800 instructions per
+// warp step against ~1200-1500 for everything else (nvcc 13.3 SASS, sm_75).
+// Instead the batched kernel lets those classes join the batch inversion:
+//   * gg, its 2-adic inverse ginv and so the EXACT quotients n = M*ginv,
+//     jg = j*ginv, vg = v*ginv (mod 2^64) come from the primes that divide
+//     u -- one multiply-and-compare per prime;  gg | v  <=>  vg < n;
+//   * J = jg + t*n with the least t >= 0 that makes J prime to the primes
+//     of gg not dividing n (t = 0 most of the time) is a unit mod M with
+//     J == jg (mod n), so J^-1 mod M reduces to jg^-1 mod n (n | M): J
+//     enters the batch product like a regular j;
+//   * s0 = (vg * J^-1 mod M) mod n, with x mod n = x - n*floor(x*gg/M) and
+//     floor(./M) a shift and a compare (mod_divisor_m).
+// About 100-300 instructions per warp step remain.  COARSE_IRREG=r4 selects
+// the round-4 path (A/B timing; results are identical).
+#define VB_SKIP  (~0ULL)        // vb[k]: nothing (more) to do for this class
+#define VB_IRREG (1ULL << 63)   // vb[k] = VB_IRREG | vg, gg in xb[k]
+
+// bit i set iff the i-th prime of M divides u (npf tests, no branches;
+// npf = gf2_npf(D) is a constant in the kernels, so the loop unrolls)
+GF2_HD u32 logs_divmask_n(u64 u, const LogsParams &L, int npf) {
+    u32 m = 0;
+    GF2D_UNROLL
+    for (int i = 0; i < npf; i++) m |= (u32)(u * L.pf[i].pinv <= L.pf[i].plim) << i;
+    return m;
+}
+
+template <int D>
+__device__ __forceinline__ u32 logs_divmask(u64 u, const LogsParams &L) {
+    return logs_divmask_n(u, L, gf2_npf(D));
+}
+
+// The lift for an irregular class (mask = logs_divmask(u) != 0):
+// 0: joins the batch with *J, *vg, *gg;  1: gg does not divide v (no s);
+// 2: no lift found within 64 tries (never seen; caller takes the old path)
+__device__ __forceinline__ int logs_irreg_lift(u64 u, u64 j, u64 v, u32 mask,
+                                               const LogsParams &L, u64 *J,
+                                               u64 *vg, u64 *gg_out) {
+    u64 gg = 1, ginv = 1;
+    u32 full = 0;                          // primes of gg that do not divide n
+    for (u32 mk = mask; mk; mk &= mk - 1) {
+        const int i = gf2f_ctz32(mk);
+        const u64 p = L.pf[i].p, pinv = L.pf[i].pinv;
+        u64 t = u * pinv, q;               // u / p
+        int e = 1;
+        gg *= p; ginv *= pinv;
+        while (e < L.pk[i] && odd_div_test(t, L.pf[i], &q)) {
+            t = q; e++; gg *= p; ginv *= pinv;
+        }
+        if (e == L.pk[i]) full |= 1u << i;
+    }
+    const u64 n = L.M * ginv, w = v * ginv;
+    if (w >= n) return 1;
+    u64 x = j * ginv;                      // jg: prime to n
+    for (int t = 0;; t++) {                // a good t < gg exists (CRT), and
+        bool ok = true;                    // x < (t+1)*n <= M while t < gg
+        for (u32 f = full; f; f &= f - 1) {
+            const OddDiv &P = L.pf[gf2f_ctz32(f)];
+            if (x * P.pinv <= P.plim) { ok = false; break; }
+        }
+        if (ok) break;
+        if (t == 63) return 2;
+        x += n;
+    }
+    *J = x; *vg = w; *gg_out = gg;
+    return 0;
+}
+
+// selftest: the lift against the round-4 formulas (extended Euclid) on
+// pseudo-random classes with gcd(u, M) > 1, half of them with gg | v.
+// bad[0] counts mismatches, bad[1] classes that joined a batch, bad[2]
+// classes skipped (gg does not divide v), bad[3] lifts with t > 0.
+__global__ void k_irreg_check(LogsParams L, u64 seed, u64 ntests,
+                              unsigned long long *bad) {
+    const u64 M = L.M;
+    const int d = L.d;
+    unsigned long long nb = 0, nj = 0, ns = 0, nt = 0;
+    u64 i = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    const u64 stride = (u64)gridDim.x * blockDim.x;
+    for (; i < ntests; i += stride) {
+        u64 z = seed + i * 0x9E3779B97F4A7C15ULL;
+        auto rnd = [&]() {                      // splitmix64
+            u64 x = (z += 0x9E3779B97F4A7C15ULL);
+            x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+            return x ^ (x >> 31);
+        };
+        u64 g0 = 1;                             // a random divisor of M
+        for (int k = 0; k < L.npf; k++) {
+            const u64 r = rnd();
+            for (int e = 0; e < L.pk[k] && ((r >> (8 * e)) & 3) == 0; e++)
+                g0 *= L.pf[k].p;
+        }
+        if (g0 == 1) g0 = L.pf[rnd() % L.npf].p;
+        if (g0 >= M) continue;
+        const u64 u = g0 * (1 + rnd() % (M / g0 - 1 > 0 ? M / g0 - 1 : 1));
+        if (u == 0 || u >= M) continue;
+        u64 v = rnd() % M;
+        if (rnd() & 1) v = v / g0 * g0;         // often divisible
+        const u64 j = gf2f_mulmod_m(u, L.rmodinv, d, M);
+        const u32 mask = logs_divmask_n(u, L, L.npf);
+        if (!mask) { nb++; continue; }          // g0 > 1 divides u: impossible
+        // reference: logs_irregular's arithmetic
+        u64 jg = j, vg = v, n = M, t = u, qq;
+        bool ref_skip = false;
+        for (int a = 0; a < L.npf && !ref_skip; a++)
+            for (int k = 0; k < L.pk[a]; k++) {
+                if (!odd_div_test(t, L.pf[a], &qq)) break;
+                t = qq;
+                if (!odd_div_test(vg, L.pf[a], &qq)) { ref_skip = true; break; }
+                vg = qq;
+                odd_div_test(jg, L.pf[a], &jg);
+                odd_div_test(n, L.pf[a], &n);
+            }
+        u64 J = 0, wg = 0, gg = 0;
+        const int st = logs_irreg_lift(u, j, v, mask, L, &J, &wg, &gg);
+        if (ref_skip) { ns++; if (st != 1) nb++; continue; }
+        if (st != 0) { nb++; continue; }
+        nj++;
+        const u64 ref = MULMOD(inv_mod(jg, n), vg, n);
+        const u64 nn = M * inv_2adic(gg);
+        const u64 Jinv = gf2f_powmod_m(J, L.lam_m1, d, M);
+        const u64 s = mod_divisor_m(gf2f_mulmod_m(wg, Jinv, d, M), nn, gg, d, M);
+        if (J >= M || gf2f_mulmod_m(J, Jinv, d, M) != 1 % M) nb++;   // a unit
+        else if (nn != n || wg != vg || s != ref) nb++;
+        else if (gg * mod_divisor_m(J, nn, gg, d, M) != j) nb++;    // j back
+        if (J != jg) nt++;
+    }
+    if (nb) atomicAdd(&bad[0], nb);
+    if (nj) atomicAdd(&bad[1], nj);
+    if (ns) atomicAdd(&bad[2], ns);
+    if (nt) atomicAdd(&bad[3], nt);
 }
 
 // round-2 kernel: everything after "u is a class representative, g^u = e"
@@ -848,7 +1070,8 @@ template <int D, int METHOD>
 __device__ __forceinline__ void logs_batch(const LogsParams &L,
                                            const TowerDev &tw,
                                            const fw *gpow2, u64 (&ub)[LB],
-                                           u64 (&vb)[LB], u64 (&tb)[LB], int n,
+                                           u64 (&vb)[LB], u64 (&tb)[LB],
+                                           u64 (&xb)[LB], int n,
                                            bool verify, ull *best,
                                            Heavy *heavy, unsigned *nheavy,
                                            unsigned *overflow, fw *P,
@@ -880,47 +1103,103 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
             }
         }
     } else {
-        bs_store<D>(X, vb);
-        for (int k = 0; k < n; k++) vb[k] = tower_log(vb[k], M, tw);
+        bs_store<D>(X, vb);                     // x = g^u + 1; logs below
     }
     if (L.check) {                              // selftest: log(g^u) == u?
-        for (int k = 0; k < n; k++) if (vb[k] != ub[k]) (*err)++;
+        for (int k = 0; k < n; k++) {
+            const u64 v = METHOD == LM_TOWER ? tower_log(vb[k], M, tw)
+                        : METHOD == LM_RR ? rr_log(vb[k], L.q, D, M, L.rr) : vb[k];
+            if (v != ub[k]) (*err)++;
+        }
         return;
     }
-    if (L.fault)                                // fault injection (tests)
-        for (int k = 0; k < n; k++) if (ub[k] % L.fault == 1) vb[k] ^= 1;
-    if (verify && vb[0] < M &&                  // spot check: g^v == g^u + 1
-        gf2f_antilog(vb[0], L.qlow, D, gpow2) !=
-        (gf2f_antilog(ub[0], L.qlow, D, gpow2) ^ 1))
-        vb[0] = ~0ULL;
-    // forward: tb[k] = product of the regular j's before k; ub[k] <- j
+    // forward (round 5: fused with the tower logs): tb[k] = product of the
+    // batch members before k; ub[k] <- J, the class's member (j itself for
+    // a regular class); vb[k] <- v, VB_IRREG | vg, or VB_SKIP.  Each
+    // iteration loads the next class's x and u first, and issues its T read
+    // before the work that does not depend on it: on an in-order GPU every
+    // first use of a pending load stalls the warp.
     u64 acc = 1;
     bool any = false;
+    u64 xn = vb[0], un = ub[0];
     for (int k = 0; k < n; k++) {
+        const u64 x = xn, u = un;
+        if (k + 1 < n) { xn = vb[k + 1]; un = ub[k + 1]; }
         tb[k] = acc;
-        if (vb[k] >= M) { (*err)++; continue; }  // inconsistent log
-        const u64 u = ub[k];
-        const u64 j = gf2f_mulmod_m(u, L.rmodinv, D, M);
-        ub[k] = j;
-        if (!logs_regular(u, L)) {               // rare: gcd(u, M) > 1
-            logs_irregular(u, j, vb[k], L, gpow2, best, heavy, nheavy,
-                           overflow, P, err);
-            vb[k] = ~0ULL;                       // done (not an error)
-            continue;
+        u64 v, lb = 0, tv = 0;
+        bool inK = false;
+        if (METHOD == LM_TOWER) {
+            u64 l;
+            const u64 pk = tower_coords(x, tw);
+            inK = !tower_split(pk, tw, &lb, &l);
+            if (inK) lb = tower_klog_cold(pk & tw.MK, tw);   // x in K*
+            else tv = tw.T[l];
+        } else if (METHOD == LM_RR) {                   // x = r/t, two reads
+            u64 rr_r;
+            u32 rr_t;
+            rr_split<D>(x, &rr_r, &rr_t);
+            lb = L.rr.L[rr_r];
+            tv = L.rr.L[rr_t];
+        } else {
+            v = x;                                      // PH: x is the log
         }
-        acc = gf2f_mulmod_m(acc, j, D, M);
+        const u64 j = gf2f_mulmod_m(u, L.rmodinv, D, M);
+        const u32 mask = logs_divmask<D>(u, L);
+        if (METHOD == LM_TOWER) {
+            const u64 h1 = tw.MK + 2;                   // log_g(h) = 2^m + 1
+            v = inK ? h1 * lb : h1 * lb + tv;
+            if (v >= M) v -= M;
+        } else if (METHOD == LM_RR) {
+            v = lb >= tv ? lb - tv : lb + M - tv;       // log r - log t
+        }
+        if (L.fault && u % L.fault == 1) v ^= 1;        // fault injection (tests)
+        if (k == 0 && verify && v < M && logs_verify_bad(v, u, L.qlow, D, gpow2))
+            v = ~0ULL;                                  // spot check failed
+        if (v >= M) { (*err)++; vb[k] = VB_SKIP; continue; }   // inconsistent log
+        u64 J = j;
+        if (mask) {                                     // gcd(u, M) > 1
+            u64 vg = 0, gg = 0;
+            const int st = L.irreg_r4 ? 2 : logs_irreg_lift(u, j, v, mask, L,
+                                                            &J, &vg, &gg);
+            if (st) {                                   // 1: no s at all
+                if (st == 2)
+                    logs_irregular(u, j, v, L, gpow2, best, heavy, nheavy,
+                                   overflow, P, err);
+                vb[k] = VB_SKIP;
+                continue;
+            }
+            vb[k] = VB_IRREG | vg;
+            xb[k] = gg;
+        } else {
+            vb[k] = v;
+        }
+        ub[k] = J;
+        acc = gf2f_mulmod_m(acc, J, D, M);
         any = true;
     }
     if (!any) return;
-    u64 inv = gf2f_powmod_m(acc, L.lam_m1, D, M);   // (prod j)^-1
+    u64 inv = gf2f_powmod_m(acc, L.lam_m1, D, M);   // (prod J)^-1
+    // backward: J^-1 = inv * tb[k], then inv <- inv * J (Montgomery)
+    u64 vn = vb[n - 1], Jn = ub[n - 1], tn = tb[n - 1], gn = xb[n - 1];
     for (int k = n - 1; k >= 0; k--) {
-        if (vb[k] >= M) continue;
-        const u64 j = ub[k];
-        const u64 jinv = gf2f_mulmod_m(inv, tb[k], D, M);
-        inv = gf2f_mulmod_m(inv, j, D, M);
-        const u64 s0 = gf2f_mulmod_m(vb[k], jinv, D, M);
-        logs_mark(s0 == 0 ? M : s0, M, j, L, gpow2, best, heavy, nheavy,
-                  overflow, P, err);
+        const u64 vv = vn, J = Jn, t = tn, gg = gn;
+        if (k > 0) { vn = vb[k - 1]; Jn = ub[k - 1]; tn = tb[k - 1]; gn = xb[k - 1]; }
+        if (vv == VB_SKIP) continue;
+        const u64 jinv = gf2f_mulmod_m(inv, t, D, M);
+        inv = gf2f_mulmod_m(inv, J, D, M);
+        if (!(vv & VB_IRREG)) {
+            const u64 s0 = gf2f_mulmod_m(vv, jinv, D, M);
+            logs_mark(s0 == 0 ? M : s0, M, J, L, gpow2, best, heavy, nheavy,
+                      overflow, P, err);
+        } else {                                    // modulus n = M/gg
+            const u64 nn = M * inv_2adic(gg);
+            const u64 S = gf2f_mulmod_m(vv & ~VB_IRREG, jinv, D, M);
+            u64 s = mod_divisor_m(S, nn, gg, D, M);  // vg * jg^-1 mod n
+            if (s == 0) s = nn;
+            if (s <= L.smax)                         // j = gg * (J mod n)
+                logs_mark(s, nn, gg * mod_divisor_m(J, nn, gg, D, M), L,
+                          gpow2, best, heavy, nheavy, overflow, P, err);
+        }
     }
 }
 
@@ -957,7 +1236,7 @@ __device__ __forceinline__ void tower_stage_shared(TowerDev &t,
 // tables in shared memory), PH kernels 128-thread blocks (up to ~250
 // registers).
 template <int D, int METHOD>
-__global__ void __launch_bounds__(METHOD == LM_TOWER ? 512 : 128, 1)
+__global__ void __launch_bounds__(METHOD == LM_PH ? 128 : 512, 1)
 k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
              u64 run, ull *best, Heavy *heavy,
              unsigned *nheavy, unsigned *overflow,
@@ -974,7 +1253,8 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
     const u64 nruns = (uhi - ulo + run - 1) / run;
     u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
     const u64 stride = (u64)gridDim.x * blockDim.x;
-    u64 ub[LB], vb[LB], tb[LB];
+    u64 ub[LB], vb[LB], tb[LB], xb[LB];
+    for (int k = 0; k < LB; k++) xb[k] = 1;     // read ahead before written
     fw P[64];
     unsigned long long my_surv = 0, my_err = 0;
     unsigned nb = 0;
@@ -998,7 +1278,7 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
         }
         if (n == 0) break;
         my_surv += n;
-        logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, n, (nb++ & 7) == 0,
+        logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, (nb++ & 7) == 0,
                               best, heavy, nheavy, overflow, P, &my_err);
     }
     if (my_surv) atomicAdd(nsurv, my_surv);
@@ -1135,6 +1415,7 @@ struct GpuCtx {
     uint16_t *d_LKn = nullptr;
 #if defined(WIDE_FIELD)
     PHSlot *d_slots[4] = {nullptr, nullptr, nullptr, nullptr};
+    u64 *d_rrL = nullptr;                // RR: logs of all small polynomials
 #endif
 };
 static std::vector<GpuCtx> g_gpus;
@@ -1202,12 +1483,74 @@ struct CkptCtx {
     volatile sig_atomic_t stop = 0;  // set by signal handler
     // test hook: force a stop after this many completed buckets (0 = off)
     long     test_stop_after = 0, test_buckets_done = 0;
+    // run identity recorded in v3 checkpoints (round 5): what an automatic
+    // resume must match besides r, smax and the target depth
+    int      min_depth = 2;
+    bool     gap49 = false;
 };
 static CkptCtx g_ckpt;
 
 extern "C" void ckpt_signal_handler(int) { g_ckpt.stop = 1; }
 
 static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','2'};
+// header word counts and flags of the v3 format (v2: 6 + 6 words)
+#define CKPT3_N32 8
+#define CKPT3_N64 8
+#define CKPT_F_DELTA 1u
+#define CKPT_F_GAP49 2u
+
+// A checkpoint header, either version (v2 records the seed only for a
+// delta payload, and no min_depth).
+struct CkptInfo {
+    int version = 0;
+    int snap_d = 0, next_bucket = 0, nbuckets_enc = 0;
+    int seed_kind = 0;               // 0 none, 1 --load image, 2 survivors list
+    std::string seed_path;
+    u64 seed_hash = 0;
+    int min_depth = -1;              // -1: not recorded (v2)
+    bool delta = false, gap49 = false;
+    u64 r = 0, smax = 0, depth = 0, period_s = 0, ndelta = 0, written = 0;
+};
+
+// Read just the header (and the seed path) of a checkpoint; *f is left at
+// the payload when f_out is given.
+static bool ckpt_peek(const char *path, CkptInfo &ci, FILE **f_out = nullptr) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    char magic[8];
+    u32 h32[CKPT3_N32]; u64 h64[CKPT3_N64];
+    bool ok = fread(magic, 1, 8, f) == 8 && memcmp(magic, CKPT_MAGIC, 8) == 0
+           && fread(h32, sizeof(u32), 1, f) == 1;
+    if (ok) {
+        ci.version = (int)h32[0];
+        const int n32 = ci.version == 2 ? 6 : CKPT3_N32;
+        const int n64 = ci.version == 2 ? 6 : CKPT3_N64;
+        ok = (ci.version == 2 || ci.version == 3)
+          && fread(h32 + 1, sizeof(u32), n32 - 1, f) == (size_t)(n32 - 1)
+          && fread(h64, sizeof(u64), n64, f) == (size_t)n64;
+        if (ok) {
+            ci.snap_d = (int)h32[1]; ci.next_bucket = (int)h32[2];
+            ci.nbuckets_enc = (int)h32[3]; ci.seed_kind = (int)h32[4];
+            ci.r = h64[0]; ci.smax = h64[1]; ci.depth = h64[2];
+            ci.period_s = h64[3]; ci.seed_hash = h64[4]; ci.ndelta = h64[5];
+            if (ci.version == 2) {
+                ci.delta = ci.seed_kind != 0;    // v2: a seed only for deltas
+            } else {
+                ci.min_depth = (int)h32[6];
+                ci.delta = (h32[7] & CKPT_F_DELTA) != 0;
+                ci.gap49 = (h32[7] & CKPT_F_GAP49) != 0;
+                ci.written = h64[6];
+            }
+            const u32 bplen = h32[5];
+            ci.seed_path.assign(bplen, '\0');
+            ok = bplen <= 4096 &&
+                 (!bplen || fread(&ci.seed_path[0], 1, bplen, f) == bplen);
+        }
+    }
+    if (!ok || !f_out) fclose(f);
+    else *f_out = f;
+    return ok;
+}
 
 // The checkpoint's bucket-count field also records WHICH mid-degree method
 // wrote it (bits 24+: 0 = buckets, 1 = tower logs, 2 = Pohlig-Hellman logs;
@@ -1281,17 +1624,25 @@ static void ckpt_write() {
     snprintf(tmp, sizeof tmp, "%s.tmp", g_ckpt.path);
     FILE *f = fopen(tmp, "wb");
     if (!f) { perror(tmp); return; }
-    u32 bplen = use_delta ? (u32)g_ckpt.base_path.size() : 0;
-    u32 hdr32[6] = { (u32)2 /*version*/, (u32)g_ckpt.snap_d,
+    // v3 (round 5): the seed identity (kind, path, hash of the --load /
+    // --load-survivors image) is recorded even for a full image, with the
+    // run's min_depth, so an automatic resume can tell its own checkpoint
+    // from another run's.  The payload is a delta against the seed if
+    // CKPT_F_DELTA.
+    u32 bplen = g_ckpt.base_kind ? (u32)g_ckpt.base_path.size() : 0;
+    u32 hdr32[CKPT3_N32] = { (u32)3 /*version*/, (u32)g_ckpt.snap_d,
                      (u32)g_ckpt.snap_next_bucket, (u32)g_ckpt.snap_nbuckets,
-                     (u32)(use_delta ? g_ckpt.base_kind : 0), bplen };
+                     (u32)g_ckpt.base_kind, bplen, (u32)g_ckpt.min_depth,
+                     (u32)((use_delta ? CKPT_F_DELTA : 0) |
+                           (g_ckpt.gap49 ? CKPT_F_GAP49 : 0)) };
     u64 ndelta = use_delta ? (u64)(dsig.size() / 2) : 0;
-    u64 hdr64[6] = { g_ckpt.r, g_ckpt.smax, (u64)g_ckpt.depth,
+    u64 hdr64[CKPT3_N64] = { g_ckpt.r, g_ckpt.smax, (u64)g_ckpt.depth,
                      (u64)(g_ckpt.period_s + 0.5),
-                     use_delta ? g_ckpt.base_hash : 0, ndelta };
+                     g_ckpt.base_kind ? g_ckpt.base_hash : 0, ndelta,
+                     (u64)time(nullptr), 0 };
     bool ok = fwrite(CKPT_MAGIC, 1, 8, f) == 8
-           && fwrite(hdr32, sizeof(u32), 6, f) == 6
-           && fwrite(hdr64, sizeof(u64), 6, f) == 6;
+           && fwrite(hdr32, sizeof(u32), CKPT3_N32, f) == CKPT3_N32
+           && fwrite(hdr64, sizeof(u64), CKPT3_N64, f) == CKPT3_N64;
     if (ok && bplen)
         ok = fwrite(g_ckpt.base_path.data(), 1, bplen, f) == bplen;
     if (ok) {
@@ -1332,8 +1683,8 @@ static bool ckpt_stop_requested() { return g_ckpt.stop != 0; }
 // Persist and exit cleanly after a stop signal (or test stop).
 static void ckpt_stop_and_exit() {
     ckpt_write();
-    fprintf(stderr, "stopping on request; resume with "
-                    "--resume %s\n", g_ckpt.path ? g_ckpt.path : "<file>");
+    fprintf(stderr, "stopping on request; run the same command again to "
+                    "continue (or --resume %s)\n", g_ckpt.path ? g_ckpt.path : "<file>");
     exit(0);
 }
 
@@ -1390,33 +1741,22 @@ static bool ckpt_read_one(const char *path, u64 r, u64 smax,
                           std::vector<ull> &best, int &resume_d,
                           int &resume_bucket, int &resume_nbuckets,
                           double &stored_period_s) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    char magic[8];
-    u32 hdr32[6]; u64 hdr64[6];
-    if (fread(magic, 1, 8, f) != 8 || memcmp(magic, CKPT_MAGIC, 8) != 0) {
-        fprintf(stderr, "%s: not a v2 checkpoint file\n", path);
-        fclose(f); return false;
+    CkptInfo ci;
+    FILE *f = nullptr;
+    if (!ckpt_peek(path, ci, &f)) {
+        fprintf(stderr, "%s: not a readable v2/v3 checkpoint file\n", path);
+        return false;
     }
-    if (fread(hdr32, sizeof(u32), 6, f) != 6 ||
-        fread(hdr64, sizeof(u64), 6, f) != 6) {
-        fprintf(stderr, "%s: truncated header\n", path); fclose(f); return false;
-    }
-    if (hdr64[0] != r || hdr64[1] != smax) {
+    if (ci.r != r || ci.smax != smax) {
         fprintf(stderr, "%s: r/smax (%" PRIu64 "/%" PRIu64 ") do not match this "
-                "run (%" PRIu64 "/%" PRIu64 ")\n", path, hdr64[0], hdr64[1],
-                r, smax);
+                "run (%" PRIu64 "/%" PRIu64 ")\n", path, ci.r, ci.smax, r, smax);
         fclose(f); return false;
     }
-    int  base_kind = (int)hdr32[4];              // 0 none, 1 found.bin, 2 survivors
-    bool is_delta = (base_kind != 0);
-    u32  bplen    = hdr32[5];
-    stored_period_s = (double)hdr64[3];
-    std::string bpath(bplen, '\0');
-    if (bplen && fread(&bpath[0], 1, bplen, f) != bplen) {
-        fprintf(stderr, "%s: truncated baseline path\n", path);
-        fclose(f); return false;
-    }
+    const int base_kind = ci.seed_kind;          // 0 none, 1 found.bin, 2 survivors
+    const bool is_delta = ci.delta;
+    const std::string &bpath = ci.seed_path;
+    u64 hdr64[6] = { ci.r, ci.smax, ci.depth, ci.period_s, ci.seed_hash, ci.ndelta };
+    stored_period_s = (double)ci.period_s;
     if (is_delta) {
         bool okbase = (base_kind == 1)
             ? read_found_image(bpath.c_str(), smax, best)
@@ -1459,11 +1799,19 @@ static bool ckpt_read_one(const char *path, u64 r, u64 smax,
         if (fread(best.data() + 1, sizeof(ull), smax, f) != smax) {
             fprintf(stderr, "%s: short read\n", path); fclose(f); return false;
         }
+        if (base_kind) {          // v3 full image: keep the seed identity
+            g_ckpt.base_path = bpath;
+            g_ckpt.base_hash = ci.seed_hash;
+            g_ckpt.base_kind = base_kind;
+            g_ckpt.base.clear();
+        }
     }
     fclose(f);
-    resume_d        = (int)hdr32[1];
-    resume_bucket   = (int)hdr32[2];
-    resume_nbuckets = (int)hdr32[3];
+    if (ci.min_depth >= 2) g_ckpt.min_depth = ci.min_depth;
+    if (ci.gap49) g_ckpt.gap49 = true;
+    resume_d        = ci.snap_d;
+    resume_bucket   = ci.next_bucket;
+    resume_nbuckets = ci.nbuckets_enc;
     // normalize: a completed degree resumes at the next one
     if (resume_bucket >= ckpt_count(resume_nbuckets) &&
         ckpt_count(resume_nbuckets) > 0) {
@@ -1495,6 +1843,126 @@ static bool ckpt_read(const char *path, u64 r, u64 smax,
     }
     fprintf(stderr, "--resume %s: no usable checkpoint generation found\n", path);
     return false;
+}
+
+// ---- automatic checkpointing (round 5) ----
+// Every run checkpoints to <out_prefix>.ckpt (or --checkpoint <file>) every
+// CKPT_DEFAULT_MINS minutes and on SIGTERM/SIGINT, unless --no-checkpoint.
+// Starting a run whose checkpoint file exists resumes it automatically when
+// the file belongs to the same run -- same r, smax, depth, min-depth and
+// seed (--load / --load-survivors content) -- and refuses otherwise, so a
+// changed command line never silently mixes two runs.  --fresh sets an old
+// checkpoint aside (*.old) and starts over.
+#define CKPT_DEFAULT_MINS 15
+
+// The newest generation of `path` that has a readable header: 1 (ci, gen
+// filled), 0 if no generation exists, -1 if files exist but none is readable.
+static int ckpt_find(const char *path, CkptInfo &ci, std::string &gen) {
+    bool any = false;
+    char g[1100];
+    for (int i = 0; i < 8; i++) {
+        if (i == 0) snprintf(g, sizeof g, "%s", path);
+        else        snprintf(g, sizeof g, "%s.%d", path, i);
+        if (access(g, F_OK) != 0) { if (i == 0) continue; else break; }
+        any = true;
+        if (ckpt_peek(g, ci)) { gen = g; return 1; }
+    }
+    return any ? -1 : 0;
+}
+
+// Why the checkpoint is NOT this run's (empty string: it is).
+static std::string ckpt_mismatch(const CkptInfo &ci, u64 r, u64 smax,
+                                 int depth, int min_depth, int seed_kind,
+                                 u64 seed_hash) {
+    char b[512];
+    if (ci.r != r || ci.smax != smax) {
+        snprintf(b, sizeof b, "it is for r=%" PRIu64 " smax=%" PRIu64 ", this run "
+                 "has r=%" PRIu64 " smax=%" PRIu64, ci.r, ci.smax, r, smax);
+        return b;
+    }
+    if (ci.depth != (u64)depth) {
+        snprintf(b, sizeof b, "it was written by a run to depth %" PRIu64
+                 ", this run goes to depth %d", ci.depth, depth);
+        return b;
+    }
+    if (ci.min_depth >= 2 && ci.min_depth != min_depth) {
+        snprintf(b, sizeof b, "it was written by a run with --min-depth %d, "
+                 "this run has %d", ci.min_depth, min_depth);
+        return b;
+    }
+    if (ci.min_depth < 2 && ci.snap_d < min_depth) {    // v2: no min-depth record
+        snprintf(b, sizeof b, "it stopped at degree %d, below this run's "
+                 "--min-depth %d", ci.snap_d, min_depth);
+        return b;
+    }
+    const bool recorded = ci.version >= 3 || ci.delta;
+    if (!recorded && seed_kind) {
+        return "it is an older-format full image with no record of the "
+               "--load/--load-survivors file it started from";
+    }
+    if (recorded && (ci.seed_kind != seed_kind ||
+                     (seed_kind && ci.seed_hash != seed_hash))) {
+        const char *was = ci.seed_kind == 1 ? "--load " : ci.seed_kind == 2
+                          ? "--load-survivors " : "no seed file";
+        snprintf(b, sizeof b, "it started from %s%s, this run from %s", was,
+                 ci.seed_kind ? ci.seed_path.c_str() : "",
+                 seed_kind == 0 ? "no seed file"
+                 : ci.seed_kind == seed_kind ? "a file with different contents"
+                                             : "a different kind of seed file");
+        return b;
+    }
+    return "";
+}
+
+static std::string ckpt_describe(const CkptInfo &ci) {
+    char b[256], when[64] = "";
+    if (ci.written) {
+        time_t t = (time_t)ci.written;
+        struct tm tmv;
+        localtime_r(&t, &tmv);
+        strftime(when, sizeof when, "written %Y-%m-%d %H:%M, ", &tmv);
+    }
+    snprintf(b, sizeof b, "%sdegree %d, %s %d of %d", when, ci.snap_d,
+             ckpt_method(ci.nbuckets_enc) ? "chunk" : "bucket", ci.next_bucket,
+             ckpt_count(ci.nbuckets_enc));
+    return b;
+}
+
+// --fresh: move every generation of `path` to <name>.old
+static void ckpt_set_aside(const char *path) {
+    char g[1100], o[1110];
+    int n = 0;
+    for (int i = 0; i < 8; i++) {
+        if (i == 0) snprintf(g, sizeof g, "%s", path);
+        else        snprintf(g, sizeof g, "%s.%d", path, i);
+        if (access(g, F_OK) != 0) continue;
+        snprintf(o, sizeof o, "%s.old", g);
+        if (rename(g, o) == 0) n++;
+    }
+    if (n) fprintf(stderr, "--fresh: set %d earlier checkpoint file%s aside as "
+                   "%s*.old\n", n, n == 1 ? "" : "s", path);
+}
+
+// One run per checkpoint: an flock'ed <checkpoint>.lock, unlinked at exit.
+static std::string g_lock_path;
+static void ckpt_unlock_atexit() { if (!g_lock_path.empty()) unlink(g_lock_path.c_str()); }
+static bool ckpt_lock(const char *path) {
+    std::string lp = std::string(path) + ".lock";
+    int fd = open(lp.c_str(), O_CREAT | O_RDWR, 0644);
+    if (fd < 0) {
+        fprintf(stderr, "note: cannot create %s (no protection against a "
+                "second run on the same checkpoint)\n", lp.c_str());
+        return true;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        fprintf(stderr, "another run is using checkpoint %s (lock %s held); "
+                "not starting a second one\n", path, lp.c_str());
+        close(fd);
+        return false;
+    }
+    g_lock_path = lp;                            // fd stays open: lock held
+    atexit(ckpt_unlock_atexit);
+    return true;
 }
 
 // Poll the default stream to completion, checking the stop flag every ~100 ms
@@ -1802,10 +2270,14 @@ static void sieve_degree_gpu_lowmem(int d, u64 r, u64 smax, int nbuckets,
 
 // Method override (COARSE_METHOD env var or --selftest-logs):
 enum { FM_AUTO = 0, FM_TOWER = 1, FM_PH = 2, FM_LOGS = 3, FM_BUCKETS = 4,
-       FM_DENSE = 5 };
+       FM_DENSE = 5, FM_RR = 6 };          // FM_RR: RR for odd d, tower for even
 static int g_force_method = FM_AUTO;
 static bool g_logs_selfcheck = false;    // selftest: verify every log on device
 static bool g_logs_r2 = false;           // COARSE_LOGS_KERNEL=r2: round-2 kernel
+static bool g_irreg_r4 = false;          // COARSE_IRREG=r4: round-4 irregular path
+static bool g_irreg_fixed = false;       // COARSE_IRREG given: do not tune it
+static bool g_tune = true;               // --no-tune / COARSE_TUNE=0
+static int g_tune_min = 40;              // COARSE_TUNE_MIN: least degree tuned
 static int g_tower_sub = -1;             // COARSE_TOWER_SUBN: -1 auto, 0 classic, n
 
 #if defined(WIDE_FIELD)
@@ -1843,8 +2315,12 @@ static void logs_geometry(int d, u64 &total, u64 &run, u64 &chunk,
 struct LogsPlan {
     int method = LM_NONE;
     bool batched = false;                       // round-3 (batched) kernel
-    PHHost ph;                                  // PH parameters
+    PHHost ph;                                  // PH parameters (if ph_ok)
     size_t bytes = 0;                           // device table bytes
+    // odd d (round 5): both engines are planned, the tuner may pick either
+    bool ph_ok = false, rr_ok = false;
+    PHHost ph_fb;                               // RR: PH plan of the factor-
+    size_t rr_bytes = 0;                        //   base logs; the RR table
 };
 
 // The round-3 kernel for (d, method), or nullptr: Pohlig-Hellman for odd d
@@ -1855,20 +2331,23 @@ typedef void (*LogsBatchFn)(LogsParams, const fw *, u64, u64, u64, ull *,
                             unsigned long long *, unsigned long long *);
 static LogsBatchFn logs_batch_fn(int d, int method) {
 #define LBF_PH(D) case D: return method == LM_PH ? k_logs_batch<D, LM_PH> : nullptr;
+#define LBF_PR(D) case D: return method == LM_PH ? k_logs_batch<D, LM_PH>     \
+                               : method == LM_RR ? k_logs_batch<D, LM_RR> : nullptr;
 #define LBF_TW(D) case D: return method == LM_TOWER ? k_logs_batch<D, LM_TOWER> : nullptr;
     switch (d) {
-    LBF_PH(2)  LBF_PH(3)  LBF_TW(4)  LBF_PH(5)  LBF_TW(6)  LBF_PH(7)
-    LBF_TW(8)  LBF_PH(9)  LBF_TW(10) LBF_PH(11) LBF_TW(12) LBF_PH(13)
-    LBF_TW(14) LBF_PH(15) LBF_TW(16) LBF_PH(17) LBF_TW(18) LBF_PH(19)
-    LBF_TW(20) LBF_PH(21) LBF_TW(22) LBF_PH(23) LBF_TW(24) LBF_PH(25)
-    LBF_TW(26) LBF_PH(27) LBF_TW(28) LBF_PH(29) LBF_TW(30) LBF_PH(31)
-    LBF_TW(32) LBF_PH(33) LBF_TW(34) LBF_PH(35) LBF_TW(36) LBF_PH(37)
-    LBF_TW(38) LBF_PH(39) LBF_TW(40) LBF_PH(41) LBF_TW(42) LBF_PH(43)
-    LBF_TW(44) LBF_PH(45) LBF_TW(46) LBF_PH(47) LBF_TW(48) LBF_PH(49)
-    LBF_TW(50) LBF_PH(51) LBF_TW(52) LBF_PH(53) LBF_TW(54) LBF_PH(55)
+    LBF_PH(2)  LBF_PH(3)  LBF_TW(4)  LBF_PR(5)  LBF_TW(6)  LBF_PR(7)
+    LBF_TW(8)  LBF_PR(9)  LBF_TW(10) LBF_PR(11) LBF_TW(12) LBF_PR(13)
+    LBF_TW(14) LBF_PR(15) LBF_TW(16) LBF_PR(17) LBF_TW(18) LBF_PR(19)
+    LBF_TW(20) LBF_PR(21) LBF_TW(22) LBF_PR(23) LBF_TW(24) LBF_PR(25)
+    LBF_TW(26) LBF_PR(27) LBF_TW(28) LBF_PR(29) LBF_TW(30) LBF_PR(31)
+    LBF_TW(32) LBF_PR(33) LBF_TW(34) LBF_PR(35) LBF_TW(36) LBF_PR(37)
+    LBF_TW(38) LBF_PR(39) LBF_TW(40) LBF_PR(41) LBF_TW(42) LBF_PR(43)
+    LBF_TW(44) LBF_PR(45) LBF_TW(46) LBF_PR(47) LBF_TW(48) LBF_PR(49)
+    LBF_TW(50) LBF_PR(51) LBF_TW(52) LBF_PR(53) LBF_TW(54) LBF_PR(55)
     default: break;
     }
 #undef LBF_PH
+#undef LBF_PR
 #undef LBF_TW
     return nullptr;
 }
@@ -1917,11 +2396,46 @@ static bool logs_plan(int d, u64 q, int want, size_t budget, LogsPlan &pl) {
         if (want == FM_TOWER) return false;
     }
     const bool batched = !g_logs_r2 && qtab && logs_batch_fn(d, LM_PH);
-    if (!ph_plan_host(d, q, budget, pl.ph,
-                      batched ? kPHCostBitsliced : kPHCostRound2)) return false;
-    pl.method = LM_PH;
-    pl.batched = batched;
-    pl.bytes = pl.ph.table_bytes;
+    pl.ph_ok = ph_plan_host(d, q, budget, pl.ph,
+                            batched ? kPHCostBitsliced : kPHCostRound2);
+    // RR (round 5, batched kernel only): the table of 2^(dh+1) logs, and a
+    // PH plan for the factor-base logs -- the sieve's own if it has one,
+    // else (d=49) one with up to 2^22 giant steps per log.  Test hook:
+    // COARSE_RR_FB_BUDGET_MB=m always plans the factor-base logs separately
+    // with tables of at most m MB (many giant steps: d=49's path at small d).
+    if (want != FM_PH && !g_logs_r2 && qtab && logs_batch_fn(d, LM_RR)) {
+        const int dh = d / 2;
+        const size_t tb = (size_t)8 << (dh + 1);
+        const char *e = getenv("COARSE_RR_FB_BUDGET_MB");
+        if (tb <= budget) {
+            pl.rr_bytes = tb;
+            if (pl.ph_ok && !e) {
+                pl.ph_fb = pl.ph;
+                pl.rr_ok = true;
+            } else {
+                // leave room for the factor-base arrays (~2^(dh+1)/dh
+                // elements, 12 bytes each)
+                const size_t fbb = (size_t)(1.2 * (double)((u64)1 << (dh + 1)) / dh) * 16;
+                size_t b = budget > fbb ? budget - fbb : 0;
+                if (e && ((size_t)strtoull(e, nullptr, 10) << 20) < b)
+                    b = (size_t)strtoull(e, nullptr, 10) << 20;
+                pl.rr_ok = ph_plan_host(d, q, b, pl.ph_fb, kPHCostScalar,
+                                        (u64)1 << 22);
+            }
+        }
+    }
+    if (want == FM_RR && (pl.rr_ok || d >= 5)) {   // (d < 5: no RR kernel)
+        if (!pl.rr_ok) return false;
+        pl.method = LM_RR;
+    } else if (pl.ph_ok) {
+        pl.method = LM_PH;
+    } else if (pl.rr_ok && want != FM_PH) {
+        pl.method = LM_RR;                      // d = 49: the only engine
+    } else {
+        return false;
+    }
+    pl.batched = pl.method == LM_RR ? true : batched;
+    pl.bytes = pl.method == LM_RR ? pl.rr_bytes : pl.ph.table_bytes;
     return true;
 }
 
@@ -1951,6 +2465,12 @@ static LogsParams logs_params_base(int d, u64 r, u64 smax, u64 q, int method) {
         lam = lam / gcd_u64(lam, ph) * ph;
     }
     L.lam_m1 = lam - 1;
+    if (L.npf != gf2_npf(d)) {                  // the kernels' loop bounds
+        fprintf(stderr, "d=%d: %d primes in 2^d-1, table says %d -- internal "
+                "error\n", d, L.npf, gf2_npf(d));
+        exit(1);
+    }
+    L.irreg_r4 = g_irreg_r4;
     for (u64 p : factor_u64((u64)d)) {
         int e = d / (int)p;
         L.sub[L.nsub++] = odd_div_make(L.M / (((u64)1 << e) - 1));
@@ -1968,9 +2488,21 @@ static u64 logs_run_for(u64 work) {             // ~2^16 threads per launch
 // is computed on the first device and copied to the others via `Th`.
 static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
                               const TowerHost &W, std::vector<u64> &Th,
-                              LogsParams &L) {
+                              LogsParams &L,
+                              const std::vector<u64> *rrL = nullptr) {
     const u64 M = L.M;
     int blocks, threads;
+    if (pl.method == LM_RR) {                   // the table built by the host
+        if (!rrL || rrL->size() != ((size_t)2 << (d / 2))) {
+            fprintf(stderr, "d=%d: RR table missing -- internal error\n", d);
+            exit(1);
+        }
+        CUCHK(cudaMalloc(&G.d_rrL, rrL->size() * sizeof(u64)));
+        CUCHK(cudaMemcpy(G.d_rrL, rrL->data(), rrL->size() * sizeof(u64),
+                         cudaMemcpyHostToDevice));
+        L.rr = RRDev{G.d_rrL, d / 2};
+        return;
+    }
     if (pl.method == LM_TOWER) {
         CUCHK(cudaMalloc(&G.d_btab, W.btab.size() * sizeof(u64)));
         CUCHK(cudaMemcpy(G.d_btab, W.btab.data(), W.btab.size() * sizeof(u64),
@@ -2054,8 +2586,9 @@ static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
 
 static void logs_free_device(GpuCtx &G) {
     cudaFree(G.d_btab); cudaFree(G.d_LK); cudaFree(G.d_T);
-    cudaFree(G.d_LKn); cudaFree(G.d_TP);
+    cudaFree(G.d_LKn); cudaFree(G.d_TP); cudaFree(G.d_rrL);
     G.d_btab = G.d_T = nullptr; G.d_LK = G.d_TP = nullptr; G.d_LKn = nullptr;
+    G.d_rrL = nullptr;
     for (int i = 0; i < 4; i++) {
         cudaFree(G.d_slots[i]);
         G.d_slots[i] = nullptr;
@@ -2092,6 +2625,208 @@ static void logs_batch_dims(LogsBatchFn kfn, u64 nruns, int method,
     blocks = (int)(b ? b : 1);
 }
 
+// ---------------------------------------------------------------------------
+// RR table (round 5; the method is described in gf2_dlog.h): the logs of the
+// irreducible polynomials of degree <= dh = d/2 by Pohlig-Hellman on GPU 0
+// (plan pl.ph_fb), then all 2^(dh+1) logs by multiplicativity on the host.
+// For d=49 the PH plan needs up to ~8,000-33,000 giant steps per log
+// (2^49-1 = 127 * 4432676798593; the count depends on how large a baby-step
+// table fits), ~2.4e10 for the 1.47M factor-base logs on an 8 GB card --
+// random reads of a 4 GB table, so a minute or two by my estimate.  The
+// table does not depend on r; a build that took over two minutes is cached
+// in coarse_rr_d<d>.tbl (COARSE_RR_DIR=dir puts the files elsewhere).  Every factor-base log is verified (g^log == f) on the
+// device, a sample of the table on the host.  Launches are kept near
+// 0.1 s (a display GPU's watchdog) and a stop request is honored between
+// them.
+
+// one log per factor-base element, with work stealing: a lane that is done
+// takes the next element, so logs of very different cost (0..G giant
+// steps) keep every lane busy
+__global__ void k_rr_fblogs(LogsParams L, const fw *gpow2, const u32 *fb,
+                            u64 *out, u64 lo, u64 hi,
+                            unsigned long long *next,
+                            unsigned long long *nerr) {
+    unsigned long long bad = 0;
+    for (;;) {
+        const u64 i = lo + atomicAdd(next, 1ULL);
+        if (i >= hi) break;
+        const u64 f = fb[i];
+        const u64 v = ph_log(f, L.M, L.d, L.qlow, L.ph);
+        if (v >= L.M || gf2f_antilog(v, L.qlow, L.d, gpow2) != f) { bad++; out[i] = 0; }
+        else out[i] = v;
+    }
+    if (bad) atomicAdd(nerr, bad);
+}
+
+static bool g_rr_nocache = false;        // selftests: always build afresh
+
+static std::string rr_cache_path(int d) {
+    const char *dir = getenv("COARSE_RR_DIR");
+    char b[64];
+    snprintf(b, sizeof b, "coarse_rr_d%d.tbl", d);
+    return std::string(dir ? dir : ".") + "/" + b;
+}
+
+static const char RR_MAGIC[8] = {'G','F','2','R','R','T','B','1'};
+
+// a sample of the table, checked on the host: g^L[P] == P (bit-serial
+// arithmetic, independent of the device code)
+static bool rr_table_spotcheck(int d, u64 q, const std::vector<u64> &L,
+                               int samples) {
+    u64 z = 0x2545F4914F6CDD1DULL ^ (u64)d;
+    for (int i = 0; i < samples; i++) {
+        z ^= z << 13; z ^= z >> 7; z ^= z << 17;
+        const u64 P = 1 + z % (L.size() - 1);
+        if (gf_pow(2, L[P], q, d) != P) return false;
+    }
+    return true;
+}
+
+static bool rr_cache_load(int d, u64 q, std::vector<u64> &L) {
+    if (g_rr_nocache) return false;
+    const std::string path = rr_cache_path(d);
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char magic[8];
+    u64 h[5];
+    const u64 n = (u64)2 << (d / 2);
+    bool ok = fread(magic, 1, 8, f) == 8 && !memcmp(magic, RR_MAGIC, 8) &&
+              fread(h, sizeof(u64), 5, f) == 5 && h[0] == (u64)d && h[1] == q &&
+              h[2] == n;
+    if (ok) {
+        L.resize(n);
+        ok = fread(L.data(), sizeof(u64), n, f) == n &&
+             ckpt_hash((const ull *)L.data(), n) == h[3] &&
+             rr_table_spotcheck(d, q, L, 4096);
+    }
+    fclose(f);
+    if (!ok) {
+        fprintf(stderr, "  [%s: not a valid RR table for d=%d; rebuilding]\n",
+                path.c_str(), d);
+        L.clear();
+        return false;
+    }
+    fprintf(stderr, "  [RR table for d=%d loaded from %s]\n", d, path.c_str());
+    return true;
+}
+
+static void rr_cache_save(int d, u64 q, const std::vector<u64> &L) {
+    const std::string path = rr_cache_path(d), tmp = path + ".tmp";
+    FILE *f = fopen(tmp.c_str(), "wb");
+    if (!f) { perror(tmp.c_str()); return; }
+    u64 h[5] = {(u64)d, q, (u64)L.size(), ckpt_hash((const ull *)L.data(), L.size()), 0};
+    bool ok = fwrite(RR_MAGIC, 1, 8, f) == 8 && fwrite(h, sizeof(u64), 5, f) == 5 &&
+              fwrite(L.data(), sizeof(u64), L.size(), f) == L.size();
+    if (fflush(f) != 0) ok = false;
+    fclose(f);
+    if (!ok || rename(tmp.c_str(), path.c_str()) != 0) {
+        fprintf(stderr, "  [could not save the RR table to %s]\n", path.c_str());
+        remove(tmp.c_str());
+        return;
+    }
+    fprintf(stderr, "  [RR table saved to %s (%.0f MB); later runs at d=%d load "
+            "it instead of rebuilding]\n", path.c_str(),
+            L.size() * 8.0 / 1048576.0, d);
+}
+
+static bool rr_build_table(int d, u64 q, u64 r, const LogsPlan &pl,
+                           std::vector<u64> &Lh) {
+    const int dh = d / 2;
+    const u64 M = ((u64)1 << d) - 1;
+    if (rr_cache_load(d, q, Lh)) return true;
+    const double t0 = now_s();
+    std::vector<u32> spf, irr;
+    rr_sieve(dh, spf, irr);
+    const double t_sieve = now_s() - t0;
+    GpuCtx &G = g_gpus[0];
+    CUCHK(cudaSetDevice(G.dev));
+    // the PH tables of the factor-base plan, and the field's antilog seeds
+    LogsPlan pf = pl;
+    pf.method = LM_PH;
+    pf.ph = pl.ph_fb;
+    LogsParams Lp = logs_params_base(d, r, 1, q, LM_PH);
+    TowerHost W;
+    std::vector<u64> Th;
+    logs_setup_device(G, d, q, pf, W, Th, Lp);
+    fw gpow2[64];
+    gpow2[0] = 2;
+    for (int t = 1; t < d; t++) gpow2[t] = gf_sqr(gpow2[t - 1], q, d);
+    fw *dgp;
+    u32 *dfb;
+    u64 *dout;
+    unsigned long long *dnext, *dnerr, zero = 0, nerr = 0;
+    const u64 n = irr.size();
+    CUCHK(cudaMalloc(&dgp, d * sizeof(fw)));
+    CUCHK(cudaMemcpy(dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
+    CUCHK(cudaMalloc(&dfb, n * sizeof(u32)));
+    CUCHK(cudaMemcpy(dfb, irr.data(), n * sizeof(u32), cudaMemcpyHostToDevice));
+    CUCHK(cudaMalloc(&dout, n * sizeof(u64)));
+    CUCHK(cudaMalloc(&dnext, 8));
+    CUCHK(cudaMalloc(&dnerr, 8));
+    CUCHK(cudaMemcpy(dnerr, &zero, 8, cudaMemcpyHostToDevice));
+    u64 maxg = 1;
+    for (int i = 0; i < pf.ph.nparts; i++) maxg = std::max<u64>(maxg, pf.ph.part[i].G);
+    fprintf(stderr, "  [RR table for d=%d: %" PRIu64 " irreducibles of degree "
+            "<= %d (sieve %.1fs); their logs by PH, up to %" PRIu64
+            " giant step%s each]\n", d, n, dh, t_sieve, maxg, maxg == 1 ? "" : "s");
+    int nsm = 1, per = 1, dev = 0;
+    cudaGetDevice(&dev);
+    cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, dev);
+    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per, k_rr_fblogs, 128, 0)
+            != cudaSuccess || per < 1) per = 1;
+    const int blocks = nsm * per, threads = 128;
+    const double t1 = now_s();
+    double last_note = t1;
+    u64 lo = 0, slice = (u64)blocks * threads;   // grown to ~0.1 s per launch
+    while (lo < n) {
+        const u64 hi = std::min(n, lo + slice);
+        CUCHK(cudaMemcpy(dnext, &zero, 8, cudaMemcpyHostToDevice));
+        const double ts = now_s();
+        k_rr_fblogs<<<blocks, threads>>>(Lp, dgp, dfb, dout, lo, hi, dnext, dnerr);
+        CUCHK(cudaDeviceSynchronize());
+        CUCHK(cudaGetLastError());
+        const double dt = now_s() - ts;
+        lo = hi;
+        if (dt < 0.05 && slice < ((u64)1 << 30)) slice *= 2;
+        else if (dt > 0.2 && slice > (u64)blocks * threads) slice /= 2;
+        if (now_s() - last_note > 30 && lo < n) {
+            const double el = now_s() - t1;
+            fprintf(stderr, "  [RR table for d=%d: %.1f%% of the factor-base "
+                    "logs, %.0fs, ~%.0fs to go]\n", d, 100.0 * lo / n, el,
+                    el * (n - lo) / lo);
+            last_note = now_s();
+        }
+        if (ckpt_stop_requested()) {
+            fprintf(stderr, "  [RR table for d=%d: stopped while building]\n", d);
+            ckpt_stop_and_exit();
+        }
+    }
+    const double t_fb = now_s() - t1;
+    std::vector<u64> fbl(n);
+    CUCHK(cudaMemcpy(fbl.data(), dout, n * sizeof(u64), cudaMemcpyDeviceToHost));
+    CUCHK(cudaMemcpy(&nerr, dnerr, 8, cudaMemcpyDeviceToHost));
+    cudaFree(dgp); cudaFree(dfb); cudaFree(dout); cudaFree(dnext); cudaFree(dnerr);
+    logs_free_device(G);
+    if (nerr) {
+        fprintf(stderr, "d=%d: %llu factor-base logs failed verification -- "
+                "internal or hardware error\n", d, nerr);
+        return false;
+    }
+    const double t2 = now_s();
+    rr_fill(dh, M, spf, irr, fbl, Lh);
+    if (!rr_table_spotcheck(d, q, Lh, 4096)) {
+        fprintf(stderr, "d=%d: RR table failed its host spot check -- internal "
+                "error\n", d);
+        Lh.clear();
+        return false;
+    }
+    fprintf(stderr, "  [RR table for d=%d: %.0f MB, factor-base logs %.1fs, fill "
+            "%.1fs, verified]\n", d, Lh.size() * 8.0 / 1048576.0, t_fb,
+            now_s() - t2);
+    if (now_s() - t0 > 120 && !g_rr_nocache) rr_cache_save(d, q, Lh);
+    return true;
+}
+
 // selftest: check log(g^u) == u for u in [0, min(M, 2^24)) on device 0
 static void logs_selfcheck(int d, const LogsParams &L) {
     GpuCtx &G = g_gpus[0];
@@ -2108,7 +2843,8 @@ static void logs_selfcheck(int d, const LogsParams &L) {
     CUCHK(cudaMemcpy(&bad, dbad, 8, cudaMemcpyDeviceToHost));
     cudaFree(dbad);
     fprintf(stderr, "  [d=%d %s logs: %" PRIu64 " checked, %llu wrong]\n", d,
-            L.method == LM_TOWER ? "tower" : "PH", hi, bad);
+            L.method == LM_TOWER ? "tower" : L.method == LM_RR ? "RR" : "PH",
+            hi, bad);
     if (bad) { fprintf(stderr, "logs selfcheck FAILED at d=%d\n", d); exit(1); }
 }
 
@@ -2165,20 +2901,30 @@ static u64 logs_wide_selftest(u64 r, int want) {
     GpuCtx &G = g_gpus[0];
     CUCHK(cudaSetDevice(G.dev));
 #if defined(__CUDACC__)
-    const u64 nrep = (u64)1 << 22, nlog = (u64)1 << 20, nbat = (u64)1 << 22;
+    const u64 nrep = (u64)1 << 22, nlog = (u64)1 << 20, nbat = (u64)1 << 22,
+              nirr = (u64)1 << 20;
     int dmax_log = KEY_MAX_DEGREE;
+    int dmax_rr = 47;                         // 49: its many-giant-step table
+                                              // build (minutes), on request
+    int d_rr_bsgs = 41;                       // RR with d=49's kind of plan
 #else                                         // CPU emulation: keep it short
-    const u64 nrep = (u64)1 << 12, nlog = (u64)1 << 9, nbat = (u64)1 << 12;
+    const u64 nrep = (u64)1 << 12, nlog = (u64)1 << 9, nbat = (u64)1 << 12,
+              nirr = (u64)1 << 13;
     int dmax_log = 30;
+    int dmax_rr = 30;
+    int d_rr_bsgs = 27;
 #endif
     if (const char *e = getenv("COARSE_SELFTEST_LOGS_DMAX")) {   // test hook
         int k = atoi(e);
         if (k >= 21 && k <= KEY_MAX_DEGREE) dmax_log = k;
     }
+    if (const char *e = getenv("COARSE_SELFTEST_RR_DMAX")) dmax_rr = atoi(e);
+    if (const char *e = getenv("COARSE_SELFTEST_RR_BSGS_D")) d_rr_bsgs = atoi(e);
     unsigned long long zero = 0, bad = 0, *dbad;
     CUCHK(cudaMalloc(&dbad, 8));
     u64 fails = 0;
     int blocks, threads;
+    g_rr_nocache = true;                      // test the builder, not a file
     for (int d = 2; d <= KEY_MAX_DEGREE; d++) {
         CUCHK(cudaMemcpy(dbad, &zero, 8, cudaMemcpyHostToDevice));
         launch_dims(nrep, blocks, threads);
@@ -2191,6 +2937,35 @@ static u64 logs_wide_selftest(u64 r, int want) {
             "%" PRIu64 " u per degree: %s]\n", KEY_MAX_DEGREE, 2 * nrep,
             fails ? "FAILED" : "ok");
 
+    {   // irregular classes: the round-5 batch lift vs the round-4 formulas
+        unsigned long long ib[4], *dib;
+        CUCHK(cudaMalloc(&dib, sizeof ib));
+        u64 ifail = 0, nj = 0, ns = 0, nt = 0;
+        for (int d = 4; d <= KEY_MAX_DEGREE; d++) {
+            const u64 M = ((u64)1 << d) - 1;
+            if (factor_u64(M).size() == 1 && factor_u64(M)[0] == M) continue;
+            LogsParams L = logs_params_base(d, r, 1, 0, LM_PH);
+            CUCHK(cudaMemset(dib, 0, sizeof ib));
+            launch_dims(nirr, blocks, threads);
+            k_irreg_check<<<blocks, threads>>>(L, 0x5EED0000ULL + (u64)d, nirr, dib);
+            CUCHK(cudaMemcpy(ib, dib, sizeof ib, cudaMemcpyDeviceToHost));
+            if (ib[0]) fprintf(stderr, "  d=%d: irregular lift: %llu mismatches\n",
+                               d, ib[0]);
+            if (ib[1] < nirr / 8) {             // the check must test something
+                fprintf(stderr, "  d=%d: irregular lift: only %llu classes "
+                        "joined\n", d, ib[1]);
+                ifail++;
+            }
+            ifail += ib[0]; nj += ib[1]; ns += ib[2]; nt += ib[3];
+        }
+        cudaFree(dib);
+        fprintf(stderr, "  [irregular classes, batch lift vs extended Euclid, "
+                "d=4..%d: %" PRIu64 " joined (%" PRIu64 " with t > 0), %" PRIu64
+                " skipped: %s]\n", KEY_MAX_DEGREE, nj, nt, ns,
+                ifail ? "FAILED" : "ok");
+        fails += ifail;
+    }
+
     size_t freeb = 0, totb = 0;
     CUCHK(cudaMemGetInfo(&freeb, &totb));
     const size_t budget = logs_table_budget(freeb);
@@ -2199,16 +2974,30 @@ static u64 logs_wide_selftest(u64 r, int want) {
         fw gpow2[64];
         gpow2[0] = 2;
         for (int t = 1; t < d; t++) gpow2[t] = gf_sqr(gpow2[t - 1], q, d);
-        for (int eng : {FM_TOWER, FM_PH}) {
-            if (want != FM_LOGS && want != eng) continue;
+        // RR (round 5) at the odd degrees, and once with the factor-base
+        // logs forced through a many-giant-step plan (d=49's case)
+        const bool rr_here = (d & 1) && d <= dmax_rr && !g_logs_r2;   // batched only
+        const bool rr_bsgs = d == d_rr_bsgs && d <= dmax_log && !g_logs_r2;
+        for (int eng : {(int)FM_TOWER, (int)FM_PH, (int)FM_RR, FM_RR + 100}) {
+            if (want != FM_LOGS && want != eng % 100) continue;
+            if (eng == FM_RR && !rr_here) continue;
+            if (eng == FM_RR + 100 && !rr_bsgs) continue;
+            if (eng == FM_RR + 100) setenv("COARSE_RR_FB_BUDGET_MB", "4", 1);
             LogsPlan pl;
-            if (!logs_plan(d, q, eng, budget, pl)) {   // tower: even d only
+            const bool ok_plan = logs_plan(d, q, eng % 100, budget, pl);
+            if (eng == FM_RR + 100) unsetenv("COARSE_RR_FB_BUDGET_MB");
+            if (!ok_plan) {   // tower: even d only
                 if (eng == FM_PH)
                     fprintf(stderr, "  [d=%d PH    logs: no feasible plan "
                             "(expected only for d=49)]\n", d);
                 if (eng == FM_PH && d != 49) fails++;
+                if (eng % 100 == FM_RR) {
+                    fprintf(stderr, "  [d=%d RR    logs: no feasible plan]\n", d);
+                    fails++;
+                }
                 continue;
             }
+            if (eng % 100 == FM_RR && pl.method != LM_RR) continue;   // even d
             double t0 = now_s();
             CUCHK(cudaMalloc(&G.dgp, d * sizeof(fw)));
             CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
@@ -2220,8 +3009,24 @@ static u64 logs_wide_selftest(u64 r, int want) {
                 cudaFree(G.dgp); G.dgp = nullptr;
                 continue;
             }
-            std::vector<u64> Th;
-            logs_setup_device(G, d, q, pl, W, Th, L);
+            std::vector<u64> Th, rrL;
+            u64 rr_giant = 0;
+            if (pl.method == LM_RR) {
+                for (int i = 0; i < pl.ph_fb.nparts; i++)
+                    rr_giant = std::max<u64>(rr_giant, pl.ph_fb.part[i].G);
+                if (!rr_build_table(d, q, r, pl, rrL)) {
+                    fprintf(stderr, "  d=%d: RR table construction failed\n", d);
+                    fails++;
+                    cudaFree(G.dgp); G.dgp = nullptr;
+                    continue;
+                }
+                if (eng == FM_RR + 100 && rr_giant < 2) {
+                    fprintf(stderr, "  d=%d: the forced RR factor-base plan has "
+                            "no giant steps\n", d);
+                    fails++;
+                }
+            }
+            logs_setup_device(G, d, q, pl, W, Th, L, &rrL);
             // nlog consecutive exponents from a degree-dependent offset
             const u64 ulo = (0x9E3779B97F4A7C15ULL * (u64)d) % (M - nlog);
             CUCHK(cudaMemcpy(dbad, &zero, 8, cudaMemcpyHostToDevice));
@@ -2247,7 +3052,7 @@ static u64 logs_wide_selftest(u64 r, int want) {
             cudaFree(G.dgp); G.dgp = nullptr;
             fprintf(stderr, "  [d=%d %-5s logs, %4.0f MB tables: %" PRIu64
                     " checked, %llu wrong", d,
-                    pl.method == LM_TOWER ? "tower" : "PH",
+                    pl.method == LM_TOWER ? "tower" : pl.method == LM_RR ? "RR" : "PH",
                     pl.bytes / 1048576.0, nlog, bad);
             if (pl.batched)
                 fprintf(stderr, "; batched: %" PRIu64 " classes, %s", ncls,
@@ -2256,6 +3061,10 @@ static u64 logs_wide_selftest(u64 r, int want) {
                 fprintf(stderr, "; over GF(2^%d)", W.sub_n);
             else if (pl.method == LM_TOWER)
                 fprintf(stderr, "; classic");
+            else if (pl.method == LM_RR)
+                fprintf(stderr, "; factor-base logs with up to %" PRIu64 " giant "
+                        "step%s%s", rr_giant, rr_giant == 1 ? "" : "s",
+                        eng == FM_RR + 100 ? " (forced, d=49's path)" : "");
             fprintf(stderr, ", %.2fs]\n", now_s() - t0);
             fails += bad + bfail;
         }
@@ -2265,8 +3074,200 @@ static u64 logs_wide_selftest(u64 r, int want) {
 }
 
 // run the sieve for one degree with the logs path (any VRAM; tables only)
-static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
+// ---------------------------------------------------------------------------
+// Auto-tuning (round 5).  Which variant of the batched kernel is fastest
+// depends on the GPU -- its L2 size (an RTX 4090's 72 MB holds the whole
+// tower table T up to d=46, a 2070 SUPER's 4 MB holds none of it), shared
+// memory, integer throughput -- so for every degree d >= g_tune_min the
+// candidates run the same sample of classes on GPU 0 first and the fastest
+// is used for the degree:
+//   tower: inner subfield GF(2^n) for the largest two divisors n of m (or
+//          the forced one), and the classic tower;
+//   both:  the round-4 irregular path, with the default tower, where
+//          classes with gcd(u, M) > 1 are not rare (a safety net, and the
+//          A/B number for the log).
+// All candidates compute identical results; the sample chunk's marks are
+// simply repeated by the real pass (atomicMin), its heavy progressions
+// dropped (the real pass queues them again).  Costs a few seconds per
+// degree; the report line shows ns per class for every candidate.
+// --no-tune (COARSE_TUNE=0) disables it; COARSE_TOWER_SUBN / COARSE_IRREG
+// fix their knob; test hook: COARSE_TUNE_PICK=i takes candidate i.
+struct TuneCand { int method, sub_n; bool r4; double ns; };
+
+static void tune_name(const TuneCand &c, char *b, size_t n) {
+    const char *ir = c.r4 ? "+r4-irregular" : "";
+    if (c.method == LM_TOWER && c.sub_n) snprintf(b, n, "GF(2^%d)%s", c.sub_n, ir);
+    else if (c.method == LM_TOWER) snprintf(b, n, "classic%s", ir);
+    else snprintf(b, n, "%s%s", c.method == LM_RR ? "RR" : "PH", ir);
+}
+
+// pl.method may change (odd d: PH <-> RR, not when COARSE_METHOD forces
+// one); rrL receives the RR table if it was built
+static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
+                      const fw *gpow2, std::vector<u64> &Th,
+                      std::vector<u64> &rrL, int &sub_use, bool &r4_use) {
+    GpuCtx &G = g_gpus[0];
+    CUCHK(cudaSetDevice(G.dev));
+    // candidates; the first is the default
+    std::vector<TuneCand> cand;
+    int sub_auto = 0;
+    if (pl.method == LM_TOWER) {
+        u64 tp;
+        sub_auto = tower_sub_choice(d / 2, g_tower_sub, &tp);
+        cand.push_back({LM_TOWER, sub_auto, r4_use, 0});
+        if (g_tower_sub < 0) {                  // the variants, if they fit
+            size_t freeb = 0, totb = 0;
+            CUCHK(cudaMemGetInfo(&freeb, &totb));
+            const size_t budget = logs_table_budget(freeb);
+            const int m = d / 2;
+            int second = 0;
+            for (int c = sub_auto - 1; c >= 2 && !second; c--) if (m % c == 0) second = c;
+            for (int n : {second, 0}) {
+                if (n == sub_auto || (n == 0 && sub_auto == 0) || (n && !second)) continue;
+                u64 tpn = 0;
+                if (n && tower_sub_choice(m, n, &tpn) != n) continue;
+                size_t need = ((size_t)8 << m) + ((size_t)((d + 7) / 8) << 11) + 65536;
+                need += n ? ((size_t)2 << n) + 4 * (size_t)tpn : (size_t)4 << m;
+                if (need <= budget) cand.push_back({LM_TOWER, n, r4_use, 0});
+            }
+        }
+    } else {
+        cand.push_back({pl.method, 0, r4_use, 0});
+        const bool free_choice = g_force_method == FM_AUTO || g_force_method == FM_LOGS;
+        const int other = pl.method == LM_PH ? LM_RR : LM_PH;
+        if (free_choice && (other == LM_RR ? pl.rr_ok : pl.ph_ok) &&
+            logs_batch_fn(d, other))
+            cand.push_back({other, 0, r4_use, 0});
+    }
+    if (!g_irreg_fixed) {                       // irregular classes common?
+        LogsParams L0 = logs_params_base(d, r, smax, q, pl.method);
+        double p2 = 0;                          // P(class needs an inverse)
+        for (int i = 0; i < L0.npf; i++) p2 += 1.0 / ((double)L0.pf[i].p * L0.pf[i].p);
+        if (1 - pow(1 - p2, 32) > 0.05)         // ... in some lane of a warp
+            cand.insert(cand.begin() + 1, TuneCand{cand[0].method, sub_auto,
+                                                   !r4_use, 0});
+    }
+    if (cand.size() < 2) return;
+
+    // the sample: half a chunk at 1/8 of the range, doubled while too small
+    u64 total, run, chunk;
+    int nchunks;
+    logs_geometry(d, total, run, chunk, nchunks);
+    const int cs = nchunks / 8;
+    const u64 ulo = (u64)cs * chunk;
+    u64 span = chunk / 2 ? chunk / 2 : chunk;
+    const u64 krun = run >= 512 ? run / 8 : run;
+    unsigned long long zero64 = 0, cls = 0, nerr = 0;
+    unsigned zero = 0;
+    cudaEvent_t e0, e1;
+    CUCHK(cudaEventCreate(&e0));
+    CUCHK(cudaEventCreate(&e1));
+    const double t0 = now_s();
+    int cur_m = -1, cur_sub = -1;               // tables set up for these
+    LogsParams Lcur;
+    bool timed_any = false;
+    for (size_t ci = 0; ci < cand.size(); ci++) {
+        TuneCand &c = cand[ci];
+        c.ns = -1;
+        if (c.method != cur_m || c.sub_n != cur_sub) {   // (re)build the tables
+            if (cur_m >= 0) {
+                logs_free_device(G);
+                cudaFree(G.dgp); G.dgp = nullptr;
+                cudaFree(G.d_nsurv); G.d_nsurv = nullptr;
+                cudaFree(G.d_nerr); G.d_nerr = nullptr;
+            }
+            cur_m = cur_sub = -1;
+            if (c.method == LM_RR && rrL.empty() && !rr_build_table(d, q, r, pl, rrL))
+                continue;
+            TowerHost W;
+            if (c.method == LM_TOWER && !tower_build_host(d, q, W, c.sub_n)) continue;
+            LogsPlan pc = pl;
+            pc.method = c.method;
+            Lcur = logs_params_base(d, r, smax, q, c.method);
+            CUCHK(cudaMalloc(&G.dgp, d * sizeof(fw)));
+            CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
+            CUCHK(cudaMalloc(&G.d_nsurv, 8));
+            CUCHK(cudaMalloc(&G.d_nerr, 8));
+            logs_setup_device(G, d, q, pc, W, Th, Lcur, &rrL);
+            cur_m = c.method;
+            cur_sub = c.sub_n;
+        }
+        const LogsBatchFn kfn = logs_batch_fn(d, c.method);
+        LogsParams L = Lcur;
+        L.irreg_r4 = c.r4;
+        for (int rep = timed_any ? 1 : 0; rep < 2; rep++) {   // first: warm-up
+            u64 uhi = ulo + span; if (uhi > total) uhi = total;
+            int blocks, threads;
+            size_t shm;
+            logs_batch_dims(kfn, (uhi - ulo + krun - 1) / krun, c.method, L,
+                            blocks, threads, shm);
+            CUCHK(cudaMemcpy(G.d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
+            CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
+            CUCHK(cudaEventRecord(e0));
+            kfn<<<blocks, threads, shm>>>(L, G.dgp, ulo, uhi, krun, G.d_best,
+                                          G.d_heavy, G.d_nheavy, G.d_overflow,
+                                          G.d_nsurv, G.d_nerr);
+            CUCHK(cudaEventRecord(e1));
+            CUCHK(cudaEventSynchronize(e1));
+            CUCHK(cudaGetLastError());
+            float ms = 0;
+            CUCHK(cudaEventElapsedTime(&ms, e0, e1));
+            CUCHK(cudaMemcpy(&cls, G.d_nsurv, 8, cudaMemcpyDeviceToHost));
+            CUCHK(cudaMemcpy(&nerr, G.d_nerr, 8, cudaMemcpyDeviceToHost));
+            CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
+            CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
+            if (nerr) {
+                fprintf(stderr, "d=%d: %llu discrete-log consistency errors "
+                        "while tuning -- results are NOT trustworthy; "
+                        "stopping\n", d, nerr);
+                exit(1);
+            }
+            c.ns = cls ? ms * 1e6 / (double)cls : 0;
+            // a sample of at least ~2^25 classes (or the whole range)
+            if (rep == 0 && cls < ((u64)1 << 25) && span < total - ulo &&
+                ms < 2000) { span *= 2; rep--; }
+        }
+        timed_any = true;
+    }
+    if (cur_m >= 0) {
+        logs_free_device(G);
+        cudaFree(G.dgp); G.dgp = nullptr;
+        cudaFree(G.d_nsurv); G.d_nsurv = nullptr;
+        cudaFree(G.d_nerr); G.d_nerr = nullptr;
+    }
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+    size_t best = 0;
+    for (size_t i = 1; i < cand.size(); i++)
+        if (cand[i].ns >= 0 && (cand[best].ns < 0 || cand[i].ns < cand[best].ns))
+            best = i;
+    if (const char *e = getenv("COARSE_TUNE_PICK")) {    // test hook
+        size_t k = (size_t)atoi(e);
+        if (k < cand.size() && cand[k].ns >= 0) best = k;
+    }
+    if (cand[best].ns < 0) best = 0;            // nothing ran: keep the default
+    pl.method = cand[best].method;
+    pl.batched = true;
+    pl.bytes = pl.method == LM_RR ? pl.rr_bytes
+             : pl.method == LM_PH ? pl.ph.table_bytes : pl.bytes;
+    sub_use = cand[best].sub_n;
+    r4_use = cand[best].r4;
+    if (pl.method != LM_RR) { rrL.clear(); rrL.shrink_to_fit(); }
+    char nm[64];
+    fprintf(stderr, "  [tune d=%d on GPU 0, %llu classes, %.1fs:", d, cls,
+            now_s() - t0);
+    for (size_t i = 0; i < cand.size(); i++) {
+        tune_name(cand[i], nm, sizeof nm);
+        if (cand[i].ns < 0) fprintf(stderr, "%s %s n/a", i ? "," : "", nm);
+        else fprintf(stderr, "%s %s %.3f ns/class", i ? "," : "", nm, cand[i].ns);
+    }
+    tune_name(cand[best], nm, sizeof nm);
+    fprintf(stderr, " -> %s]\n", nm);
+}
+
+static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
                                   int start_chunk = 0) {
+    LogsPlan pl = pl_in;                        // the tuner may switch engines
     const u64 M64 = ((u64)1 << d) - 1;
     const u64 q = find_primitive_poly(d);
     const u64 rmod = r % M64;
@@ -2278,20 +3279,30 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
     u64 total, run, chunk;
     int nchunks;
     logs_geometry(d, total, run, chunk, nchunks);
-    const char *mname = pl.method == LM_TOWER ? "tower" : "PH";
-    const LogsBatchFn kfn = pl.batched ? logs_batch_fn(d, pl.method) : nullptr;
 
     fw gpow2[64];
     gpow2[0] = 2;
     for (int t = 1; t < d; t++) gpow2[t] = gf_sqr(gpow2[t - 1], q, d);
 
     double t0 = now_s();
+    std::vector<u64> Th;                        // T, built once per degree
+    std::vector<u64> rrL;                       // RR: the table, host copy
+    int sub_use = g_tower_sub;
+    bool r4_use = g_irreg_r4;
+    if (pl.batched && g_tune && d >= g_tune_min)
+        logs_tune(d, q, r, smax, pl, gpow2, Th, rrL, sub_use, r4_use);
+    const LogsBatchFn kfn = pl.batched ? logs_batch_fn(d, pl.method) : nullptr;
+    const char *mname = pl.method == LM_TOWER ? "tower"
+                      : pl.method == LM_RR ? "RR" : "PH";
+    if (pl.method == LM_RR && rrL.empty() && !rr_build_table(d, q, r, pl, rrL)) {
+        fprintf(stderr, "d=%d: RR table construction failed\n", d);
+        exit(1);
+    }
     TowerHost W;
-    if (pl.method == LM_TOWER && !tower_build_host(d, q, W, g_tower_sub)) {
+    if (pl.method == LM_TOWER && !tower_build_host(d, q, W, sub_use)) {
         fprintf(stderr, "d=%d: tower construction failed -- internal error\n", d);
         exit(1);
     }
-    std::vector<u64> Th;
     std::vector<LogsParams> Lg;
     unsigned long long zero64 = 0;
     for (int g = 0; g < NG; g++) {
@@ -2304,19 +3315,23 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
         CUCHK(cudaMalloc(&G.d_nerr, 8));
         CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
         Lg.push_back(logs_params_base(d, r, smax, q, pl.method));
+        Lg.back().irreg_r4 = r4_use;
         // test hook: COARSE_TEST_FAULT_EVERY=n flips a bit of the log of
         // every class with u = 1 (mod n), to exercise the error stop
         if (const char *e = getenv("COARSE_TEST_FAULT_EVERY"))
             Lg.back().fault = strtoull(e, nullptr, 10);
-        logs_setup_device(G, d, q, pl, W, Th, Lg.back());
+        logs_setup_device(G, d, q, pl, W, Th, Lg.back(), &rrL);
     }
+    rrL.clear(); rrL.shrink_to_fit();
     char inner[48] = "";                        // the inner tower, if any
     if (pl.method == LM_TOWER && W.sub_k)
         snprintf(inner, sizeof inner, " over GF(2^%d)", W.sub_n);
     W = TowerHost();                            // host copies no longer needed
     Th.clear(); Th.shrink_to_fit();
     fprintf(stderr, "d=%2d logs (%s%s%s, %.0f MB tables, built in %.1fs), %d "
-            "chunk%s", d, mname, inner, kfn ? ", batched" : ", round-2 kernel",
+            "chunk%s", d, mname, inner,
+            !kfn ? ", round-2 kernel" : r4_use ? ", batched, r4 irregular"
+                                               : ", batched",
             pl.bytes / 1048576.0, now_s() - t0, nchunks, nchunks == 1 ? "" : "s");
     if (NG > 1) fprintf(stderr, " on %d GPUs", NG);
     fprintf(stderr, ": ");
@@ -2339,6 +3354,8 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
     fflush(stderr);
     unsigned zero = 0;
     unsigned long long total_heavy = 0;
+    const double t_pass = now_s();              // for the one time-left note
+    bool eta_shown = false;
     for (int base = start_chunk; base < nchunks; base += NG) {
         // round boundary: every chunk < base is complete on every device
         if (ckpt_stop_requested() || (g_ckpt.test_stop_after &&
@@ -2412,7 +3429,18 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
         }
         g_ckpt.test_buckets_done += used;
         for (int c = base; c < base + used; c++)
-            if ((c + 1) % dot_every == 0 || c + 1 == nchunks) fputc('.', stderr);
+            if ((c + 1) % dot_every == 0 || c + 1 == nchunks) {
+                fputc('.', stderr);
+                // after the first dot of a long pass (resumed: of this run's
+                // chunks), one estimate of the time left
+                if (!eta_shown && c + 1 < nchunks && c + 1 > start_chunk) {
+                    eta_shown = true;
+                    const double left = (now_s() - t_pass) *
+                        (double)(nchunks - c - 1) / (double)(c + 1 - start_chunk);
+                    if (left > 600)
+                        fprintf(stderr, "[~%.1f h to go]", left / 3600.0);
+                }
+            }
         fflush(stderr);
     }
     fprintf(stderr, "\n");
@@ -2520,7 +3548,8 @@ static int run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
                     fprintf(stderr, "d=%d: logs path (%s) not possible here "
                             "(tables do not fit in %.2f GB, or unsupported d)\n",
                             d, want == FM_TOWER ? "tower" : want == FM_PH
-                            ? "PH" : "auto", lbudget / 1073741824.0);
+                            ? "PH" : want == FM_RR ? "RR" : "auto",
+                            lbudget / 1073741824.0);
                     exit(1);
                 }
                 return false;
@@ -2555,7 +3584,11 @@ static int run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
                 }
                 fprintf(stderr, "d=%d: resuming logs path at chunk %d/%d\n", d,
                         start_bucket, cnt);
-                try_logs(meth == LM_TOWER ? FM_TOWER : FM_PH, start_bucket, true);
+                // (any logs engine covers the same chunks; this is the one
+                // that wrote the checkpoint)
+                try_logs(meth == LM_TOWER ? FM_TOWER : meth == LM_RR ? FM_RR
+                                                                     : FM_PH,
+                         start_bucket, true);
 #else
                 fprintf(stderr, "checkpoint was written by the logs path; "
                         "resume it with the -DWIDE_FIELD build\n");
@@ -2568,7 +3601,8 @@ static int run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
                 sieve_degree_gpu(d, r, smax, d_best, d_heavy, d_nheavy,
                                  d_overflow);
                 done = true;
-            } else if (fm == FM_TOWER || fm == FM_PH || fm == FM_LOGS) {
+            } else if (fm == FM_TOWER || fm == FM_PH || fm == FM_LOGS ||
+                       fm == FM_RR) {
 #if defined(WIDE_FIELD)
                 done = try_logs(fm, 0, true);
 #else
@@ -2581,13 +3615,13 @@ static int run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
 #endif
             if (!done && d > 47) {
                 // beyond d=47 only the logs path is supported (a bucketed
-                // pass would take years); 49 is the one degree with no
-                // discrete-log method (2^49-1 = 127 * 4432676798593), and
-                // main() refuses it before starting
+                // pass would take years); d=49 has only RR (2^49-1 = 127 *
+                // 4432676798593), which needs its 256 MB table plus a
+                // baby-step table of a GB or more for the factor-base logs
                 fprintf(stderr, "d=%d: no discrete-log method fits here (%s); "
-                        "stopping at depth %d\n", d, d == 49 ? "2^49-1 has "
-                        "the prime factor 4432676798593" : "tables too large "
-                        "for this card", d - 1);
+                        "stopping at depth %d\n", d, d == 49 ? "RR needs "
+                        "~1.5 GB or more of free VRAM at d=49" : "tables too "
+                        "large for this card", d - 1);
                 break;
             }
             if (!done) {
@@ -2705,6 +3739,28 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    // COARSE_IRREG=r4 handles the classes with gcd(u, M) > 1 the round-4
+    // way (extended Euclid per class) in the batched kernel: A/B timing
+    if (const char *e = getenv("COARSE_IRREG")) {
+        if (!strcmp(e, "r4")) g_irreg_r4 = true;
+        else if (strcmp(e, "batch")) {
+            fprintf(stderr, "COARSE_IRREG=%s: expected batch or r4\n", e);
+            return 1;
+        }
+        g_irreg_fixed = true;
+    }
+    // COARSE_TUNE=0 turns the per-degree auto-tuning off (like --no-tune);
+    // COARSE_TUNE_MIN=d tunes from degree d up (default 40)
+    if (const char *e = getenv("COARSE_TUNE")) g_tune = atoi(e) != 0;
+    if (const char *e = getenv("COARSE_TUNE_MIN")) g_tune_min = atoi(e);
+#if !defined(WIDE_FIELD)
+    // the logs-path knobs are parsed (so a bad value is still reported) but
+    // only the wide build has a logs path
+    if (g_logs_r2 || g_irreg_r4 || g_irreg_fixed || !g_tune || g_tune_min != 40 ||
+        g_tower_sub >= 0 || g_logs_selfcheck)
+        fprintf(stderr, "note: COARSE_LOGS_KERNEL, COARSE_IRREG, COARSE_TUNE*, "
+                "COARSE_TOWER_SUBN affect only the wide build\n");
+#endif
     // COARSE_TOWER_SUBN=0 uses the classic (round-3) tower; =n forces the
     // subfield K_n of the inner tower (tests); default: automatic
     if (const char *e = getenv("COARSE_TOWER_SUBN")) g_tower_sub = atoi(e);
@@ -2714,9 +3770,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(e, "logs")) g_force_method = FM_LOGS;
         else if (!strcmp(e, "tower")) g_force_method = FM_TOWER;
         else if (!strcmp(e, "ph")) g_force_method = FM_PH;
+        else if (!strcmp(e, "rr")) g_force_method = FM_RR;
         else if (strcmp(e, "auto")) {
             fprintf(stderr, "COARSE_METHOD=%s: expected auto, dense, buckets, "
-                    "logs, tower or ph\n", e);
+                    "logs, tower, ph or rr\n", e);
             return 1;
         }
     }
@@ -2737,7 +3794,8 @@ int main(int argc, char **argv) {
 #endif
             const char *e = argc >= 3 ? argv[2] : "logs";
             g_force_method = !strcmp(e, "tower") ? FM_TOWER
-                           : !strcmp(e, "ph") ? FM_PH : FM_LOGS;
+                           : !strcmp(e, "ph") ? FM_PH
+                           : !strcmp(e, "rr") ? FM_RR : FM_LOGS;
             g_logs_selfcheck = true;
         }
         const int logs_want = g_force_method;
@@ -2755,7 +3813,9 @@ int main(int argc, char **argv) {
                    "on-device check of the logs\n",
                    g_force_method == FM_TOWER ? "tower: even d only, so the "
                    "run starts at d=4" : g_force_method == FM_PH
-                   ? "Pohlig-Hellman" : "tower for even d, PH for odd d");
+                   ? "Pohlig-Hellman" : g_force_method == FM_RR
+                   ? "tower for even d, RR for odd d"
+                   : "tower for even d, PH for odd d");
         std::vector<ull> g, c;
         if (g_force_method == FM_TOWER) {
             // tower needs even d >= 4: seed d=2,3 with the dense path first
@@ -2803,6 +3863,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s <r> <depth> <out_prefix> [options]\n"
                         "       %s --selftest\n"
                         "       %s --selftest-lowmem [nbuckets]\n"
+                        "       %s --selftest-logs [logs|tower|ph|rr]   "
+                        "(wide build)\n"
                         "options:\n"
                         "  --smax <S>          highest s to sieve "
                         "(default floor(r/2))\n"
@@ -2818,21 +3880,34 @@ int main(int argc, char **argv) {
                         "survivors list instead\n"
                         "  --min-depth <D>     start the sieve at degree D "
                         "(compute only new degrees)\n"
-                        "  --checkpoint <file> save progress on SIGTERM/SIGINT, "
-                        "mid-degree\n"
-                        "  --checkpoint-mins <N>       also save every N minutes\n"
+                        "  --checkpoint <file> checkpoint file (default "
+                        "<out_prefix>.ckpt): progress is\n"
+                        "                      saved on SIGTERM/SIGINT and "
+                        "periodically, and the same\n"
+                        "                      command continues from it after "
+                        "an interruption\n"
+                        "  --checkpoint-mins <N>       save every N minutes "
+                        "(default 15; 0 = signals only)\n"
                         "  --checkpoint-keep <G>       keep G checkpoint "
                         "generations (default 3)\n"
-                        "  --resume <file>     continue from a checkpoint\n"
+                        "  --resume <file>     continue from a checkpoint "
+                        "(also another run's)\n"
+                        "  --fresh             ignore an existing checkpoint "
+                        "(kept as *.old), start over\n"
+                        "  --no-checkpoint     no checkpoint file at all\n"
+                        "  --no-tune           skip the per-degree timing of "
+                        "kernel variants (d >= 40)\n"
                         "  --gpus <N>          use N GPUs (default: all "
                         "present; buckets split across\n"
                         "                      devices, no peer access or "
                         "NVLink needed)\n"
-                        "  --allow-degree-gap  allow --min-depth >= 50 (degree 49 "
-                        "cannot be sieved, so\n"
-                        "                      factors found at d >= 50 are least-"
-                        "degree only where there\n"
-                        "                      is no degree-49 factor)\n"
+                        "  --seed-covers-49    --min-depth >= 50 with a seed file "
+                        "from a run through 49\n"
+                        "  --allow-degree-gap  --min-depth >= 50 without degree 49 "
+                        "(factors found at\n"
+                        "                      d >= 50 are least-degree only where "
+                        "there is no degree-49\n"
+                        "                      factor)\n"
                         "\n"
                         "  <out_prefix>.found.cert lists one line per s that has a "
                         "factor, in the same\n"
@@ -2840,11 +3915,12 @@ int main(int argc, char **argv) {
                         "certs simply\n"
                         "  concatenate into a full record.  Example incremental run:\n"
                         "     %s <r> 35 out35 --load-survivors out34.survivors.txt "
-                        "--min-depth 35 \\\n"
-                        "         --checkpoint out35.ckpt --checkpoint-mins 20\n"
+                        "--min-depth 35\n"
+                        "  (interrupted? run the same command again: it "
+                        "continues from out35.ckpt)\n"
                         "  (the legacy form '<r> <depth> <smax> <out_prefix>' is "
                         "still accepted)\n",
-                        argv[0], argv[0], argv[0], argv[0]);
+                        argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
     u64 r = strtoull(argv[1], 0, 10);
@@ -2886,6 +3962,8 @@ int main(int argc, char **argv) {
     const char *loadsurv_path = nullptr;
     int min_depth = 2, ckpt_keep = 3, want_gpus = 0;   // 0 = use every device
     bool allow_gap = false;                      // --allow-degree-gap
+    bool no_ckpt = false, fresh = false;         // --no-checkpoint, --fresh
+    bool seed49 = false;                         // --seed-covers-49
     double ckpt_mins = -1;                       // <0 = not given on command line
     for (int a = first_flag; a < argc; a++) {
         if (!strcmp(argv[a], "--found")) write_found = true;
@@ -2902,6 +3980,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[a], "--resume") && a + 1 < argc) resume_path = argv[++a];
         else if (!strcmp(argv[a], "--gpus") && a + 1 < argc) want_gpus = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--allow-degree-gap")) allow_gap = true;
+        else if (!strcmp(argv[a], "--no-checkpoint")) no_ckpt = true;
+        else if (!strcmp(argv[a], "--fresh")) fresh = true;
+        else if (!strcmp(argv[a], "--no-tune")) g_tune = false;
+        else if (!strcmp(argv[a], "--seed-covers-49")) seed49 = true;
         else fprintf(stderr, "warning: ignoring unknown argument '%s'\n", argv[a]);
     }
     if (min_depth < 2) min_depth = 2;
@@ -2916,6 +3998,77 @@ int main(int argc, char **argv) {
     std::vector<ull> preload;
     bool have_preload = false;
     int resume_bucket = 0, resume_nbuckets = 0;
+    g_ckpt.min_depth = min_depth;
+
+    // The seed image (--load wins over --load-survivors), read first: an
+    // automatic resume compares its hash with the checkpoint's record.
+    std::vector<ull> seed;
+    int seed_kind = 0;
+    const char *seed_path = nullptr;
+    u64 seed_hash = 0, seed_surv = 0, seed_lines = 0, seed_oor = 0;
+    if (load_path) {
+        if (!read_found_image(load_path, smax, seed)) return 1;
+        seed_kind = 1; seed_path = load_path;
+        for (u64 s = 1; s <= smax; s++) if (seed[s] == ~0ULL) seed_surv++;
+    } else if (loadsurv_path) {
+        if (!read_survivors_image(loadsurv_path, smax, seed, &seed_surv,
+                                  &seed_lines, &seed_oor)) return 1;
+        seed_kind = 2; seed_path = loadsurv_path;
+        if (seed_oor) fprintf(stderr, "warning: %" PRIu64 " survivor entries "
+                              "outside 1..%" PRIu64 " ignored\n", seed_oor, smax);
+    }
+    if (seed_kind) seed_hash = ckpt_hash(seed.data() + 1, smax);
+
+    // Checkpoint file: --checkpoint, else the --resume file, else (round 5)
+    // <out_prefix>.ckpt unless --no-checkpoint.
+    std::string auto_path;
+    if (no_ckpt) {
+        if (ckpt_path || resume_path) {
+            fprintf(stderr, "--no-checkpoint conflicts with --checkpoint / "
+                    "--resume\n");
+            return 1;
+        }
+    } else if (!ckpt_path && !resume_path) {
+        auto_path = std::string(prefix) + ".ckpt";
+        ckpt_path = auto_path.c_str();
+    }
+    if (resume_path && !ckpt_path) ckpt_path = resume_path;
+    if (ckpt_path && !ckpt_lock(ckpt_path)) return 1;
+    if (fresh) {
+        if (resume_path) {
+            fprintf(stderr, "--fresh conflicts with --resume\n");
+            return 1;
+        }
+        if (ckpt_path) ckpt_set_aside(ckpt_path);
+    } else if (ckpt_path && !resume_path) {
+        // an existing checkpoint of THIS run: continue it automatically
+        CkptInfo ci;
+        std::string gen;
+        const int st = ckpt_find(ckpt_path, ci, gen);
+        if (st < 0) {
+            fprintf(stderr, "checkpoint %s exists but cannot be read.  Use "
+                    "--resume %s to try its older generations, --fresh to set "
+                    "it aside and start over, or --checkpoint <other file>\n",
+                    ckpt_path, ckpt_path);
+            return 1;
+        }
+        if (st > 0) {
+            const std::string why = ckpt_mismatch(ci, r, smax, depth, min_depth,
+                                                  seed_kind, seed_hash);
+            if (!why.empty()) {
+                fprintf(stderr, "checkpoint %s belongs to a different run: %s.\n"
+                        "  To continue that run, use its command line or "
+                        "--resume %s; to start this one over, add --fresh (the "
+                        "old checkpoint is kept as *.old); or checkpoint "
+                        "elsewhere with --checkpoint <file>\n", gen.c_str(),
+                        why.c_str(), ckpt_path);
+                return 1;
+            }
+            fprintf(stderr, "found checkpoint %s (%s): continuing that run "
+                    "(--fresh starts over)\n", gen.c_str(), ckpt_describe(ci).c_str());
+            resume_path = ckpt_path;
+        }
+    }
 
     double stored_period_s = 0;
     if (resume_path) {
@@ -2924,6 +4077,15 @@ int main(int argc, char **argv) {
                        resume_bucket, resume_nbuckets, stored_period_s))
             return 1;
         have_preload = true;
+        // the command line's seed can serve as the delta baseline
+        if (seed_kind && g_ckpt.base.empty() &&
+            (g_ckpt.base_kind == 0 || (g_ckpt.base_kind == seed_kind &&
+                                       g_ckpt.base_hash == seed_hash))) {
+            g_ckpt.base.swap(seed);
+            g_ckpt.base_path = seed_path;
+            g_ckpt.base_kind = seed_kind;
+            g_ckpt.base_hash = seed_hash;
+        }
         u64 pre_surv = 0;
         for (u64 s = 1; s <= smax; s++) if (preload[s] == ~0ULL) pre_surv++;
         fprintf(stderr, "resumed %s: %" PRIu64 " survivors carried in; "
@@ -2931,40 +4093,34 @@ int main(int argc, char **argv) {
                 resume_path, pre_surv, min_depth,
                 ckpt_method(resume_nbuckets) ? "chunk" : "bucket",
                 resume_bucket, ckpt_count(resume_nbuckets), depth);
-    } else if (load_path) {
-        // Degree-boundary extend from a prior .found.bin.
-        if (!read_found_image(load_path, smax, preload)) return 1;
+    } else if (seed_kind == 1) {
+        // Degree-boundary extend from a prior .found.bin.  This image is
+        // also the baseline for delta checkpoints.
+        preload = seed;
         have_preload = true;
-        // This image is also the baseline for delta checkpoints.
-        g_ckpt.base = preload;
+        g_ckpt.base.swap(seed);
         g_ckpt.base_path = load_path;
         g_ckpt.base_kind = 1;
-        g_ckpt.base_hash = ckpt_hash(preload.data() + 1, smax);
-        u64 pre_surv = 0;
-        for (u64 s = 1; s <= smax; s++) if (preload[s] == ~0ULL) pre_surv++;
+        g_ckpt.base_hash = seed_hash;
         fprintf(stderr, "loaded %s: %" PRIu64 " survivors carried in; "
                 "sieving degrees %d..%d only\n",
-                load_path, pre_surv, min_depth, depth);
-    } else if (loadsurv_path) {
+                load_path, seed_surv, min_depth, depth);
+    } else if (seed_kind == 2) {
         // Seed from a survivors list instead of a full .found.bin.  Only the
         // *degrees* in best[] matter for correctness when sieving degrees
         // >= min_depth: every s not listed already has a factor of degree
         // < min_depth, so any sentinel below key_floor(min_depth) blocks all new
         // writes exactly as the real key would.  The polynomial data in a
         // .found.bin is never read by the sieve -- only compared against.
-        u64 pre_surv = 0, line = 0, oor = 0;
-        if (!read_survivors_image(loadsurv_path, smax, preload, &pre_surv,
-                                  &line, &oor)) return 1;
-        if (oor) fprintf(stderr, "warning: %" PRIu64 " survivor entries outside "
-                         "1..%" PRIu64 " ignored\n", oor, smax);
+        preload = seed;
         have_preload = true;
-        g_ckpt.base = preload;                    // baseline for delta checkpoints
+        g_ckpt.base.swap(seed);                   // baseline for delta checkpoints
         g_ckpt.base_path = loadsurv_path;
         g_ckpt.base_kind = 2;
-        g_ckpt.base_hash = ckpt_hash(preload.data() + 1, smax);
+        g_ckpt.base_hash = seed_hash;
         fprintf(stderr, "loaded %s: %" PRIu64 " survivors carried in (%" PRIu64
                 " lines); sieving degrees %d..%d only\n",
-                loadsurv_path, pre_surv, line, min_depth, depth);
+                loadsurv_path, seed_surv, seed_lines, min_depth, depth);
         fprintf(stderr, "note: with --load-survivors the output records only "
                 "the newly found degree-%d..%d factors; keep the earlier "
                 "run's .found.cert for the lower degrees\n", min_depth, depth);
@@ -2973,49 +4129,57 @@ int main(int argc, char **argv) {
                 "degrees 2..%d are not computed\n", min_depth, min_depth - 1);
     }
 
-    // Degree 49 cannot be sieved: 2^49 - 1 = 127 * 4432676798593 leaves no
-    // discrete-log method with tables that fit, and a bucketed pass would
-    // take decades.  Degrees 50..55 can be, but then a factor found at
-    // degree 50..55 is the LEAST-degree factor of its trinomial only if
-    // degree 49 was ruled out by other means -- so that takes an explicit
-    // --allow-degree-gap.
-    if (min_depth <= 49 && depth >= 49) {
-        fprintf(stderr, "degree 49 cannot be sieved: 2^49 - 1 = 127 * "
-                "4432676798593, too large a prime for any discrete-log table, "
-                "and a bucketed pass would take decades.  Use depth <= 48%s\n",
-                depth > 49 ? " (degrees 50..55: see --allow-degree-gap)" : "");
+    // Degree 49 (2^49 - 1 = 127 * 4432676798593) has no Pohlig-Hellman plan;
+    // since round 5 the RR engine sieves it (gf2_dlog.h), after a one-off
+    // table build.  A run starting above 49 must say whether its seed file
+    // covers degree 49 (--seed-covers-49) or not (--allow-degree-gap: then a
+    // factor found at 50..55 is the least-degree factor only where there is
+    // no degree-49 one).  The run's own --min-depth counts, not where a
+    // resumed run continues.
+    const int orig_min = g_ckpt.min_depth;
+#if defined(WIDE_FIELD)
+    if (orig_min <= 49 && depth >= 49)
+        fprintf(stderr, "note: degree 49 uses the RR engine: first a table "
+                "of 2^25 logs is built (minutes; kept in %s if that took "
+                "over two), then the sieve\n", rr_cache_path(49).c_str());
+#endif
+    if (orig_min >= 50 && !allow_gap && !seed49 && !g_ckpt.gap49) {
+        fprintf(stderr, "--min-depth %d: is degree 49 covered by the "
+                "--load/--load-survivors file?  If it comes from a run through "
+                "degree 49, add --seed-covers-49.  If not, a factor found at "
+                "degree %d..%d is the least-degree factor of its trinomial only "
+                "where there is no degree-49 factor; add --allow-degree-gap to "
+                "sieve anyway (or run degree 49 first: --min-depth 49).\n",
+                orig_min, orig_min, depth);
         return 1;
     }
-    if (min_depth >= 50 && !allow_gap) {
-        fprintf(stderr, "--min-depth %d: degree 49 cannot be sieved, so a factor "
-                "found at degree %d..%d is the least-degree factor of its "
-                "trinomial only if degree-49 factors were ruled out some other "
-                "way -- otherwise its certificate line may be wrong (the factor "
-                "itself is real).  Add --allow-degree-gap to sieve anyway.\n",
-                min_depth, min_depth, depth);
-        return 1;
-    }
-    const bool gap49 = min_depth >= 50;
+    const bool gap49 = orig_min >= 50 && !seed49;
     if (gap49)
         fprintf(stderr, "note: --allow-degree-gap: degree 49 is NOT covered; "
                 "factors of degree %d..%d found here are least-degree factors "
-                "only where there is no degree-49 factor\n", min_depth, depth);
+                "only where there is no degree-49 factor\n", orig_min, depth);
 
-    // Configure checkpointing and install signal handlers.  A --resume run
+    // Configure checkpointing and install signal handlers.  A resumed run
     // keeps checkpointing to the same file (so it survives repeated spot
     // reclaims) unless --checkpoint names a different destination.
-    if (resume_path && !ckpt_path) ckpt_path = resume_path;
     if (ckpt_path) {
         g_ckpt.enabled  = true;
         g_ckpt.path     = ckpt_path;
-        // --checkpoint-mins on the command line wins; otherwise a resumed run
-        // inherits the interval the checkpoint was written with, so you don't
-        // silently lose periodic saves by omitting the flag on resume.
-        g_ckpt.period_s = (ckpt_mins >= 0) ? ckpt_mins * 60.0 : stored_period_s;
+        g_ckpt.gap49    = g_ckpt.gap49 || gap49;
+        // --checkpoint-mins on the command line wins (0 = on signals only);
+        // otherwise a resumed run inherits a recorded interval, and the
+        // default is CKPT_DEFAULT_MINS.
+        g_ckpt.period_s = ckpt_mins >= 0 ? ckpt_mins * 60.0
+                        : stored_period_s > 0 ? stored_period_s
+                        : CKPT_DEFAULT_MINS * 60.0;
         g_ckpt.last_write = now_s();
         g_ckpt.r = r; g_ckpt.smax = smax; g_ckpt.depth = depth;
+        // the first SIGINT/SIGTERM saves and exits at the next chunk or
+        // bucket boundary; a second one (SA_RESETHAND) kills at once -- the
+        // checkpoint file is replaced atomically, so that is safe too
         struct sigaction sa; memset(&sa, 0, sizeof sa);
         sa.sa_handler = ckpt_signal_handler;
+        sa.sa_flags = SA_RESETHAND;
         sigaction(SIGTERM, &sa, nullptr);
         sigaction(SIGINT,  &sa, nullptr);
         bool delta_ok = (g_ckpt.base.size() == smax + 1);
@@ -3024,7 +4188,7 @@ int main(int argc, char **argv) {
                 g_ckpt.keep, g_ckpt.keep == 1 ? "" : "s");
         if (g_ckpt.period_s > 0)
             fprintf(stderr, ", every %.1f min", g_ckpt.period_s / 60.0);
-        fprintf(stderr, "; SIGTERM/SIGINT saves and exits\n");
+        fprintf(stderr, "; SIGTERM/SIGINT saves and exits (twice: exit now)\n");
         if (!delta_ok && !loadsurv_path)
             fprintf(stderr, "note: no --load baseline, so checkpoints write a "
                     "full %.0f MB image; on slow storage prefer --load\n",
