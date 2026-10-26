@@ -1,8 +1,8 @@
 // gf2_wide_setup.h
 // Wide-field companion to gf2_field_setup.h: same host-side setup
 // (trial-division factorization, irreducibility / primitivity tests,
-// primitive-polynomial search) but with u64 field elements, for the
-// -DWIDE_FIELD build.  Requires gf2_wide_field.h to be included first.
+// primitive-polynomial search) but with u64 field elements, for
+// coarse_sieve.cu.  Requires gf2_wide_field.h to be included first.
 #ifndef GF2_WIDE_SETUP_H
 #define GF2_WIDE_SETUP_H
 #include "gf2_wide_field.h"

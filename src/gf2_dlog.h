@@ -1,6 +1,6 @@
 // gf2_dlog.h
-// Table-light discrete logarithms in GF(2^d), d <= 55, for coarse_sieve's
-// "logs" path (-DWIDE_FIELD build only).  The sieve needs, per cyclotomic
+// Table-light discrete logarithms in GF(2^d), d <= 55, for coarse_sieve
+// (its only sieve path since round 6).  The sieve needs, per cyclotomic
 // class, one Zech logarithm log(g^u + 1); instead of a 2^d-entry log table
 // (or its bucketed slices) it computes that one log directly:
 //
@@ -21,14 +21,19 @@
 //          general multiplies, short squaring chain.  The planner picks the
 //          split by estimated cost per class, for the kernel that will run
 //          it (cost models below).
+//   rr     (odd d >= 5, round 5): rational reconstruction -- half an
+//          extended Euclid writes e = r/t with deg r, deg t <= d/2, so
+//          log e = L[r] - L[t] from a table of the logs of all polynomials
+//          of degree <= d/2 (see "RR logs" below).
 //
 // Also here: carry-less arithmetic that is ~8x cheaper than gf_mul's
 // bit-serial loops (integer-multiply clmul with 4-bit holes, BearSSL-style;
 // two-fold reduction by the sparse low part of the modulus); bit-sliced
 // arithmetic for 32 elements at once (round 3: one u32 per coefficient,
 // the modulus fixed at compile time); the FKM enumeration of class
-// representatives (Lyndon words); and the u64 helpers the sweep needs
-// (Mersenne mulmod/powmod, exact-division tests).
+// representatives (Lyndon words) and their reciprocal pairing (round 6,
+// gf2f_pair_role); and the u64 helpers the sweep needs (Mersenne
+// mulmod/powmod, exact-division tests).
 // Everything is plain host+device code with no warp intrinsics, so
 // cuda_emul.h validates it exactly (coarse_sieve's batched kernel copies the
 // small tower tables to shared memory first -- device-only code).
@@ -304,6 +309,68 @@ GF2_HD bool gf2f_min_rotation_ref(u64 u, int d, u64 M) {
         if (x < u) return false;
     }
     return true;
+}
+
+GF2_HD int gf2f_popc64(u64 x) {
+#if defined(__CUDA_ARCH__)
+    return __popcll((unsigned long long)x);
+#else
+    return __builtin_popcountll(x);
+#endif
+}
+
+// the least of the d-bit rotations of w (reference loop; rare callers only)
+GF2_HD u64 gf2f_min_rotation(u64 w, int d, u64 M) {
+    u64 best = w, x = w;
+    for (int i = 1; i < d; i++) {
+        x = ((x << 1) | (x >> (d - 1))) & M;
+        if (x < best) best = x;
+    }
+    return best;
+}
+
+// ---------------------------------------------------------------------------
+// Reciprocal pairs (round 6).  The class of -u = ~u & M (the complement)
+// holds the roots g^-j of the reciprocal polynomial, and since
+// 1 + g^-u = g^-u (1 + g^u),  Z(-u) = Z(u) - u:  one Zech log serves both
+// classes.  For a Lyndon word u (a class representative):
+//   1: u is its pair's canonical member: process u and its partner;
+//   0: the partner rep(~u) is canonical: skip u (the partner marks it);
+//   2: u is its own partner (a self-reciprocal class): process u alone.
+// Canonical: fewer ones than zeros (complementing swaps the counts, so for
+// odd d exactly one member qualifies); with equal counts (even d), the
+// smaller of u and rep(~u).  A Lyndon word starts with its longest zero run
+// and rep(~u) with u's longest run of ones, so comparing those decides
+// nearly every tie; the rest compare with the least rotation of ~u.
+GF2_HD int gf2f_pair_role(u64 u, int d, u64 M) {
+    const int ones = gf2f_popc64(u);
+    if (2 * ones < d) return 1;
+    if (2 * ones > d) return 0;
+    const int z0 = gf2f_clz64(u) - (64 - d);    // u's leading = longest 0-run
+    int z1 = 0;                                 // u's longest 1-run (u starts
+    for (u64 x = u; x; x &= x >> 1) z1++;       // with 0: no wrap-around)
+    if (z0 != z1) return z0 > z1 ? 1 : 0;
+    const u64 rc = gf2f_min_rotation(~u & M, d, M);
+    return u < rc ? 1 : u > rc ? 0 : 2;
+}
+
+// the number of degree-d classes = irreducible polynomials of degree d over
+// GF(2) = binary Lyndon words of length d: (1/d) sum_{e|d} mu(e) 2^(d/e)
+static inline u64 gf2_irreducible_count(int d) {
+    long long s = 0;
+    for (int e = 1; e <= d; e++) {
+        if (d % e) continue;
+        int mu = 1, x = e;                      // Moebius function of e
+        for (int p = 2; p * p <= x; p++) {
+            if (x % p) continue;
+            x /= p;
+            if (x % p == 0) { mu = 0; break; }
+            mu = -mu;
+        }
+        if (mu && x > 1) mu = -mu;
+        s += (long long)mu * (long long)((u64)1 << (d / e));
+    }
+    return (u64)(s / d);
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,10 +1203,10 @@ static inline size_t ph_table_bytes(u64 N, int *sbits_out) {
 }
 
 // Cost of one Pohlig-Hellman log, in rough GPU instructions per class:
-//   scalar (one class per thread, round-2 kernel): a multiply costs ~2
+//   scalar (one log per thread: RR's factor-base logs): a multiply costs ~2
 //     squarings and all parts share one squaring chain;
-//   bit-sliced (round-3 kernel): a multiply ~73, a squaring ~3, each part
-//     its own chain, plus a transpose per part.
+//   bit-sliced (the batched kernel): a multiply ~73, a squaring ~3, each
+//     part its own chain, plus a transpose per part.
 // A lookup in a table larger than ~1 MB is a DRAM access (~300 equivalent
 // instructions); smaller tables stay in cache.  A giant step is a scalar
 // multiply plus another lookup.  Table memory is charged 1 per MB, so a
@@ -1147,11 +1214,9 @@ static inline size_t ph_table_bytes(u64 N, int *sbits_out) {
 struct PHCostModel {
     double mul, sqr, lookup_dram, lookup_cached, giant, per_part;
     bool shared_chain;
-    bool legacy;          // round 2's planner: the most balanced 2-part split
 };
-static const PHCostModel kPHCostScalar    = {250, 125, 300, 60, 550, 0, true, false};
-static const PHCostModel kPHCostBitsliced = {73, 3, 300, 60, 550, 60, false, false};
-static const PHCostModel kPHCostRound2    = {2, 1, 0, 0, 0, 0, true, true};
+static const PHCostModel kPHCostScalar    = {250, 125, 300, 60, 550, 0, true};
+static const PHCostModel kPHCostBitsliced = {73, 3, 300, 60, 550, 60, false};
 
 // The exponent for one part: E = c * (M/P) mod M over c coprime to P (and
 // its rotations c * 2^-r), minimizing the model cost of x^E.
@@ -1232,14 +1297,6 @@ static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H,
         return E;
     };
     bool have = false;
-    // round 2 used the most balanced coprime pair (largest part minimal)
-    u64 legacy_max = M;
-    if (cm.legacy && n > 1)
-        for (u64 mask = 1; mask + 1 < ((u64)1 << n); mask++) {
-            u64 A = 1;
-            for (int i = 0; i < n; i++) if (mask >> i & 1) A *= pp[i];
-            legacy_max = std::min(legacy_max, std::max(A, M / A));
-        }
     std::vector<int> g(n, 0);
     // every split into k <= 4 groups, each once (restricted growth strings)
     std::function<void(int, int)> rec = [&](int i, int used) {
@@ -1253,11 +1310,6 @@ static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H,
         u64 P[PH_MAXPARTS], N[PH_MAXPARTS];
         for (int j = 0; j < used; j++) P[j] = 1;
         for (int j = 0; j < n; j++) P[g[j]] *= pp[j];
-        if (cm.legacy) {                             // round 2: balanced pair
-            u64 mx = 0;
-            for (int j = 0; j < used; j++) mx = std::max(mx, P[j]);
-            if (used != std::min(n, 2) || mx > legacy_max) return;
-        }
         size_t bytes;
         if (!ph_fit_tables(P, used, budget_bytes, max_giant, N, &bytes)) return;
         PHHost T;
