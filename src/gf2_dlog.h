@@ -319,6 +319,14 @@ GF2_HD int gf2f_popc64(u64 x) {
 #endif
 }
 
+GF2_HD int gf2f_popc32(u32 x) {
+#if defined(__CUDA_ARCH__)
+    return __popc(x);
+#else
+    return __builtin_popcount(x);
+#endif
+}
+
 // the least of the d-bit rotations of w (reference loop; rare callers only)
 GF2_HD u64 gf2f_min_rotation(u64 w, int d, u64 M) {
     u64 best = w, x = w;
@@ -342,7 +350,41 @@ GF2_HD u64 gf2f_min_rotation(u64 w, int d, u64 M) {
 // smaller of u and rep(~u).  A Lyndon word starts with its longest zero run
 // and rep(~u) with u's longest run of ones, so comparing those decides
 // nearly every tie; the rest compare with the least rotation of ~u.
+//
+// Round 7, the same rule computed faster: the least rotation of ~u starts
+// at one of its longest zero runs, i.e. at one of u's longest runs of ones
+// (of length z1 = z0 here), so only those rotations are compared -- one or
+// two, typically -- instead of all d.  Round 6's version below (the
+// reference) ran a d-step loop for ~3% of the words at even d, inside the
+// enumeration loop, where a warp waits for its slowest lane (in 4-7% of the
+// loop's iterations at d=44, by tools/fillsim.cpp).  Identical roles:
+// checked against the reference on
+// every Lyndon word of length <= 36 and on 4.5e10 of length 44 (t_pair.cpp,
+// gf2_dlog_selftest.cpp part 9, and on the device by --selftest).
 GF2_HD int gf2f_pair_role(u64 u, int d, u64 M) {
+    const int ones = gf2f_popc64(u);
+    if (2 * ones < d) return 1;
+    if (2 * ones > d) return 0;
+    const int z0 = gf2f_clz64(u) - (64 - d);    // u's leading = longest 0-run
+    // bit b set iff bits b..b+z0-1 of u are ones (u starts with 0 and ends
+    // with 1: no run of ones wraps around)
+    u64 y = gf2f_zero_runs(u, z0);
+    if (!y) return 1;                           // u's longest 1-run < z0
+    if (y & (y >> 1)) return 0;                 // ... or > z0
+    // equal: rep(~u) starts at one of the runs of exactly z0 ones (one bit
+    // of y each, at its low end); rotate it to the top (s in 1..d-z0)
+    const u64 w = ~u & M;
+    u64 rc = M;
+    for (; y; y &= y - 1) {
+        const int s = d - z0 - gf2f_ctz64(y);
+        const u64 t = ((w << s) | (w >> (d - s))) & M;
+        if (t < rc) rc = t;
+    }
+    return u < rc ? 1 : u > rc ? 0 : 2;
+}
+
+// round 6's computation of the same role (the reference for the tests)
+GF2_HD int gf2f_pair_role_ref(u64 u, int d, u64 M) {
     const int ones = gf2f_popc64(u);
     if (2 * ones < d) return 1;
     if (2 * ones > d) return 0;

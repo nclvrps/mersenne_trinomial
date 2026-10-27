@@ -1,4 +1,4 @@
-// coarse_sieve.cu  (round 6)
+// coarse_sieve.cu  (round 7)
 // GPU coarse sieve for the least-degree irreducible factors of the
 // trinomials x^r + x^s + 1 over GF(2), all s in [1, floor(r/2)], factor
 // degrees d <= 55.
@@ -63,7 +63,10 @@
 // than zeros, ties broken exactly; gf2f_pair_role in gf2_dlog.h) marks both
 // progressions and the other member is skipped; self-reciprocal classes,
 // their own partners, are handled alone.  This halves the discrete logs,
-// table reads, inversions and bit-sliced work of every degree.
+// table reads, inversions and bit-sliced work of every degree.  (Round 7
+// computes the tie-break of even d -- as many ones as zeros, ~11% of the
+// classes -- from u's longest runs of ones instead of all d rotations of
+// ~u: the same roles, without a d-step loop inside the enumeration.)
 //
 // The Zech log of each canonical class comes from one of three engines
 // (gf2_dlog.h), whose tables have ~2^(d/2) entries rather than 2^d:
@@ -84,7 +87,9 @@
 //          coarse_rr_d<d>.tbl when that took over two minutes.  RR is the
 //          only engine at d=49 (2^49 - 1 = 127 * 4432676798593).
 // The batched kernel enumerates the Lyndon words of its range of u with
-// FKM and handles the canonical ones 32 per thread: g^u (and PH's powers)
+// FKM -- every lane of a warp its own runs, the canonical classes found
+// dealt out to the lanes in turn (round 7) -- and handles them 32 per
+// thread: g^u (and PH's powers)
 // in bit-sliced form, then the logs, then the progression starts v j^-1 of
 // all 32 with one modular inversion (Montgomery's trick).  Classes with
 // gcd(u, M) > 1 join the same inversion through exact 2-adic quotients and
@@ -120,7 +125,7 @@
 // The choice is stored in checkpoints, so a resumed degree keeps it without
 // re-timing.
 //
-// CHECKPOINTS (format v4, round 6)
+// CHECKPOINTS (format v4, rounds 6-7)
 // Every run saves to <out_prefix>.ckpt (or --checkpoint <file>) every 15
 // minutes, at a chunk boundary, and on SIGTERM or SIGINT: the first signal
 // saves and exits after the chunk in flight (seconds), a second exits at
@@ -134,7 +139,12 @@
 // inner subfield and loop order, and holds best[] as a delta against the
 // seed image when that is small (a few MB for a one-degree run), else as a
 // full image (8 bytes per s).  Writes are atomic (tmp + rename); the two
-// previous generations are kept as <file>.1 and <file>.2.
+// previous generations are kept as <file>.1 and <file>.2.  Round 7: it also
+// records the time spent on the degree and on the run's earlier degrees, so
+// a resumed degree's done line (and the total) gives the time of one
+// uninterrupted run -- each run's time up to its last checkpoint; the table
+// rebuild of a resumed run is not counted there -- with this run's own
+// time beside it.
 //
 // MEMORY
 // best[] (8 bytes per s: 545 MB at r = 136279841) on every GPU, plus the
@@ -165,6 +175,9 @@
 //   COARSE_TUNE=0, COARSE_TUNE_MIN=d, COARSE_TUNE_PICK=i (take candidate i)
 //   COARSE_PIPE=0|1       fix the loop order (0: round 5's; 1: table reads
 //                         one class ahead, the default) instead of tuning it
+//   COARSE_FILL=0|1|2|3   how the batches are filled (round 7, k_logs_batch):
+//                         0 round 6's, 1 rotated runs, 2 pooled, 3 pooled
+//                         with runs taken from a counter (the default)
 //   COARSE_TEST_SMAX=n    sieve s <= n instead of floor(r/2)
 //   COARSE_TEST_FAULT_EVERY=n   corrupt the log of classes with u == 1
 //                         (mod n): the run must stop with consistency errors
@@ -184,8 +197,13 @@
 // RR and d=49, tuning, automatic checkpoints; round 6 reciprocal pairs, and
 // removal of the u32 build, the dense and bucketed paths (the logs path is
 // faster at every degree), the round-2 kernel, the round-4 irregular path,
-// .found.bin files and the old checkpoint formats.
+// .found.bin files and the old checkpoint formats; round 7 full batches
+// (the warps pool the classes they find), the faster pair tie-break, the
+// time of all runs in checkpoints, and lockstep warps in the emulation.
 
+// the CPU emulation (make emul-coarse_sieve) runs the lanes of each warp in
+// lockstep, for the batched kernel's warp intrinsics (cuda_emul.h)
+#define EMUL_LOCKSTEP_WARPS 1
 #include "gf2_wide_field.h"
 #include "gf2_wide_setup.h"
 #include <cuda_runtime.h>
@@ -334,12 +352,24 @@ enum { LM_NONE = 0, LM_TOWER = 1, LM_PH = 2, LM_RR = 3 };
 //   * g^u comes from bit-sliced squarings, and Z(u) = log(g^u + 1) from the
 //     tower, PH or RR engine -- one discrete log per reciprocal pair.
 #define LOGS_MAXPF 16
+// How the batched kernel fills its batches (round 7; see k_logs_batch):
+//   FILL_LANE   as in round 6: each lane from its own runs (t, t + stride, ..)
+//   FILL_ROT    the same, with the runs of each warp rotated among its lanes
+//   FILL_POOLS  the warp's lanes pool the classes they find and deal them
+//               out in turn; static runs as FILL_ROT
+//   FILL_POOL   (default) pooled, and every lane takes its next run from a
+//               counter of the launch (L.runctr): no lane runs out early
+enum { FILL_LANE = 0, FILL_ROT = 1, FILL_POOLS = 2, FILL_POOL = 3 };
+
 struct LogsParams {
     int d, method;                 // method: LM_TOWER, LM_PH or LM_RR
     u64 M, q, qlow, rmodinv, smax;
     u64 rmod;                      // r mod M (the partner's s0 = r - s0)
     int pair;                      // 1: one Zech log per reciprocal pair
     int pipe;                      // 1: table reads one class ahead (round 6)
+    int fill;                      // round 7: the batches' fill (FILL_*)
+    unsigned long long *runctr;    // FILL_POOL: the launch's next run (zeroed
+                                   // before each launch)
     u64 lam_m1;                    // lambda(M) - 1: j^-1 = j^(lambda-1) mod M
     u64 fault;                     // test hook: corrupt the log of u = 1 mod fault
     int check;                     // selftest: compute log(g^u), count != u
@@ -554,8 +584,9 @@ __global__ void k_irreg_check(LogsParams L, u64 seed, u64 ntests,
 
 // selftest: the reciprocal pairing against direct computation, on random
 // classes u (least rotations of random odd words, aperiodic only).  For
-// each: the roles of u and of its partner rep(~u) must be complementary
-// (1/0 or 0/1; 2 only for a self-reciprocal class); the engine's log of
+// each: the roles of u and of its partner rep(~u) must be round 6's (the
+// reference gf2f_pair_role_ref) and complementary (1/0 or 0/1; 2 only for
+// a self-reciprocal class); the engine's log of
 // g^-u + 1 must be Z(u) - u; and the partner's progression start computed
 // from scratch (j' = -j, v' = Z(-u), s0' = v' j'^-1 mod n by the extended-
 // Euclid inverse) must equal (r - s0) mod n.  bad[0] failures, bad[1] pairs
@@ -576,6 +607,11 @@ __global__ void k_pair_check(LogsParams L, const fw *gpow2, u64 seed,
         if (u == 0 || u == M || !logs_is_rep(u, L)) continue;   // a class rep
         const u64 pr = gf2f_min_rotation(~u & M, d, M);
         const int ru = gf2f_pair_role(u, d, M), rp = gf2f_pair_role(pr, d, M);
+        // round 7: the fast tie-break gives round 6's roles exactly
+        if (ru != gf2f_pair_role_ref(u, d, M) || rp != gf2f_pair_role_ref(pr, d, M)) {
+            nb++;
+            continue;
+        }
         if (pr == u) { nsr++; if (ru != 2) nb++; continue; }
         if (!((ru == 1 && rp == 0) || (ru == 0 && rp == 1))) { nb++; continue; }
         np++;
@@ -893,11 +929,68 @@ __device__ __forceinline__ void tower_stage_shared(TowerDev &t,
 }
 #endif
 
-// sweep the Lyndon words in [ulo, uhi), runs of `run` u-values per step of
-// the grid-stride loop; partial batches carry over between runs.  Tower
+// warp-synchronous helpers (round 7): the real intrinsics under nvcc, the
+// lockstep-warp emulation of cuda_emul.h otherwise
+#if defined(__CUDACC__)
+#define WARP_BALLOT(p)  __ballot_sync(0xffffffffu, (p))
+#define WARP_SHFL(v, s) __shfl_sync(0xffffffffu, (unsigned long long)(v), (s))
+#else
+#define WARP_BALLOT(p)  emul_ballot_sync(0xffffffffu, (p))
+#define WARP_SHFL(v, s) emul_shfl_sync(0xffffffffu, (unsigned long long)(v), (s))
+#endif
+
+// the position of the r-th set bit of m, counting from 0 (r < popc(m); any
+// value in 0..31 otherwise)
+GF2_HD int warp_select(u32 m, int r) {
+    int pos = 0, c = gf2f_popc32(m & 0xffffu);
+    if (r >= c) { r -= c; pos += 16; m >>= 16; }
+    c = gf2f_popc32(m & 0xffu);
+    if (r >= c) { r -= c; pos += 8; m >>= 8; }
+    c = gf2f_popc32(m & 0xfu);
+    if (r >= c) { r -= c; pos += 4; m >>= 4; }
+    c = gf2f_popc32(m & 0x3u);
+    if (r >= c) { r -= c; pos += 2; m >>= 2; }
+    if (r >= (int)(m & 1u)) pos += 1;
+    return pos;
+}
+
+// The k-th run of a thread, rr = t + k * stride (round 6's order).  With
+// rot (FILL_ROT, FILL_POOLS) the runs of each aligned group of 32 -- one
+// per lane of a warp, all at the same k -- are rotated by k, so a lane's
+// runs take every place in the group in turn: in round 6's order all of a
+// lane's runs share the 5 bits of u just above the run, so their classes
+// differ systematically from lane to lane (some lanes had half the work of
+// others, and idled through their warp's last batches).  A bijection on
+// each group (stride is a multiple of 32); a partial last group stays.
+GF2_HD u64 logs_run_at(u64 rr, u64 k, u64 nruns, bool rot) {
+    if (!rot || (rr | 31) >= nruns) return rr;
+    return (rr & ~(u64)31) | ((rr + k) & 31);
+}
+
+// Sweep the Lyndon words in [ulo, uhi), in runs of `run` u values; tower
 // kernels run 512-thread blocks (one per SM, sharing one copy of the small
 // tables in shared memory), PH kernels 128-thread blocks (up to ~250
-// registers).
+// registers).  The batches (LB canonical classes per lane) are filled in
+// one of the FILL_* ways (L.fill):
+//   lane (round 6): each lane enumerates its own runs into its own batch.
+//          The warp runs each batch when its slowest lane is full -- and
+//          the lanes' supply of canonical classes differs a lot (the
+//          canonical share depends on the ones in u's high bits), so most
+//          enumeration steps had a third of the lanes active, and lanes
+//          that finished their runs early sat out the warp's last batches:
+//          27-38% of the batch slots were empty over a real pass (but 1-2%
+//          in the tuner's dense sample), by a lockstep simulation of the
+//          warps on sampled chunks of d = 40-47 (tools/fillsim.cpp).
+//   pool (round 7): every lane steps its own enumeration once per
+//          iteration, and the canonical classes the warp finds are dealt to
+//          the lanes in turn (a ballot, then each lane fetches its class
+//          from the finder with a shuffle), so the lanes fill together and
+//          every batch is full but the last: by the same simulation ~2
+//          lane-steps of the loop per class instead of 7.5-14, and no empty
+//          slots.
+//          A lane whose class finds no room keeps it for the next round.
+//          FILL_POOL also takes each run from the launch's counter, so
+//          lanes and warps run out of work together at the end.
 template <int D, int METHOD>
 __global__ void __launch_bounds__(METHOD == LM_PH ? 128 : 512, 1)
 k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
@@ -914,8 +1007,11 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
     }
 #endif
     const u64 nruns = (uhi - ulo + run - 1) / run;
-    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
     const u64 stride = (u64)gridDim.x * blockDim.x;
+    const bool dyn = L.fill == FILL_POOL;
+    const bool rot = L.fill == FILL_ROT || L.fill == FILL_POOLS;
+    u64 rr = dyn ? 0 : (u64)blockIdx.x * blockDim.x + threadIdx.x;
+    u64 kr = 0;                                 // runs taken (static order)
     u64 ub[LB], vb[LB], tb[LB], xb[LB];
     for (int k = 0; k < LB; k++) xb[k] = 1;     // read ahead before written
     fw P[64];
@@ -924,33 +1020,100 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
     u64 w = 0, whi = 0;
     int p = 0;
     bool have = false;
-    for (;;) {
-        int n = 0;
-        u32 pairm = 0;                          // bit k: ub[k] has a partner
-        while (n < LB) {                        // fill: next 32 canonical classes
-            if (!have) {
-                if (rr >= nruns) break;
-                const u64 lo = ulo + rr * run;
-                whi = uhi - lo > run ? lo + run : uhi;
-                rr += stride;
-                w = fkm_seek(lo, D, &p);
-                have = true;
-            }
-            if (w >= whi) { have = false; continue; }
-            if (p == D) {                       // a Lyndon word: a class
-                const int role = L.pair ? gf2f_pair_role(w, D, L.M) : 2;
-                if (role) {
-                    if (role == 1) pairm |= 1u << n;
-                    my_surv += role == 1 ? 2 : 1;   // classes covered
-                    ub[n++] = w;
+    if (L.fill >= FILL_POOLS) {
+        // ---- pooled fill ----
+        const unsigned lane = threadIdx.x & 31u;
+        const u32 below = (1u << lane) - 1;     // the lanes before this one
+        u64 pw = 0;                             // the pending class; bit 63:
+        bool pend = false, live = true;         //   it has a partner
+        for (;;) {                              // rounds (warp-uniform)
+            int n = 0;
+            u32 pairm = 0;                      // bit k: ub[k] has a partner
+            u32 total = 0;                      // classes dealt this round
+            for (;;) {
+                if (!pend && live) {            // this lane's next step
+                    if (!have) {
+                        if (dyn) rr = atomicAdd(L.runctr, 1ULL);
+                        if (rr >= nruns) live = false;
+                        else {
+                            const u64 lo = ulo + logs_run_at(rr, kr, nruns, rot) * run;
+                            whi = uhi - lo > run ? lo + run : uhi;
+                            if (!dyn) { rr += stride; kr++; }
+                            w = fkm_seek(lo, D, &p);
+                            have = true;
+                        }
+                    }
+                    if (have) {
+                        if (w >= whi) have = false;
+                        else {
+                            if (p == D) {       // a Lyndon word: a class
+                                const int role = L.pair ? gf2f_pair_role(w, D, L.M) : 2;
+                                if (role) {
+                                    pend = true;
+                                    pw = w | (role == 1 ? (u64)1 << 63 : 0);
+                                    my_surv += role == 1 ? 2 : 1;   // classes covered
+                                }
+                            }
+                            w = fkm_next(w, D, &p);
+                        }
+                    }
                 }
+                const u32 found = WARP_BALLOT(pend);
+                const u32 alive = WARP_BALLOT(live);
+                if (!found) {
+                    if (!alive) break;          // the warp's supply is gone
+                    continue;
+                }
+                // deal: the found classes in lane order, to the lanes from
+                // total mod 32 on, as far as there is room
+                const u32 nf = (u32)gf2f_popc32(found), room = 32u * LB - total;
+                const u32 take = nf < room ? nf : room;
+                const u32 r = (lane - total) & 31u;     // the class this lane gets
+                const u64 got = WARP_SHFL(pw, warp_select(found, (int)r));
+                if (r < take) {
+                    if (got >> 63) pairm |= 1u << n;
+                    ub[n++] = got & ~((u64)1 << 63);
+                }
+                if (pend && (u32)gf2f_popc32(found & below) < take) pend = false;
+                total += take;
+                if (total == 32u * LB) break;   // every lane has LB
             }
-            w = fkm_next(w, D, &p);
+            if (n)
+                logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
+                                      (nb++ & 7) == 0, best, heavy, nheavy,
+                                      overflow, P, &my_err);
+            if (total < 32u * LB) break;        // that was the last round
         }
-        if (n == 0) break;
-        logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
-                              (nb++ & 7) == 0, best, heavy, nheavy, overflow,
-                              P, &my_err);
+    } else {
+        // ---- per-lane fill (round 6; FILL_ROT rotates the runs) ----
+        for (;;) {
+            int n = 0;
+            u32 pairm = 0;                      // bit k: ub[k] has a partner
+            while (n < LB) {                    // fill: next 32 canonical classes
+                if (!have) {
+                    if (rr >= nruns) break;
+                    const u64 lo = ulo + logs_run_at(rr, kr, nruns, rot) * run;
+                    whi = uhi - lo > run ? lo + run : uhi;
+                    rr += stride; kr++;
+                    w = fkm_seek(lo, D, &p);
+                    have = true;
+                }
+                if (w >= whi) { have = false; continue; }
+                if (p == D) {                   // a Lyndon word: a class
+                    const int role = L.pair ? gf2f_pair_role(w, D, L.M) : 2;
+                    if (role) {
+                        if (role == 1) pairm |= 1u << n;
+                        my_surv += role == 1 ? 2 : 1;   // classes covered
+                        ub[n++] = w;
+                    }
+                }
+                w = fkm_next(w, D, &p);
+            }
+            if (n == 0) break;
+            logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
+                                  (nb++ & 7) == 0, best, heavy, nheavy, overflow,
+                                  P, &my_err);
+        }
     }
     if (my_surv) atomicAdd(nsurv, my_surv);
     if (my_err) atomicAdd(nerr, my_err);
@@ -1070,6 +1233,7 @@ struct GpuCtx {
     ull *d_best = nullptr;
     Heavy *d_heavy = nullptr;
     unsigned *d_nheavy = nullptr, *d_overflow = nullptr;
+    unsigned long long *d_runctr = nullptr;  // FILL_POOL: the launch's next run
     // per-degree scratch: the g^(2^t) chain, class and error counters
     fw *dgp = nullptr;
     unsigned long long *d_nsurv = nullptr, *d_nerr = nullptr;
@@ -1108,6 +1272,7 @@ static int g_tune_min = 40;              // COARSE_TUNE_MIN: least degree tuned
 static int g_tower_sub = -1;             // COARSE_TOWER_SUBN: -1 auto, 0 classic, n
 static bool g_test_eta = false;          // COARSE_TEST_ETA=1: always show the ETA
 static int g_pipe = 1;                   // COARSE_PIPE=0: round-5 loop order
+static int g_fill = FILL_POOL;           // COARSE_FILL=0..3 (round 7)
 static bool g_pipe_fixed = false;        // COARSE_PIPE set: the tuner keeps it
 
 #define GPU_MEM_RESERVE (256ull << 20)  // headroom for allocator/context overhead
@@ -1140,6 +1305,12 @@ struct CkptCtx {
     int snap_method = LM_NONE, snap_sub = -1;   // the degree's engine, subfield
     int snap_pipe = 1;                   // and loop order (LogsParams::pipe)
     u64 snap_classes = 0;                // classes covered by those chunks
+    double snap_deg_s = 0;               // time on degree snap_d so far
+    // round 7: time in all runs, as one uninterrupted run would show it --
+    // of the run's degrees before the current one (run_known: every run so
+    // far recorded it; false after resuming a round-6 checkpoint)
+    double run_before_s = 0, snap_run_s = 0;
+    bool run_known = true, snap_run_known = true;
     double eta_s = -1;                   // the latest time-left estimate
     volatile sig_atomic_t stop = 0;      // set by the signal handler
     long test_stop_after = 0, test_chunks_done = 0;   // test hook
@@ -1149,23 +1320,30 @@ static CkptCtx g_ckpt;
 extern "C" void ckpt_signal_handler(int) { g_ckpt.stop = 1; }
 
 // layout: magic; u32[CKPT_N32] = {4, d, next, nchunks, method, sub, flags,
-// seed path length, d_lo, d_hi, loop order (pipe), 0}; u64[CKPT_N64] = {r,
-// smax, period (s), seed hash, ndelta, time written, classes, 0}; the seed
-// path; then ndelta (s, key) pairs (a delta against the seed image) or
-// best[1..smax]
+// seed path length, d_lo, d_hi, loop order (pipe), run time}; u64[CKPT_N64]
+// = {r, smax, period (s), seed hash, ndelta, time written, classes, degree
+// time}; the seed path; then ndelta (s, key) pairs (a delta against the
+// seed image) or best[1..smax].  The two times (round 7; round 6 wrote 0
+// there and ignores them, and its readers ignore the flags it does not
+// know): the degree's time so far as an IEEE double (flag CKPT_F_DEGTIME),
+// the time of the run's earlier degrees as a float (CKPT_F_RUNTIME).
 static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','4'};
 #define CKPT_N32 12
 #define CKPT_N64 8
-#define CKPT_F_DELTA 1u
-#define CKPT_F_SEED  2u
+#define CKPT_F_DELTA   1u
+#define CKPT_F_SEED    2u
+#define CKPT_F_DEGTIME 4u
+#define CKPT_F_RUNTIME 8u
 
 struct CkptInfo {
     int d = 0, next = 0, nchunks = 0, method = LM_NONE, sub = -1, pipe = 1;
     int d_lo = 0, d_hi = 0;
     bool delta = false, seed = false;
+    bool deg_known = false, run_known = false;  // the times below recorded
     std::string seed_path;
     u64 r = 0, smax = 0, period_s = 0, seed_hash = 0, ndelta = 0, written = 0,
         classes = 0;
+    double deg_s = 0, run_s = 0;
 };
 
 // the header (and the seed path); *f_out is left at the payload if given
@@ -1187,6 +1365,14 @@ static bool ckpt_peek(const char *path, CkptInfo &ci, FILE **f_out = nullptr) {
         ci.r = h64[0]; ci.smax = h64[1]; ci.period_s = h64[2];
         ci.seed_hash = h64[3]; ci.ndelta = h64[4]; ci.written = h64[5];
         ci.classes = h64[6];
+        ci.deg_known = (h32[6] & CKPT_F_DEGTIME) != 0;
+        ci.run_known = (h32[6] & CKPT_F_RUNTIME) != 0;
+        float fr;
+        memcpy(&fr, &h32[11], sizeof fr);
+        memcpy(&ci.deg_s, &h64[7], sizeof ci.deg_s);
+        ci.run_s = fr;
+        if (!(ci.deg_s >= 0 && ci.deg_s < 1e12)) { ci.deg_s = 0; ci.deg_known = false; }
+        if (!(ci.run_s >= 0 && ci.run_s < 1e12)) { ci.run_s = 0; ci.run_known = false; }
         const u32 plen = h32[7];
         ci.seed_path.assign(plen, '\0');
         ok = plen <= 4096 && (!plen || fread(&ci.seed_path[0], 1, plen, f) == plen);
@@ -1204,9 +1390,11 @@ static u64 ckpt_hash(const ull *p, u64 n) {
 }
 
 // Copy device best[] into the host snapshot and tag it.  nchunks = 0 marks a
-// degree boundary ("degree d, nothing of it done yet").
+// degree boundary ("degree d, nothing of it done yet").  deg_s: the time on
+// the degree so far (in all runs; < 0: unknown, after resuming a round-6
+// checkpoint mid-degree).
 static void ckpt_snapshot(int d, int next, int nchunks, int method, int sub,
-                          int pipe, u64 classes) {
+                          int pipe, u64 classes, double deg_s) {
     if (!g_ckpt.enabled) return;
     if (g_ckpt.snap.size() != g_ckpt.smax + 1) g_ckpt.snap.resize(g_ckpt.smax + 1);
     gather_best(g_ckpt.snap.data(), g_ckpt.smax + 1);
@@ -1217,6 +1405,9 @@ static void ckpt_snapshot(int d, int next, int nchunks, int method, int sub,
     g_ckpt.snap_sub = sub;
     g_ckpt.snap_pipe = pipe;
     g_ckpt.snap_classes = classes;
+    g_ckpt.snap_deg_s = deg_s;
+    g_ckpt.snap_run_s = g_ckpt.run_before_s;
+    g_ckpt.snap_run_known = g_ckpt.run_known;
 }
 
 static std::string ckpt_gen_name(const char *path, int i) {
@@ -1264,14 +1455,23 @@ static void ckpt_write() {
     const bool seed = !g_ckpt.seed_path.empty();
     const u32 plen = seed ? (u32)g_ckpt.seed_path.size() : 0;
     const u64 ndelta = use_delta ? (u64)(dsig.size() / 2) : 0;
+    const bool deg_known = g_ckpt.snap_deg_s >= 0;
+    const double deg_s = deg_known ? g_ckpt.snap_deg_s : 0.0;
+    const float run_s = g_ckpt.snap_run_known ? (float)g_ckpt.snap_run_s : 0.0f;
+    u32 run_bits;
+    u64 deg_bits;
+    memcpy(&run_bits, &run_s, sizeof run_bits);
+    memcpy(&deg_bits, &deg_s, sizeof deg_bits);
     const u32 h32[CKPT_N32] = { 4u, (u32)g_ckpt.snap_d, (u32)g_ckpt.snap_next,
         (u32)g_ckpt.snap_nchunks, (u32)g_ckpt.snap_method,
         (u32)(int32_t)g_ckpt.snap_sub,
-        (use_delta ? CKPT_F_DELTA : 0u) | (seed ? CKPT_F_SEED : 0u), plen,
-        (u32)g_ckpt.d_lo, (u32)g_ckpt.d_hi, (u32)g_ckpt.snap_pipe, 0u };
+        (use_delta ? CKPT_F_DELTA : 0u) | (seed ? CKPT_F_SEED : 0u) |
+        (deg_known ? CKPT_F_DEGTIME : 0u) |
+        (g_ckpt.snap_run_known ? CKPT_F_RUNTIME : 0u), plen,
+        (u32)g_ckpt.d_lo, (u32)g_ckpt.d_hi, (u32)g_ckpt.snap_pipe, run_bits };
     const u64 h64[CKPT_N64] = { g_ckpt.r, g_ckpt.smax,
         (u64)(g_ckpt.period_s + 0.5), seed ? g_ckpt.seed_hash : 0, ndelta,
-        (u64)time(nullptr), g_ckpt.snap_classes, 0 };
+        (u64)time(nullptr), g_ckpt.snap_classes, deg_bits };
     bool ok = fwrite(CKPT_MAGIC, 1, 8, f) == 8 &&
               fwrite(h32, sizeof(u32), CKPT_N32, f) == CKPT_N32 &&
               fwrite(h64, sizeof(u64), CKPT_N64, f) == CKPT_N64 &&
@@ -1320,6 +1520,12 @@ static bool ckpt_stop_due() {
 
 // persist and exit cleanly after a stop signal (or the test stop)
 static void ckpt_stop_and_exit() {
+    if (!g_ckpt.enabled) {                  // (only the test hook, e.g. to
+        fprintf(stderr, "stopping after %ld chunks (COARSE_TEST_STOP_AFTER_"
+                "CHUNKS); no checkpoint, nothing saved\n",   // profile a few)
+                g_ckpt.test_chunks_done);
+        exit(0);
+    }
     ckpt_write();
     fprintf(stderr, "stopping on request; run the same command again to "
             "continue\n");
@@ -1383,7 +1589,10 @@ static std::string ckpt_describe(const CkptInfo &ci) {
         localtime_r(&t, &tmv);
         strftime(when, sizeof when, "written %Y-%m-%d %H:%M, ", &tmv);
     }
-    if (ci.nchunks)
+    if (ci.nchunks && ci.deg_known)
+        snprintf(b, sizeof b, "%sdegree %d, chunk %d of %d, %.2fs into it", when,
+                 ci.d, ci.next, ci.nchunks, ci.deg_s);
+    else if (ci.nchunks)
         snprintf(b, sizeof b, "%sdegree %d, chunk %d of %d", when, ci.d, ci.next,
                  ci.nchunks);
     else
@@ -1427,8 +1636,8 @@ static int ckpt_resume(const char *path, u64 r, u64 smax, int d_lo, int d_hi,
         FILE *f = nullptr;
         CkptInfo c;
         if (!ckpt_peek(g.c_str(), c, &f)) {
-            fprintf(stderr, "checkpoint %s: not a readable round-6 checkpoint\n",
-                    g.c_str());
+            fprintf(stderr, "checkpoint %s: not a readable checkpoint (format "
+                    "v4, rounds 6-7)\n", g.c_str());
             continue;
         }
         if (!checked) {                          // the newest readable one
@@ -1699,6 +1908,7 @@ static LogsParams logs_params_base(int d, u64 r, u64 smax, u64 q, int method) {
     L.rmod = r % L.M;
     L.pair = 1;
     L.pipe = g_pipe;
+    L.fill = g_fill;
     L.smax = smax;
     // Carmichael lambda(M) = lcm of phi(p^k) over p^k || M: the exponent of
     // the unit group, so j^(lambda-1) = j^-1 for gcd(j, M) = 1.  It is much
@@ -2106,13 +2316,16 @@ static u64 logs_batch_check(GpuCtx &G, int d, const LogsPlan &pl,
     LogsBatchFn kfn = logs_batch_fn(d, pl.method);
     if (!kfn) return 0;
     unsigned long long zero = 0, ns = 0, ne = 0, nc = 0;
-    unsigned long long *dns, *dne, *dnc;
+    unsigned long long *dns, *dne, *dnc, *dctr;
     CUCHK(cudaMalloc(&dns, 8)); CUCHK(cudaMalloc(&dne, 8)); CUCHK(cudaMalloc(&dnc, 8));
+    CUCHK(cudaMalloc(&dctr, 8));
     CUCHK(cudaMemcpy(dns, &zero, 8, cudaMemcpyHostToDevice));
     CUCHK(cudaMemcpy(dne, &zero, 8, cudaMemcpyHostToDevice));
     CUCHK(cudaMemcpy(dnc, &zero, 8, cudaMemcpyHostToDevice));
+    CUCHK(cudaMemcpy(dctr, &zero, 8, cudaMemcpyHostToDevice));
     L.check = 1;
     L.pair = 0;                                 // every class of the stretch
+    L.runctr = dctr;
     const u64 run = 1024;
     int blocks, threads;
     size_t shm;
@@ -2125,7 +2338,7 @@ static u64 logs_batch_check(GpuCtx &G, int d, const LogsPlan &pl,
     CUCHK(cudaMemcpy(&ns, dns, 8, cudaMemcpyDeviceToHost));
     CUCHK(cudaMemcpy(&ne, dne, 8, cudaMemcpyDeviceToHost));
     CUCHK(cudaMemcpy(&nc, dnc, 8, cudaMemcpyDeviceToHost));
-    cudaFree(dns); cudaFree(dne); cudaFree(dnc);
+    cudaFree(dns); cudaFree(dne); cudaFree(dnc); cudaFree(dctr);
     *nclasses = ns;
     return ne + (ns != nc ? 1 : 0);
 }
@@ -2142,6 +2355,31 @@ static u64 logs_dense_stretch(int d, int L) {
     u64 H = 0;
     for (int b = hb - z - 1; b >= 0; b -= 2) H |= (u64)1 << b;
     return H << L;
+}
+
+// A stretch of an ordinary density (round 7, the fill test): H = 0^z 1 and
+// pseudo-random bits without a run of z zeros, z = 5 (a common leading run
+// at d >= 30, smaller when H is short), so that the stretch holds classes
+// -- fewer than the dense one, and with a canonical share that varies
+// along it as in a real chunk.  (The dense stretch when H is too short.)
+static u64 logs_typical_stretch(int d, int L, u64 seed) {
+    const int hb = d - L;
+    int z = 5;
+    while (z > 1 && hb < z + 2) z--;
+    if (hb < z + 2) return logs_dense_stretch(d, L);
+    for (int tries = 0; tries < 1000; tries++) {
+        u64 h = 0;
+        for (int b = hb - z - 2; b >= 0; b--) {
+            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            h |= (seed >> 63) << b;
+        }
+        const u64 H = ((u64)1 << (hb - z - 1)) | h;     // 0^z 1 h
+        bool ok = true;                 // no run of >= z zeros in "1 h"
+        for (int b = 0; b + z <= hb - z && ok; b++)
+            if (((H >> b) & (((u64)1 << z) - 1)) == 0) ok = false;
+        if (ok) return H << L;
+    }
+    return logs_dense_stretch(d, L);
 }
 
 // --selftest, second part: the rotation test, the irregular-class lift, and
@@ -2307,6 +2545,24 @@ static u64 logs_wide_selftest(u64 r, int want) {
                         " classes in its stretch\n", d, ncls);
                 bfail++;
             }
+            // round 7: every way of filling the batches, on a stretch of an
+            // ordinary density (sparser, the canonical share varying)
+            u64 ntyp = 0;
+            {
+                const u64 tlo = logs_typical_stretch(d, lb, 0x51ED2700ULL + (u64)d);
+                for (int f = FILL_LANE; f <= FILL_POOL; f++) {
+                    LogsParams Lf = L;
+                    Lf.fill = f;
+                    u64 nf = 0;
+                    bfail += logs_batch_check(G, d, pl, Lf, tlo, tlo + ((u64)1 << lb), &nf);
+                    if (f == FILL_LANE) ntyp = nf;
+                    else if (nf != ntyp) bfail++;
+                }
+                if (!ntyp) {
+                    fprintf(stderr, "  d=%d: no classes in the fill test's stretch\n", d);
+                    bfail++;
+                }
+            }
             // the reciprocal pairing against direct computation
             CUCHK(cudaMemset(dpb, 0, sizeof pb));
             launch_dims(npair, blocks, threads);
@@ -2317,11 +2573,11 @@ static u64 logs_wide_selftest(u64 r, int want) {
             logs_free_device(G);
             cudaFree(G.dgp); G.dgp = nullptr;
             fprintf(stderr, "  [d=%d %-5s logs, %4.0f MB tables: %" PRIu64
-                    " checked, %llu wrong; batched: %" PRIu64 " classes%s, %s; "
-                    "pairs: %llu, %s", d,
+                    " checked, %llu wrong; batched: %" PRIu64 " classes%s and %"
+                    PRIu64 " (4 fills), %s; pairs: %llu, %s", d,
                     pl.method == LM_TOWER ? "tower" : pl.method == LM_RR ? "RR" : "PH",
                     pl.bytes / 1048576.0, nlog, bad, ncls,
-                    pl.method != LM_PH ? " (both loop orders)" : "",
+                    pl.method != LM_PH ? " (both loop orders)" : "", ntyp,
                     bfail ? "FAILED" : "ok", pb[1], pfail ? "FAILED" : "ok");
             if (pl.method == LM_TOWER && W.sub_k)
                 fprintf(stderr, "; over GF(2^%d)", W.sub_n);
@@ -2467,16 +2723,28 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
         }
         const LogsBatchFn kfn = logs_batch_fn(d, c.method);
         Lcur.pipe = c.pipe;                     // (no new tables for this)
+        Lcur.runctr = G.d_runctr;
         for (int rep = timed_any ? 1 : 0; rep < 2; rep++) {   // first: warm-up
             u64 uhi = ulo + ((u64)1 << lb); if (uhi > total) uhi = total;
             int blocks, threads;
             size_t shm;
-            logs_batch_dims(kfn, (uhi - ulo + krun - 1) / krun, c.method, Lcur,
+            // round 7: runs of the sample short enough for ~16 per lane of
+            // the whole wave (with runs of krun, 2^27 u held ~3.2 runs per
+            // lane: some lanes had 4, the rest 3, and the sample's time
+            // came out ~25% high -- ~10% for PH, whose wave has half the
+            // lanes)
+            logs_batch_dims(kfn, ~(u64)0 >> 2, c.method, Lcur, blocks, threads, shm);
+            const u64 lanes = (u64)blocks * (u64)threads;
+            u64 trun = (uhi - ulo + 16 * lanes - 1) / (16 * lanes);
+            if (trun < 64) trun = 64;
+            if (trun > krun) trun = krun;
+            logs_batch_dims(kfn, (uhi - ulo + trun - 1) / trun, c.method, Lcur,
                             blocks, threads, shm);
             CUCHK(cudaMemcpy(G.d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
             CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
+            CUCHK(cudaMemcpy(G.d_runctr, &zero64, 8, cudaMemcpyHostToDevice));
             CUCHK(cudaEventRecord(e0));
-            kfn<<<blocks, threads, shm>>>(Lcur, G.dgp, ulo, uhi, krun, G.d_best,
+            kfn<<<blocks, threads, shm>>>(Lcur, G.dgp, ulo, uhi, trun, G.d_best,
                                           G.d_heavy, G.d_nheavy, G.d_overflow,
                                           G.d_nsurv, G.d_nerr);
             CUCHK(cudaEventRecord(e1));
@@ -2545,6 +2813,7 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
 struct ResumePos {
     int next = 0, nchunks = 0, method = LM_NONE, sub = -1, pipe = 1;
     u64 classes = 0;
+    double deg_s = -1;                  // time on the degree so far (< 0: unknown)
 };
 
 // Sieve degree d (any VRAM: tables only).  rs: resume position within the
@@ -2630,6 +2899,7 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
         Lg.push_back(logs_params_base(d, r, smax, q, pl.method));
         Lg.back().pipe = pipe_use;
+        Lg.back().runctr = G.d_runctr;
         // test hook: COARSE_TEST_FAULT_EVERY=n flips a bit of the log of
         // every class with u = 1 (mod n), to exercise the error stop
         if (const char *e = getenv("COARSE_TEST_FAULT_EVERY"))
@@ -2681,16 +2951,27 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
     const int eta_after = nchunks / 8 < 256 ? (nchunks / 8 > 0 ? nchunks / 8 : 1) : 256;
     g_ckpt.eta_s = -1;
     bool eta_shown = false;
+    // the degree's time in all runs, as one uninterrupted run would show it
+    // (round 7): a fresh degree counts from t0 (tables, tuning, pass); a
+    // resumed one adds this run's pass to the time recorded in the
+    // checkpoint, not its table rebuild (< 0: unknown -- a round-6 checkpoint)
+    const double deg_before = mid ? rs->deg_s : 0;
+    const double t_count = mid ? t_pass : t0;
+    auto deg_time = [&]() {
+        return deg_before < 0 ? -1.0 : deg_before + (now_s() - t_count);
+    };
     for (int base = start_chunk; base < nchunks; base += NG) {
         // round boundary: every chunk < base is complete on every device
         const u64 classes_now = classes_before + classes_run;
         if (ckpt_stop_due()) {
             fprintf(stderr, "\n");
-            ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use, classes_now);
+            ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use,
+                          classes_now, deg_time());
             ckpt_stop_and_exit();
         }
         if (ckpt_periodic_due()) {
-            ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use, classes_now);
+            ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use,
+                          classes_now, deg_time());
             ckpt_write();
         }
         int used = 0;
@@ -2701,8 +2982,10 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
             u64 uhi = ulo + chunk; if (uhi > total) uhi = total;
             CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
             CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
+            CUCHK(cudaMemset(G.d_runctr, 0, 8));
             // runs of krun = run/8 u-values: ~50 per thread, so threads
-            // finish together (the chunk itself is unchanged)
+            // finish together (the chunk itself is unchanged; with FILL_POOL
+            // a lane takes its next run when it needs one)
             const u64 krun = run >= 512 ? run / 8 : run;
             int blocks, threads;
             size_t shm;
@@ -2804,9 +3087,23 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
                 classes_before + (u64)nsurv, classes_all, d);
         exit(1);
     }
+    // the time: of this run; of all runs, if resumed (Item 3 of round 7)
+    const double t_this = now_s() - t0, t_all = deg_time();
+    char tb[192];
+    if (!mid)
+        snprintf(tb, sizeof tb, "%.2fs", t_this);
+    else if (t_all >= 0)
+        snprintf(tb, sizeof tb, "%.2fs in all (this run %.2fs, resumed at chunk "
+                 "%d of %d)", t_all, t_this, start_chunk, nchunks);
+    else
+        snprintf(tb, sizeof tb, "%.2fs in this run (resumed at chunk %d of %d; "
+                 "the checkpoint, from round 6, has no time for the runs before)",
+                 t_this, start_chunk, nchunks);
     fprintf(stderr, "d=%2d done (logs/%s, %d chunks): %" PRIu64 " classes, %llu "
-            "heavy progressions, %.2fs\n", d, mname, nchunks, classes_all,
-            total_heavy, now_s() - t0);
+            "heavy progressions, %s\n", d, mname, nchunks, classes_all,
+            total_heavy, tb);
+    if (t_all >= 0) g_ckpt.run_before_s += t_all;
+    else g_ckpt.run_known = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -2826,6 +3123,7 @@ static int run_gpu(u64 r, int d_from, int d_hi, u64 smax, std::vector<ull> &best
         CUCHK(cudaMalloc(&G.d_heavy, HEAVY_CAP * sizeof(Heavy)));
         CUCHK(cudaMalloc(&G.d_nheavy, 4));
         CUCHK(cudaMalloc(&G.d_overflow, 4));
+        CUCHK(cudaMalloc(&G.d_runctr, 8));
         if (start) {
             CUCHK(cudaMemcpy(G.d_best, start->data(), (smax + 1) * sizeof(ull),
                              cudaMemcpyHostToDevice));
@@ -2868,21 +3166,21 @@ static int run_gpu(u64 r, int d_from, int d_hi, u64 smax, std::vector<ull> &best
         sieve_degree_gpu_logs(d, r, smax, pl, d == d_from ? rs : nullptr);
         // Degree boundary: best[] is a clean "degrees <= d done" state.
         if (ckpt_stop_due()) {
-            ckpt_snapshot(d + 1, 0, 0, LM_NONE, -1, 1, 0);
+            ckpt_snapshot(d + 1, 0, 0, LM_NONE, -1, 1, 0, 0);
             ckpt_stop_and_exit();
         }
         reached = d;
         // a periodic save only if more degrees remain (else the outputs
         // follow at once)
         if (d < d_hi && ckpt_periodic_due()) {
-            ckpt_snapshot(d + 1, 0, 0, LM_NONE, -1, 1, 0);
+            ckpt_snapshot(d + 1, 0, 0, LM_NONE, -1, 1, 0, 0);
             ckpt_write();
         }
     }
     if (reached < d_hi && g_ckpt.enabled) {
         // stopped early (a degree that cannot be done here): save the degree
         // boundary, so a resume -- e.g. with more free VRAM -- starts there
-        ckpt_snapshot(reached + 1, 0, 0, LM_NONE, -1, 1, 0);
+        ckpt_snapshot(reached + 1, 0, 0, LM_NONE, -1, 1, 0, 0);
         ckpt_write();
     }
     best.resize(smax + 1);
@@ -2891,7 +3189,8 @@ static int run_gpu(u64 r, int d_from, int d_hi, u64 smax, std::vector<ull> &best
         GpuCtx &G = g_gpus[g];
         CUCHK(cudaSetDevice(G.dev));
         cudaFree(G.d_best); cudaFree(G.d_heavy);
-        cudaFree(G.d_nheavy); cudaFree(G.d_overflow);
+        cudaFree(G.d_nheavy); cudaFree(G.d_overflow); cudaFree(G.d_runctr);
+        G.d_runctr = nullptr;
         G.d_best = nullptr;
     }
     g_gather_tmp.clear(); g_gather_tmp.shrink_to_fit();
@@ -3058,6 +3357,16 @@ int main(int argc, char **argv) {
     if (const char *e = getenv("COARSE_TOWER_SUBN")) g_tower_sub = atoi(e);
     if (const char *e = getenv("COARSE_TEST_ETA")) g_test_eta = atoi(e) != 0;
     if (const char *e = getenv("COARSE_PIPE")) { g_pipe = atoi(e) != 0; g_pipe_fixed = true; }
+    if (const char *e = getenv("COARSE_FILL")) {
+        char *end = nullptr;
+        const long f = strtol(e, &end, 10);
+        if (end == e || *end || f < FILL_LANE || f > FILL_POOL) {
+            fprintf(stderr, "COARSE_FILL=%s: expected 0 (round 6), 1, 2 or 3 "
+                    "(the default)\n", e);
+            return 1;
+        }
+        g_fill = (int)f;
+    }
     if (const char *e = getenv("COARSE_METHOD")) {
         if (!strcmp(e, "tower")) g_force_method = FM_TOWER;
         else if (!strcmp(e, "ph")) g_force_method = FM_PH;
@@ -3158,7 +3467,7 @@ int main(int argc, char **argv) {
         ckpt_path = auto_path.c_str();
     }
     std::vector<ull> start;                      // best[] to start from
-    bool have_start = false;
+    bool have_start = false, resumed = false;
     int d_from = d_lo;
     ResumePos rs;
     if (ckpt_path) {
@@ -3190,6 +3499,10 @@ int main(int argc, char **argv) {
                 rs.next = ci.next; rs.nchunks = ci.nchunks;
                 rs.method = ci.method; rs.sub = ci.sub; rs.pipe = ci.pipe;
                 rs.classes = ci.classes;
+                rs.deg_s = ci.deg_known ? ci.deg_s : -1;
+                g_ckpt.run_before_s = ci.run_known ? ci.run_s : 0;
+                g_ckpt.run_known = ci.run_known;
+                resumed = true;
                 fprintf(stderr, "found checkpoint %s (%s): continuing that run "
                         "(--fresh starts over)\n", gen.c_str(),
                         ckpt_describe(ci).c_str());
@@ -3255,7 +3568,13 @@ int main(int argc, char **argv) {
         best.swap(start);                        // a finished checkpoint
     }
     start.clear(); start.shrink_to_fit();
-    fprintf(stderr, "total sieve time: %.2fs\n", now_s() - t0);
+    // resumed: also the time of all runs (the degrees' times, as on their
+    // done lines, summed), when every run recorded its time
+    if (resumed && g_ckpt.run_known)
+        fprintf(stderr, "total sieve time: %.2fs in this run, %.2fs in all\n",
+                now_s() - t0, g_ckpt.run_before_s);
+    else
+        fprintf(stderr, "total sieve time: %.2fs\n", now_s() - t0);
     if (reached < d_hi)
         fprintf(stderr, "WARNING: stopped after degree %d of %d; the outputs "
                 "below cover degrees through %d only, and the checkpoint (if "

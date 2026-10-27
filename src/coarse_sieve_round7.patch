@@ -1,0 +1,1600 @@
+diff -ruN a/coarse_sieve.cu b/coarse_sieve.cu
+--- a/coarse_sieve.cu	2026-10-26 04:06:21.787435255 -0400
++++ b/coarse_sieve.cu	2026-10-26 04:06:21.796498379 -0400
+@@ -1,4 +1,4 @@
+-// coarse_sieve.cu  (round 6)
++// coarse_sieve.cu  (round 7)
+ // GPU coarse sieve for the least-degree irreducible factors of the
+ // trinomials x^r + x^s + 1 over GF(2), all s in [1, floor(r/2)], factor
+ // degrees d <= 55.
+@@ -63,7 +63,10 @@
+ // than zeros, ties broken exactly; gf2f_pair_role in gf2_dlog.h) marks both
+ // progressions and the other member is skipped; self-reciprocal classes,
+ // their own partners, are handled alone.  This halves the discrete logs,
+-// table reads, inversions and bit-sliced work of every degree.
++// table reads, inversions and bit-sliced work of every degree.  (Round 7
++// computes the tie-break of even d -- as many ones as zeros, ~11% of the
++// classes -- from u's longest runs of ones instead of all d rotations of
++// ~u: the same roles, without a d-step loop inside the enumeration.)
+ //
+ // The Zech log of each canonical class comes from one of three engines
+ // (gf2_dlog.h), whose tables have ~2^(d/2) entries rather than 2^d:
+@@ -84,7 +87,9 @@
+ //          coarse_rr_d<d>.tbl when that took over two minutes.  RR is the
+ //          only engine at d=49 (2^49 - 1 = 127 * 4432676798593).
+ // The batched kernel enumerates the Lyndon words of its range of u with
+-// FKM and handles the canonical ones 32 per thread: g^u (and PH's powers)
++// FKM -- every lane of a warp its own runs, the canonical classes found
++// dealt out to the lanes in turn (round 7) -- and handles them 32 per
++// thread: g^u (and PH's powers)
+ // in bit-sliced form, then the logs, then the progression starts v j^-1 of
+ // all 32 with one modular inversion (Montgomery's trick).  Classes with
+ // gcd(u, M) > 1 join the same inversion through exact 2-adic quotients and
+@@ -120,7 +125,7 @@
+ // The choice is stored in checkpoints, so a resumed degree keeps it without
+ // re-timing.
+ //
+-// CHECKPOINTS (format v4, round 6)
++// CHECKPOINTS (format v4, rounds 6-7)
+ // Every run saves to <out_prefix>.ckpt (or --checkpoint <file>) every 15
+ // minutes, at a chunk boundary, and on SIGTERM or SIGINT: the first signal
+ // saves and exits after the chunk in flight (seconds), a second exits at
+@@ -134,7 +139,12 @@
+ // inner subfield and loop order, and holds best[] as a delta against the
+ // seed image when that is small (a few MB for a one-degree run), else as a
+ // full image (8 bytes per s).  Writes are atomic (tmp + rename); the two
+-// previous generations are kept as <file>.1 and <file>.2.
++// previous generations are kept as <file>.1 and <file>.2.  Round 7: it also
++// records the time spent on the degree and on the run's earlier degrees, so
++// a resumed degree's done line (and the total) gives the time of one
++// uninterrupted run -- each run's time up to its last checkpoint; the table
++// rebuild of a resumed run is not counted there -- with this run's own
++// time beside it.
+ //
+ // MEMORY
+ // best[] (8 bytes per s: 545 MB at r = 136279841) on every GPU, plus the
+@@ -165,6 +175,9 @@
+ //   COARSE_TUNE=0, COARSE_TUNE_MIN=d, COARSE_TUNE_PICK=i (take candidate i)
+ //   COARSE_PIPE=0|1       fix the loop order (0: round 5's; 1: table reads
+ //                         one class ahead, the default) instead of tuning it
++//   COARSE_FILL=0|1|2|3   how the batches are filled (round 7, k_logs_batch):
++//                         0 round 6's, 1 rotated runs, 2 pooled, 3 pooled
++//                         with runs taken from a counter (the default)
+ //   COARSE_TEST_SMAX=n    sieve s <= n instead of floor(r/2)
+ //   COARSE_TEST_FAULT_EVERY=n   corrupt the log of classes with u == 1
+ //                         (mod n): the run must stop with consistency errors
+@@ -184,8 +197,13 @@
+ // RR and d=49, tuning, automatic checkpoints; round 6 reciprocal pairs, and
+ // removal of the u32 build, the dense and bucketed paths (the logs path is
+ // faster at every degree), the round-2 kernel, the round-4 irregular path,
+-// .found.bin files and the old checkpoint formats.
+-
++// .found.bin files and the old checkpoint formats; round 7 full batches
++// (the warps pool the classes they find), the faster pair tie-break, the
++// time of all runs in checkpoints, and lockstep warps in the emulation.
++
++// the CPU emulation (make emul-coarse_sieve) runs the lanes of each warp in
++// lockstep, for the batched kernel's warp intrinsics (cuda_emul.h)
++#define EMUL_LOCKSTEP_WARPS 1
+ #include "gf2_wide_field.h"
+ #include "gf2_wide_setup.h"
+ #include <cuda_runtime.h>
+@@ -334,12 +352,24 @@
+ //   * g^u comes from bit-sliced squarings, and Z(u) = log(g^u + 1) from the
+ //     tower, PH or RR engine -- one discrete log per reciprocal pair.
+ #define LOGS_MAXPF 16
++// How the batched kernel fills its batches (round 7; see k_logs_batch):
++//   FILL_LANE   as in round 6: each lane from its own runs (t, t + stride, ..)
++//   FILL_ROT    the same, with the runs of each warp rotated among its lanes
++//   FILL_POOLS  the warp's lanes pool the classes they find and deal them
++//               out in turn; static runs as FILL_ROT
++//   FILL_POOL   (default) pooled, and every lane takes its next run from a
++//               counter of the launch (L.runctr): no lane runs out early
++enum { FILL_LANE = 0, FILL_ROT = 1, FILL_POOLS = 2, FILL_POOL = 3 };
++
+ struct LogsParams {
+     int d, method;                 // method: LM_TOWER, LM_PH or LM_RR
+     u64 M, q, qlow, rmodinv, smax;
+     u64 rmod;                      // r mod M (the partner's s0 = r - s0)
+     int pair;                      // 1: one Zech log per reciprocal pair
+     int pipe;                      // 1: table reads one class ahead (round 6)
++    int fill;                      // round 7: the batches' fill (FILL_*)
++    unsigned long long *runctr;    // FILL_POOL: the launch's next run (zeroed
++                                   // before each launch)
+     u64 lam_m1;                    // lambda(M) - 1: j^-1 = j^(lambda-1) mod M
+     u64 fault;                     // test hook: corrupt the log of u = 1 mod fault
+     int check;                     // selftest: compute log(g^u), count != u
+@@ -554,8 +584,9 @@
+ 
+ // selftest: the reciprocal pairing against direct computation, on random
+ // classes u (least rotations of random odd words, aperiodic only).  For
+-// each: the roles of u and of its partner rep(~u) must be complementary
+-// (1/0 or 0/1; 2 only for a self-reciprocal class); the engine's log of
++// each: the roles of u and of its partner rep(~u) must be round 6's (the
++// reference gf2f_pair_role_ref) and complementary (1/0 or 0/1; 2 only for
++// a self-reciprocal class); the engine's log of
+ // g^-u + 1 must be Z(u) - u; and the partner's progression start computed
+ // from scratch (j' = -j, v' = Z(-u), s0' = v' j'^-1 mod n by the extended-
+ // Euclid inverse) must equal (r - s0) mod n.  bad[0] failures, bad[1] pairs
+@@ -576,6 +607,11 @@
+         if (u == 0 || u == M || !logs_is_rep(u, L)) continue;   // a class rep
+         const u64 pr = gf2f_min_rotation(~u & M, d, M);
+         const int ru = gf2f_pair_role(u, d, M), rp = gf2f_pair_role(pr, d, M);
++        // round 7: the fast tie-break gives round 6's roles exactly
++        if (ru != gf2f_pair_role_ref(u, d, M) || rp != gf2f_pair_role_ref(pr, d, M)) {
++            nb++;
++            continue;
++        }
+         if (pr == u) { nsr++; if (ru != 2) nb++; continue; }
+         if (!((ru == 1 && rp == 0) || (ru == 0 && rp == 1))) { nb++; continue; }
+         np++;
+@@ -893,11 +929,68 @@
+ }
+ #endif
+ 
+-// sweep the Lyndon words in [ulo, uhi), runs of `run` u-values per step of
+-// the grid-stride loop; partial batches carry over between runs.  Tower
++// warp-synchronous helpers (round 7): the real intrinsics under nvcc, the
++// lockstep-warp emulation of cuda_emul.h otherwise
++#if defined(__CUDACC__)
++#define WARP_BALLOT(p)  __ballot_sync(0xffffffffu, (p))
++#define WARP_SHFL(v, s) __shfl_sync(0xffffffffu, (unsigned long long)(v), (s))
++#else
++#define WARP_BALLOT(p)  emul_ballot_sync(0xffffffffu, (p))
++#define WARP_SHFL(v, s) emul_shfl_sync(0xffffffffu, (unsigned long long)(v), (s))
++#endif
++
++// the position of the r-th set bit of m, counting from 0 (r < popc(m); any
++// value in 0..31 otherwise)
++GF2_HD int warp_select(u32 m, int r) {
++    int pos = 0, c = gf2f_popc32(m & 0xffffu);
++    if (r >= c) { r -= c; pos += 16; m >>= 16; }
++    c = gf2f_popc32(m & 0xffu);
++    if (r >= c) { r -= c; pos += 8; m >>= 8; }
++    c = gf2f_popc32(m & 0xfu);
++    if (r >= c) { r -= c; pos += 4; m >>= 4; }
++    c = gf2f_popc32(m & 0x3u);
++    if (r >= c) { r -= c; pos += 2; m >>= 2; }
++    if (r >= (int)(m & 1u)) pos += 1;
++    return pos;
++}
++
++// The k-th run of a thread, rr = t + k * stride (round 6's order).  With
++// rot (FILL_ROT, FILL_POOLS) the runs of each aligned group of 32 -- one
++// per lane of a warp, all at the same k -- are rotated by k, so a lane's
++// runs take every place in the group in turn: in round 6's order all of a
++// lane's runs share the 5 bits of u just above the run, so their classes
++// differ systematically from lane to lane (some lanes had half the work of
++// others, and idled through their warp's last batches).  A bijection on
++// each group (stride is a multiple of 32); a partial last group stays.
++GF2_HD u64 logs_run_at(u64 rr, u64 k, u64 nruns, bool rot) {
++    if (!rot || (rr | 31) >= nruns) return rr;
++    return (rr & ~(u64)31) | ((rr + k) & 31);
++}
++
++// Sweep the Lyndon words in [ulo, uhi), in runs of `run` u values; tower
+ // kernels run 512-thread blocks (one per SM, sharing one copy of the small
+ // tables in shared memory), PH kernels 128-thread blocks (up to ~250
+-// registers).
++// registers).  The batches (LB canonical classes per lane) are filled in
++// one of the FILL_* ways (L.fill):
++//   lane (round 6): each lane enumerates its own runs into its own batch.
++//          The warp runs each batch when its slowest lane is full -- and
++//          the lanes' supply of canonical classes differs a lot (the
++//          canonical share depends on the ones in u's high bits), so most
++//          enumeration steps had a third of the lanes active, and lanes
++//          that finished their runs early sat out the warp's last batches:
++//          27-38% of the batch slots were empty over a real pass (but 1-2%
++//          in the tuner's dense sample), by a lockstep simulation of the
++//          warps on sampled chunks of d = 40-47 (tools/fillsim.cpp).
++//   pool (round 7): every lane steps its own enumeration once per
++//          iteration, and the canonical classes the warp finds are dealt to
++//          the lanes in turn (a ballot, then each lane fetches its class
++//          from the finder with a shuffle), so the lanes fill together and
++//          every batch is full but the last: by the same simulation ~2
++//          lane-steps of the loop per class instead of 7.5-14, and no empty
++//          slots.
++//          A lane whose class finds no room keeps it for the next round.
++//          FILL_POOL also takes each run from the launch's counter, so
++//          lanes and warps run out of work together at the end.
+ template <int D, int METHOD>
+ __global__ void __launch_bounds__(METHOD == LM_PH ? 128 : 512, 1)
+ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
+@@ -914,8 +1007,11 @@
+     }
+ #endif
+     const u64 nruns = (uhi - ulo + run - 1) / run;
+-    u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
+     const u64 stride = (u64)gridDim.x * blockDim.x;
++    const bool dyn = L.fill == FILL_POOL;
++    const bool rot = L.fill == FILL_ROT || L.fill == FILL_POOLS;
++    u64 rr = dyn ? 0 : (u64)blockIdx.x * blockDim.x + threadIdx.x;
++    u64 kr = 0;                                 // runs taken (static order)
+     u64 ub[LB], vb[LB], tb[LB], xb[LB];
+     for (int k = 0; k < LB; k++) xb[k] = 1;     // read ahead before written
+     fw P[64];
+@@ -924,33 +1020,100 @@
+     u64 w = 0, whi = 0;
+     int p = 0;
+     bool have = false;
+-    for (;;) {
+-        int n = 0;
+-        u32 pairm = 0;                          // bit k: ub[k] has a partner
+-        while (n < LB) {                        // fill: next 32 canonical classes
+-            if (!have) {
+-                if (rr >= nruns) break;
+-                const u64 lo = ulo + rr * run;
+-                whi = uhi - lo > run ? lo + run : uhi;
+-                rr += stride;
+-                w = fkm_seek(lo, D, &p);
+-                have = true;
+-            }
+-            if (w >= whi) { have = false; continue; }
+-            if (p == D) {                       // a Lyndon word: a class
+-                const int role = L.pair ? gf2f_pair_role(w, D, L.M) : 2;
+-                if (role) {
+-                    if (role == 1) pairm |= 1u << n;
+-                    my_surv += role == 1 ? 2 : 1;   // classes covered
+-                    ub[n++] = w;
++    if (L.fill >= FILL_POOLS) {
++        // ---- pooled fill ----
++        const unsigned lane = threadIdx.x & 31u;
++        const u32 below = (1u << lane) - 1;     // the lanes before this one
++        u64 pw = 0;                             // the pending class; bit 63:
++        bool pend = false, live = true;         //   it has a partner
++        for (;;) {                              // rounds (warp-uniform)
++            int n = 0;
++            u32 pairm = 0;                      // bit k: ub[k] has a partner
++            u32 total = 0;                      // classes dealt this round
++            for (;;) {
++                if (!pend && live) {            // this lane's next step
++                    if (!have) {
++                        if (dyn) rr = atomicAdd(L.runctr, 1ULL);
++                        if (rr >= nruns) live = false;
++                        else {
++                            const u64 lo = ulo + logs_run_at(rr, kr, nruns, rot) * run;
++                            whi = uhi - lo > run ? lo + run : uhi;
++                            if (!dyn) { rr += stride; kr++; }
++                            w = fkm_seek(lo, D, &p);
++                            have = true;
++                        }
++                    }
++                    if (have) {
++                        if (w >= whi) have = false;
++                        else {
++                            if (p == D) {       // a Lyndon word: a class
++                                const int role = L.pair ? gf2f_pair_role(w, D, L.M) : 2;
++                                if (role) {
++                                    pend = true;
++                                    pw = w | (role == 1 ? (u64)1 << 63 : 0);
++                                    my_surv += role == 1 ? 2 : 1;   // classes covered
++                                }
++                            }
++                            w = fkm_next(w, D, &p);
++                        }
++                    }
+                 }
++                const u32 found = WARP_BALLOT(pend);
++                const u32 alive = WARP_BALLOT(live);
++                if (!found) {
++                    if (!alive) break;          // the warp's supply is gone
++                    continue;
++                }
++                // deal: the found classes in lane order, to the lanes from
++                // total mod 32 on, as far as there is room
++                const u32 nf = (u32)gf2f_popc32(found), room = 32u * LB - total;
++                const u32 take = nf < room ? nf : room;
++                const u32 r = (lane - total) & 31u;     // the class this lane gets
++                const u64 got = WARP_SHFL(pw, warp_select(found, (int)r));
++                if (r < take) {
++                    if (got >> 63) pairm |= 1u << n;
++                    ub[n++] = got & ~((u64)1 << 63);
++                }
++                if (pend && (u32)gf2f_popc32(found & below) < take) pend = false;
++                total += take;
++                if (total == 32u * LB) break;   // every lane has LB
++            }
++            if (n)
++                logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
++                                      (nb++ & 7) == 0, best, heavy, nheavy,
++                                      overflow, P, &my_err);
++            if (total < 32u * LB) break;        // that was the last round
++        }
++    } else {
++        // ---- per-lane fill (round 6; FILL_ROT rotates the runs) ----
++        for (;;) {
++            int n = 0;
++            u32 pairm = 0;                      // bit k: ub[k] has a partner
++            while (n < LB) {                    // fill: next 32 canonical classes
++                if (!have) {
++                    if (rr >= nruns) break;
++                    const u64 lo = ulo + logs_run_at(rr, kr, nruns, rot) * run;
++                    whi = uhi - lo > run ? lo + run : uhi;
++                    rr += stride; kr++;
++                    w = fkm_seek(lo, D, &p);
++                    have = true;
++                }
++                if (w >= whi) { have = false; continue; }
++                if (p == D) {                   // a Lyndon word: a class
++                    const int role = L.pair ? gf2f_pair_role(w, D, L.M) : 2;
++                    if (role) {
++                        if (role == 1) pairm |= 1u << n;
++                        my_surv += role == 1 ? 2 : 1;   // classes covered
++                        ub[n++] = w;
++                    }
++                }
++                w = fkm_next(w, D, &p);
+             }
+-            w = fkm_next(w, D, &p);
++            if (n == 0) break;
++            logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
++                                  (nb++ & 7) == 0, best, heavy, nheavy, overflow,
++                                  P, &my_err);
+         }
+-        if (n == 0) break;
+-        logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
+-                              (nb++ & 7) == 0, best, heavy, nheavy, overflow,
+-                              P, &my_err);
+     }
+     if (my_surv) atomicAdd(nsurv, my_surv);
+     if (my_err) atomicAdd(nerr, my_err);
+@@ -1070,6 +1233,7 @@
+     ull *d_best = nullptr;
+     Heavy *d_heavy = nullptr;
+     unsigned *d_nheavy = nullptr, *d_overflow = nullptr;
++    unsigned long long *d_runctr = nullptr;  // FILL_POOL: the launch's next run
+     // per-degree scratch: the g^(2^t) chain, class and error counters
+     fw *dgp = nullptr;
+     unsigned long long *d_nsurv = nullptr, *d_nerr = nullptr;
+@@ -1108,6 +1272,7 @@
+ static int g_tower_sub = -1;             // COARSE_TOWER_SUBN: -1 auto, 0 classic, n
+ static bool g_test_eta = false;          // COARSE_TEST_ETA=1: always show the ETA
+ static int g_pipe = 1;                   // COARSE_PIPE=0: round-5 loop order
++static int g_fill = FILL_POOL;           // COARSE_FILL=0..3 (round 7)
+ static bool g_pipe_fixed = false;        // COARSE_PIPE set: the tuner keeps it
+ 
+ #define GPU_MEM_RESERVE (256ull << 20)  // headroom for allocator/context overhead
+@@ -1140,6 +1305,12 @@
+     int snap_method = LM_NONE, snap_sub = -1;   // the degree's engine, subfield
+     int snap_pipe = 1;                   // and loop order (LogsParams::pipe)
+     u64 snap_classes = 0;                // classes covered by those chunks
++    double snap_deg_s = 0;               // time on degree snap_d so far
++    // round 7: time in all runs, as one uninterrupted run would show it --
++    // of the run's degrees before the current one (run_known: every run so
++    // far recorded it; false after resuming a round-6 checkpoint)
++    double run_before_s = 0, snap_run_s = 0;
++    bool run_known = true, snap_run_known = true;
+     double eta_s = -1;                   // the latest time-left estimate
+     volatile sig_atomic_t stop = 0;      // set by the signal handler
+     long test_stop_after = 0, test_chunks_done = 0;   // test hook
+@@ -1149,23 +1320,30 @@
+ extern "C" void ckpt_signal_handler(int) { g_ckpt.stop = 1; }
+ 
+ // layout: magic; u32[CKPT_N32] = {4, d, next, nchunks, method, sub, flags,
+-// seed path length, d_lo, d_hi, loop order (pipe), 0}; u64[CKPT_N64] = {r,
+-// smax, period (s), seed hash, ndelta, time written, classes, 0}; the seed
+-// path; then ndelta (s, key) pairs (a delta against the seed image) or
+-// best[1..smax]
++// seed path length, d_lo, d_hi, loop order (pipe), run time}; u64[CKPT_N64]
++// = {r, smax, period (s), seed hash, ndelta, time written, classes, degree
++// time}; the seed path; then ndelta (s, key) pairs (a delta against the
++// seed image) or best[1..smax].  The two times (round 7; round 6 wrote 0
++// there and ignores them, and its readers ignore the flags it does not
++// know): the degree's time so far as an IEEE double (flag CKPT_F_DEGTIME),
++// the time of the run's earlier degrees as a float (CKPT_F_RUNTIME).
+ static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','4'};
+ #define CKPT_N32 12
+ #define CKPT_N64 8
+-#define CKPT_F_DELTA 1u
+-#define CKPT_F_SEED  2u
++#define CKPT_F_DELTA   1u
++#define CKPT_F_SEED    2u
++#define CKPT_F_DEGTIME 4u
++#define CKPT_F_RUNTIME 8u
+ 
+ struct CkptInfo {
+     int d = 0, next = 0, nchunks = 0, method = LM_NONE, sub = -1, pipe = 1;
+     int d_lo = 0, d_hi = 0;
+     bool delta = false, seed = false;
++    bool deg_known = false, run_known = false;  // the times below recorded
+     std::string seed_path;
+     u64 r = 0, smax = 0, period_s = 0, seed_hash = 0, ndelta = 0, written = 0,
+         classes = 0;
++    double deg_s = 0, run_s = 0;
+ };
+ 
+ // the header (and the seed path); *f_out is left at the payload if given
+@@ -1187,6 +1365,14 @@
+         ci.r = h64[0]; ci.smax = h64[1]; ci.period_s = h64[2];
+         ci.seed_hash = h64[3]; ci.ndelta = h64[4]; ci.written = h64[5];
+         ci.classes = h64[6];
++        ci.deg_known = (h32[6] & CKPT_F_DEGTIME) != 0;
++        ci.run_known = (h32[6] & CKPT_F_RUNTIME) != 0;
++        float fr;
++        memcpy(&fr, &h32[11], sizeof fr);
++        memcpy(&ci.deg_s, &h64[7], sizeof ci.deg_s);
++        ci.run_s = fr;
++        if (!(ci.deg_s >= 0 && ci.deg_s < 1e12)) { ci.deg_s = 0; ci.deg_known = false; }
++        if (!(ci.run_s >= 0 && ci.run_s < 1e12)) { ci.run_s = 0; ci.run_known = false; }
+         const u32 plen = h32[7];
+         ci.seed_path.assign(plen, '\0');
+         ok = plen <= 4096 && (!plen || fread(&ci.seed_path[0], 1, plen, f) == plen);
+@@ -1204,9 +1390,11 @@
+ }
+ 
+ // Copy device best[] into the host snapshot and tag it.  nchunks = 0 marks a
+-// degree boundary ("degree d, nothing of it done yet").
++// degree boundary ("degree d, nothing of it done yet").  deg_s: the time on
++// the degree so far (in all runs; < 0: unknown, after resuming a round-6
++// checkpoint mid-degree).
+ static void ckpt_snapshot(int d, int next, int nchunks, int method, int sub,
+-                          int pipe, u64 classes) {
++                          int pipe, u64 classes, double deg_s) {
+     if (!g_ckpt.enabled) return;
+     if (g_ckpt.snap.size() != g_ckpt.smax + 1) g_ckpt.snap.resize(g_ckpt.smax + 1);
+     gather_best(g_ckpt.snap.data(), g_ckpt.smax + 1);
+@@ -1217,6 +1405,9 @@
+     g_ckpt.snap_sub = sub;
+     g_ckpt.snap_pipe = pipe;
+     g_ckpt.snap_classes = classes;
++    g_ckpt.snap_deg_s = deg_s;
++    g_ckpt.snap_run_s = g_ckpt.run_before_s;
++    g_ckpt.snap_run_known = g_ckpt.run_known;
+ }
+ 
+ static std::string ckpt_gen_name(const char *path, int i) {
+@@ -1264,14 +1455,23 @@
+     const bool seed = !g_ckpt.seed_path.empty();
+     const u32 plen = seed ? (u32)g_ckpt.seed_path.size() : 0;
+     const u64 ndelta = use_delta ? (u64)(dsig.size() / 2) : 0;
++    const bool deg_known = g_ckpt.snap_deg_s >= 0;
++    const double deg_s = deg_known ? g_ckpt.snap_deg_s : 0.0;
++    const float run_s = g_ckpt.snap_run_known ? (float)g_ckpt.snap_run_s : 0.0f;
++    u32 run_bits;
++    u64 deg_bits;
++    memcpy(&run_bits, &run_s, sizeof run_bits);
++    memcpy(&deg_bits, &deg_s, sizeof deg_bits);
+     const u32 h32[CKPT_N32] = { 4u, (u32)g_ckpt.snap_d, (u32)g_ckpt.snap_next,
+         (u32)g_ckpt.snap_nchunks, (u32)g_ckpt.snap_method,
+         (u32)(int32_t)g_ckpt.snap_sub,
+-        (use_delta ? CKPT_F_DELTA : 0u) | (seed ? CKPT_F_SEED : 0u), plen,
+-        (u32)g_ckpt.d_lo, (u32)g_ckpt.d_hi, (u32)g_ckpt.snap_pipe, 0u };
++        (use_delta ? CKPT_F_DELTA : 0u) | (seed ? CKPT_F_SEED : 0u) |
++        (deg_known ? CKPT_F_DEGTIME : 0u) |
++        (g_ckpt.snap_run_known ? CKPT_F_RUNTIME : 0u), plen,
++        (u32)g_ckpt.d_lo, (u32)g_ckpt.d_hi, (u32)g_ckpt.snap_pipe, run_bits };
+     const u64 h64[CKPT_N64] = { g_ckpt.r, g_ckpt.smax,
+         (u64)(g_ckpt.period_s + 0.5), seed ? g_ckpt.seed_hash : 0, ndelta,
+-        (u64)time(nullptr), g_ckpt.snap_classes, 0 };
++        (u64)time(nullptr), g_ckpt.snap_classes, deg_bits };
+     bool ok = fwrite(CKPT_MAGIC, 1, 8, f) == 8 &&
+               fwrite(h32, sizeof(u32), CKPT_N32, f) == CKPT_N32 &&
+               fwrite(h64, sizeof(u64), CKPT_N64, f) == CKPT_N64 &&
+@@ -1320,6 +1520,12 @@
+ 
+ // persist and exit cleanly after a stop signal (or the test stop)
+ static void ckpt_stop_and_exit() {
++    if (!g_ckpt.enabled) {                  // (only the test hook, e.g. to
++        fprintf(stderr, "stopping after %ld chunks (COARSE_TEST_STOP_AFTER_"
++                "CHUNKS); no checkpoint, nothing saved\n",   // profile a few)
++                g_ckpt.test_chunks_done);
++        exit(0);
++    }
+     ckpt_write();
+     fprintf(stderr, "stopping on request; run the same command again to "
+             "continue\n");
+@@ -1383,7 +1589,10 @@
+         localtime_r(&t, &tmv);
+         strftime(when, sizeof when, "written %Y-%m-%d %H:%M, ", &tmv);
+     }
+-    if (ci.nchunks)
++    if (ci.nchunks && ci.deg_known)
++        snprintf(b, sizeof b, "%sdegree %d, chunk %d of %d, %.2fs into it", when,
++                 ci.d, ci.next, ci.nchunks, ci.deg_s);
++    else if (ci.nchunks)
+         snprintf(b, sizeof b, "%sdegree %d, chunk %d of %d", when, ci.d, ci.next,
+                  ci.nchunks);
+     else
+@@ -1427,8 +1636,8 @@
+         FILE *f = nullptr;
+         CkptInfo c;
+         if (!ckpt_peek(g.c_str(), c, &f)) {
+-            fprintf(stderr, "checkpoint %s: not a readable round-6 checkpoint\n",
+-                    g.c_str());
++            fprintf(stderr, "checkpoint %s: not a readable checkpoint (format "
++                    "v4, rounds 6-7)\n", g.c_str());
+             continue;
+         }
+         if (!checked) {                          // the newest readable one
+@@ -1699,6 +1908,7 @@
+     L.rmod = r % L.M;
+     L.pair = 1;
+     L.pipe = g_pipe;
++    L.fill = g_fill;
+     L.smax = smax;
+     // Carmichael lambda(M) = lcm of phi(p^k) over p^k || M: the exponent of
+     // the unit group, so j^(lambda-1) = j^-1 for gcd(j, M) = 1.  It is much
+@@ -2106,13 +2316,16 @@
+     LogsBatchFn kfn = logs_batch_fn(d, pl.method);
+     if (!kfn) return 0;
+     unsigned long long zero = 0, ns = 0, ne = 0, nc = 0;
+-    unsigned long long *dns, *dne, *dnc;
++    unsigned long long *dns, *dne, *dnc, *dctr;
+     CUCHK(cudaMalloc(&dns, 8)); CUCHK(cudaMalloc(&dne, 8)); CUCHK(cudaMalloc(&dnc, 8));
++    CUCHK(cudaMalloc(&dctr, 8));
+     CUCHK(cudaMemcpy(dns, &zero, 8, cudaMemcpyHostToDevice));
+     CUCHK(cudaMemcpy(dne, &zero, 8, cudaMemcpyHostToDevice));
+     CUCHK(cudaMemcpy(dnc, &zero, 8, cudaMemcpyHostToDevice));
++    CUCHK(cudaMemcpy(dctr, &zero, 8, cudaMemcpyHostToDevice));
+     L.check = 1;
+     L.pair = 0;                                 // every class of the stretch
++    L.runctr = dctr;
+     const u64 run = 1024;
+     int blocks, threads;
+     size_t shm;
+@@ -2125,7 +2338,7 @@
+     CUCHK(cudaMemcpy(&ns, dns, 8, cudaMemcpyDeviceToHost));
+     CUCHK(cudaMemcpy(&ne, dne, 8, cudaMemcpyDeviceToHost));
+     CUCHK(cudaMemcpy(&nc, dnc, 8, cudaMemcpyDeviceToHost));
+-    cudaFree(dns); cudaFree(dne); cudaFree(dnc);
++    cudaFree(dns); cudaFree(dne); cudaFree(dnc); cudaFree(dctr);
+     *nclasses = ns;
+     return ne + (ns != nc ? 1 : 0);
+ }
+@@ -2144,6 +2357,31 @@
+     return H << L;
+ }
+ 
++// A stretch of an ordinary density (round 7, the fill test): H = 0^z 1 and
++// pseudo-random bits without a run of z zeros, z = 5 (a common leading run
++// at d >= 30, smaller when H is short), so that the stretch holds classes
++// -- fewer than the dense one, and with a canonical share that varies
++// along it as in a real chunk.  (The dense stretch when H is too short.)
++static u64 logs_typical_stretch(int d, int L, u64 seed) {
++    const int hb = d - L;
++    int z = 5;
++    while (z > 1 && hb < z + 2) z--;
++    if (hb < z + 2) return logs_dense_stretch(d, L);
++    for (int tries = 0; tries < 1000; tries++) {
++        u64 h = 0;
++        for (int b = hb - z - 2; b >= 0; b--) {
++            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
++            h |= (seed >> 63) << b;
++        }
++        const u64 H = ((u64)1 << (hb - z - 1)) | h;     // 0^z 1 h
++        bool ok = true;                 // no run of >= z zeros in "1 h"
++        for (int b = 0; b + z <= hb - z && ok; b++)
++            if (((H >> b) & (((u64)1 << z) - 1)) == 0) ok = false;
++        if (ok) return H << L;
++    }
++    return logs_dense_stretch(d, L);
++}
++
+ // --selftest, second part: the rotation test, the irregular-class lift, and
+ // at every degree d = 21..55 on device 0 (the sieve comparison only reaches
+ // d=20) the engines, the batched kernel and the reciprocal pairing.  want =
+@@ -2307,6 +2545,24 @@
+                         " classes in its stretch\n", d, ncls);
+                 bfail++;
+             }
++            // round 7: every way of filling the batches, on a stretch of an
++            // ordinary density (sparser, the canonical share varying)
++            u64 ntyp = 0;
++            {
++                const u64 tlo = logs_typical_stretch(d, lb, 0x51ED2700ULL + (u64)d);
++                for (int f = FILL_LANE; f <= FILL_POOL; f++) {
++                    LogsParams Lf = L;
++                    Lf.fill = f;
++                    u64 nf = 0;
++                    bfail += logs_batch_check(G, d, pl, Lf, tlo, tlo + ((u64)1 << lb), &nf);
++                    if (f == FILL_LANE) ntyp = nf;
++                    else if (nf != ntyp) bfail++;
++                }
++                if (!ntyp) {
++                    fprintf(stderr, "  d=%d: no classes in the fill test's stretch\n", d);
++                    bfail++;
++                }
++            }
+             // the reciprocal pairing against direct computation
+             CUCHK(cudaMemset(dpb, 0, sizeof pb));
+             launch_dims(npair, blocks, threads);
+@@ -2317,11 +2573,11 @@
+             logs_free_device(G);
+             cudaFree(G.dgp); G.dgp = nullptr;
+             fprintf(stderr, "  [d=%d %-5s logs, %4.0f MB tables: %" PRIu64
+-                    " checked, %llu wrong; batched: %" PRIu64 " classes%s, %s; "
+-                    "pairs: %llu, %s", d,
++                    " checked, %llu wrong; batched: %" PRIu64 " classes%s and %"
++                    PRIu64 " (4 fills), %s; pairs: %llu, %s", d,
+                     pl.method == LM_TOWER ? "tower" : pl.method == LM_RR ? "RR" : "PH",
+                     pl.bytes / 1048576.0, nlog, bad, ncls,
+-                    pl.method != LM_PH ? " (both loop orders)" : "",
++                    pl.method != LM_PH ? " (both loop orders)" : "", ntyp,
+                     bfail ? "FAILED" : "ok", pb[1], pfail ? "FAILED" : "ok");
+             if (pl.method == LM_TOWER && W.sub_k)
+                 fprintf(stderr, "; over GF(2^%d)", W.sub_n);
+@@ -2467,16 +2723,28 @@
+         }
+         const LogsBatchFn kfn = logs_batch_fn(d, c.method);
+         Lcur.pipe = c.pipe;                     // (no new tables for this)
++        Lcur.runctr = G.d_runctr;
+         for (int rep = timed_any ? 1 : 0; rep < 2; rep++) {   // first: warm-up
+             u64 uhi = ulo + ((u64)1 << lb); if (uhi > total) uhi = total;
+             int blocks, threads;
+             size_t shm;
+-            logs_batch_dims(kfn, (uhi - ulo + krun - 1) / krun, c.method, Lcur,
++            // round 7: runs of the sample short enough for ~16 per lane of
++            // the whole wave (with runs of krun, 2^27 u held ~3.2 runs per
++            // lane: some lanes had 4, the rest 3, and the sample's time
++            // came out ~25% high -- ~10% for PH, whose wave has half the
++            // lanes)
++            logs_batch_dims(kfn, ~(u64)0 >> 2, c.method, Lcur, blocks, threads, shm);
++            const u64 lanes = (u64)blocks * (u64)threads;
++            u64 trun = (uhi - ulo + 16 * lanes - 1) / (16 * lanes);
++            if (trun < 64) trun = 64;
++            if (trun > krun) trun = krun;
++            logs_batch_dims(kfn, (uhi - ulo + trun - 1) / trun, c.method, Lcur,
+                             blocks, threads, shm);
+             CUCHK(cudaMemcpy(G.d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
+             CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
++            CUCHK(cudaMemcpy(G.d_runctr, &zero64, 8, cudaMemcpyHostToDevice));
+             CUCHK(cudaEventRecord(e0));
+-            kfn<<<blocks, threads, shm>>>(Lcur, G.dgp, ulo, uhi, krun, G.d_best,
++            kfn<<<blocks, threads, shm>>>(Lcur, G.dgp, ulo, uhi, trun, G.d_best,
+                                           G.d_heavy, G.d_nheavy, G.d_overflow,
+                                           G.d_nsurv, G.d_nerr);
+             CUCHK(cudaEventRecord(e1));
+@@ -2545,6 +2813,7 @@
+ struct ResumePos {
+     int next = 0, nchunks = 0, method = LM_NONE, sub = -1, pipe = 1;
+     u64 classes = 0;
++    double deg_s = -1;                  // time on the degree so far (< 0: unknown)
+ };
+ 
+ // Sieve degree d (any VRAM: tables only).  rs: resume position within the
+@@ -2630,6 +2899,7 @@
+         CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
+         Lg.push_back(logs_params_base(d, r, smax, q, pl.method));
+         Lg.back().pipe = pipe_use;
++        Lg.back().runctr = G.d_runctr;
+         // test hook: COARSE_TEST_FAULT_EVERY=n flips a bit of the log of
+         // every class with u = 1 (mod n), to exercise the error stop
+         if (const char *e = getenv("COARSE_TEST_FAULT_EVERY"))
+@@ -2681,16 +2951,27 @@
+     const int eta_after = nchunks / 8 < 256 ? (nchunks / 8 > 0 ? nchunks / 8 : 1) : 256;
+     g_ckpt.eta_s = -1;
+     bool eta_shown = false;
++    // the degree's time in all runs, as one uninterrupted run would show it
++    // (round 7): a fresh degree counts from t0 (tables, tuning, pass); a
++    // resumed one adds this run's pass to the time recorded in the
++    // checkpoint, not its table rebuild (< 0: unknown -- a round-6 checkpoint)
++    const double deg_before = mid ? rs->deg_s : 0;
++    const double t_count = mid ? t_pass : t0;
++    auto deg_time = [&]() {
++        return deg_before < 0 ? -1.0 : deg_before + (now_s() - t_count);
++    };
+     for (int base = start_chunk; base < nchunks; base += NG) {
+         // round boundary: every chunk < base is complete on every device
+         const u64 classes_now = classes_before + classes_run;
+         if (ckpt_stop_due()) {
+             fprintf(stderr, "\n");
+-            ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use, classes_now);
++            ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use,
++                          classes_now, deg_time());
+             ckpt_stop_and_exit();
+         }
+         if (ckpt_periodic_due()) {
+-            ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use, classes_now);
++            ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use,
++                          classes_now, deg_time());
+             ckpt_write();
+         }
+         int used = 0;
+@@ -2701,8 +2982,10 @@
+             u64 uhi = ulo + chunk; if (uhi > total) uhi = total;
+             CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
+             CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
++            CUCHK(cudaMemset(G.d_runctr, 0, 8));
+             // runs of krun = run/8 u-values: ~50 per thread, so threads
+-            // finish together (the chunk itself is unchanged)
++            // finish together (the chunk itself is unchanged; with FILL_POOL
++            // a lane takes its next run when it needs one)
+             const u64 krun = run >= 512 ? run / 8 : run;
+             int blocks, threads;
+             size_t shm;
+@@ -2804,9 +3087,23 @@
+                 classes_before + (u64)nsurv, classes_all, d);
+         exit(1);
+     }
++    // the time: of this run; of all runs, if resumed (Item 3 of round 7)
++    const double t_this = now_s() - t0, t_all = deg_time();
++    char tb[192];
++    if (!mid)
++        snprintf(tb, sizeof tb, "%.2fs", t_this);
++    else if (t_all >= 0)
++        snprintf(tb, sizeof tb, "%.2fs in all (this run %.2fs, resumed at chunk "
++                 "%d of %d)", t_all, t_this, start_chunk, nchunks);
++    else
++        snprintf(tb, sizeof tb, "%.2fs in this run (resumed at chunk %d of %d; "
++                 "the checkpoint, from round 6, has no time for the runs before)",
++                 t_this, start_chunk, nchunks);
+     fprintf(stderr, "d=%2d done (logs/%s, %d chunks): %" PRIu64 " classes, %llu "
+-            "heavy progressions, %.2fs\n", d, mname, nchunks, classes_all,
+-            total_heavy, now_s() - t0);
++            "heavy progressions, %s\n", d, mname, nchunks, classes_all,
++            total_heavy, tb);
++    if (t_all >= 0) g_ckpt.run_before_s += t_all;
++    else g_ckpt.run_known = false;
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -2826,6 +3123,7 @@
+         CUCHK(cudaMalloc(&G.d_heavy, HEAVY_CAP * sizeof(Heavy)));
+         CUCHK(cudaMalloc(&G.d_nheavy, 4));
+         CUCHK(cudaMalloc(&G.d_overflow, 4));
++        CUCHK(cudaMalloc(&G.d_runctr, 8));
+         if (start) {
+             CUCHK(cudaMemcpy(G.d_best, start->data(), (smax + 1) * sizeof(ull),
+                              cudaMemcpyHostToDevice));
+@@ -2868,21 +3166,21 @@
+         sieve_degree_gpu_logs(d, r, smax, pl, d == d_from ? rs : nullptr);
+         // Degree boundary: best[] is a clean "degrees <= d done" state.
+         if (ckpt_stop_due()) {
+-            ckpt_snapshot(d + 1, 0, 0, LM_NONE, -1, 1, 0);
++            ckpt_snapshot(d + 1, 0, 0, LM_NONE, -1, 1, 0, 0);
+             ckpt_stop_and_exit();
+         }
+         reached = d;
+         // a periodic save only if more degrees remain (else the outputs
+         // follow at once)
+         if (d < d_hi && ckpt_periodic_due()) {
+-            ckpt_snapshot(d + 1, 0, 0, LM_NONE, -1, 1, 0);
++            ckpt_snapshot(d + 1, 0, 0, LM_NONE, -1, 1, 0, 0);
+             ckpt_write();
+         }
+     }
+     if (reached < d_hi && g_ckpt.enabled) {
+         // stopped early (a degree that cannot be done here): save the degree
+         // boundary, so a resume -- e.g. with more free VRAM -- starts there
+-        ckpt_snapshot(reached + 1, 0, 0, LM_NONE, -1, 1, 0);
++        ckpt_snapshot(reached + 1, 0, 0, LM_NONE, -1, 1, 0, 0);
+         ckpt_write();
+     }
+     best.resize(smax + 1);
+@@ -2891,7 +3189,8 @@
+         GpuCtx &G = g_gpus[g];
+         CUCHK(cudaSetDevice(G.dev));
+         cudaFree(G.d_best); cudaFree(G.d_heavy);
+-        cudaFree(G.d_nheavy); cudaFree(G.d_overflow);
++        cudaFree(G.d_nheavy); cudaFree(G.d_overflow); cudaFree(G.d_runctr);
++        G.d_runctr = nullptr;
+         G.d_best = nullptr;
+     }
+     g_gather_tmp.clear(); g_gather_tmp.shrink_to_fit();
+@@ -3058,6 +3357,16 @@
+     if (const char *e = getenv("COARSE_TOWER_SUBN")) g_tower_sub = atoi(e);
+     if (const char *e = getenv("COARSE_TEST_ETA")) g_test_eta = atoi(e) != 0;
+     if (const char *e = getenv("COARSE_PIPE")) { g_pipe = atoi(e) != 0; g_pipe_fixed = true; }
++    if (const char *e = getenv("COARSE_FILL")) {
++        char *end = nullptr;
++        const long f = strtol(e, &end, 10);
++        if (end == e || *end || f < FILL_LANE || f > FILL_POOL) {
++            fprintf(stderr, "COARSE_FILL=%s: expected 0 (round 6), 1, 2 or 3 "
++                    "(the default)\n", e);
++            return 1;
++        }
++        g_fill = (int)f;
++    }
+     if (const char *e = getenv("COARSE_METHOD")) {
+         if (!strcmp(e, "tower")) g_force_method = FM_TOWER;
+         else if (!strcmp(e, "ph")) g_force_method = FM_PH;
+@@ -3158,7 +3467,7 @@
+         ckpt_path = auto_path.c_str();
+     }
+     std::vector<ull> start;                      // best[] to start from
+-    bool have_start = false;
++    bool have_start = false, resumed = false;
+     int d_from = d_lo;
+     ResumePos rs;
+     if (ckpt_path) {
+@@ -3190,6 +3499,10 @@
+                 rs.next = ci.next; rs.nchunks = ci.nchunks;
+                 rs.method = ci.method; rs.sub = ci.sub; rs.pipe = ci.pipe;
+                 rs.classes = ci.classes;
++                rs.deg_s = ci.deg_known ? ci.deg_s : -1;
++                g_ckpt.run_before_s = ci.run_known ? ci.run_s : 0;
++                g_ckpt.run_known = ci.run_known;
++                resumed = true;
+                 fprintf(stderr, "found checkpoint %s (%s): continuing that run "
+                         "(--fresh starts over)\n", gen.c_str(),
+                         ckpt_describe(ci).c_str());
+@@ -3255,7 +3568,13 @@
+         best.swap(start);                        // a finished checkpoint
+     }
+     start.clear(); start.shrink_to_fit();
+-    fprintf(stderr, "total sieve time: %.2fs\n", now_s() - t0);
++    // resumed: also the time of all runs (the degrees' times, as on their
++    // done lines, summed), when every run recorded its time
++    if (resumed && g_ckpt.run_known)
++        fprintf(stderr, "total sieve time: %.2fs in this run, %.2fs in all\n",
++                now_s() - t0, g_ckpt.run_before_s);
++    else
++        fprintf(stderr, "total sieve time: %.2fs\n", now_s() - t0);
+     if (reached < d_hi)
+         fprintf(stderr, "WARNING: stopped after degree %d of %d; the outputs "
+                 "below cover degrees through %d only, and the checkpoint (if "
+diff -ruN a/cuda_emul.h b/cuda_emul.h
+--- a/cuda_emul.h	2026-10-26 04:06:21.815435257 -0400
++++ b/cuda_emul.h	2026-10-26 04:06:21.819686863 -0400
+@@ -1,4 +1,5 @@
+ // functional single-threaded CUDA emulation for host validation of kernels
++// (round 7: optionally with lockstep warps, EMUL_LOCKSTEP_WARPS)
+ #pragma once
+ #include <cstddef>
+ #include <cstdlib>
+@@ -60,6 +61,184 @@
+ static inline unsigned atomicAdd(unsigned* a, unsigned v) { unsigned o=*a; *a+=v; return o; }
+ static inline unsigned long long atomicXor(unsigned long long* a, unsigned long long v) { auto o=*a; *a^=v; return o; }
+ static inline unsigned long long atomicCAS(unsigned long long* a, unsigned long long c, unsigned long long v) { auto o=*a; if (o==c) *a=v; return o; }
++// ---------------------------------------------------------------------------
++#if defined(EMUL_LOCKSTEP_WARPS)
++// Lockstep warps (coarse_sieve round 7; a program opts in by defining
++// EMUL_LOCKSTEP_WARPS before this header), for warp-synchronous intrinsics
++// (emul_ballot_sync, emul_shfl_sync).  The lanes of a warp run as fibers on
++// the one host thread: a lane runs until it calls an intrinsic (or ends);
++// once every lane of the warp has called it, the results are computed and
++// the lanes go on.  Every live lane must call the same intrinsic with the
++// full mask -- warp-uniform control flow, which the device code needs too;
++// anything else stops the program with a message (so the emulator checks
++// that property).  Kernels without intrinsics run lane after lane, as
++// before, at the cost of two fiber switches per thread.
++#include <cstdio>
++#include <sys/mman.h>
++#if defined(__x86_64__)
++extern "C" void emul_ctx_switch(void **save_sp, void *load_sp);
++__asm__(".pushsection .text\n"
++        ".weak emul_ctx_switch\n"
++        ".type emul_ctx_switch,@function\n"
++        "emul_ctx_switch:\n"
++        "  pushq %rbp\n  pushq %rbx\n  pushq %r12\n  pushq %r13\n"
++        "  pushq %r14\n  pushq %r15\n"
++        "  movq %rsp, (%rdi)\n"
++        "  movq %rsi, %rsp\n"
++        "  popq %r15\n  popq %r14\n  popq %r13\n  popq %r12\n"
++        "  popq %rbx\n  popq %rbp\n"
++        "  ret\n"
++        ".size emul_ctx_switch, .-emul_ctx_switch\n"
++        ".popsection\n");
++#else
++#include <ucontext.h>                    // portable, slower
++#endif
++enum { EMUL_OP_BALLOT = 1, EMUL_OP_SHFL = 2 };
++struct EmulLane {
++    void *sp; int state;                 // 0 runnable, 1 at an intrinsic, 2 done
++    int op, src; unsigned mask;
++    unsigned long long arg, res;
++#if !defined(__x86_64__)
++    ucontext_t uc;
++#endif
++};
++struct EmulWarp {
++    EmulLane lane[32];
++    int n, cur;
++    void *sched_sp;
++#if !defined(__x86_64__)
++    ucontext_t sched_uc;
++#endif
++    void (*body)(void *); void *ctx;
++    bool active;
++};
++static EmulWarp g_ew;
++#define EMUL_FIBER_STACK ((size_t)2 << 20)
++static char *g_ew_stack[32];
++static inline void emul_to_sched(EmulLane &L) {
++#if defined(__x86_64__)
++    emul_ctx_switch(&L.sp, g_ew.sched_sp);
++#else
++    swapcontext(&L.uc, &g_ew.sched_uc);
++#endif
++}
++static void emul_fiber_entry() {
++    g_ew.body(g_ew.ctx);
++    EmulLane &L = g_ew.lane[g_ew.cur];
++    L.state = 2;
++    emul_to_sched(L);
++    abort();                             // (never resumed)
++}
++template <class B> static void emul_call_body(void *p) { (*static_cast<B *>(p))(); }
++static void emul_warp_fail(const char *what) {
++    fprintf(stderr, "emulated warp (block %u, threads %u..): %s\n", blockIdx.x,
++            threadIdx.x & ~31u, what);
++    abort();
++}
++// run the n lanes of one warp, threads tbase..tbase+n-1 of the block
++static void emul_run_warp(void (*body)(void *), void *ctx, unsigned tbase, int n) {
++    g_ew.body = body; g_ew.ctx = ctx; g_ew.n = n; g_ew.active = true;
++    for (int l = 0; l < n; l++) {
++        if (!g_ew_stack[l]) {             // stacks with a guard page below
++            char *m = (char *)mmap(nullptr, EMUL_FIBER_STACK + 4096,
++                                   PROT_READ | PROT_WRITE,
++                                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++            if (m == MAP_FAILED) { perror("emul fiber stack"); abort(); }
++            mprotect(m, 4096, PROT_NONE);
++            g_ew_stack[l] = m + 4096;
++        }
++        EmulLane &L = g_ew.lane[l];
++        L.state = 0;
++#if defined(__x86_64__)
++        // first switch: pops six registers, then "returns" into the entry
++        void **top = (void **)(g_ew_stack[l] + EMUL_FIBER_STACK);
++        top[-1] = nullptr;               // (the entry never returns)
++        top[-2] = (void *)&emul_fiber_entry;
++        for (int i = 3; i <= 8; i++) top[-i] = nullptr;
++        L.sp = (void *)(top - 8);
++#else
++        getcontext(&L.uc);
++        L.uc.uc_stack.ss_sp = g_ew_stack[l];
++        L.uc.uc_stack.ss_size = EMUL_FIBER_STACK;
++        L.uc.uc_link = nullptr;
++        makecontext(&L.uc, (void (*)())emul_fiber_entry, 0);
++#endif
++    }
++    for (;;) {
++        for (int l = 0; l < n; l++) {
++            if (g_ew.lane[l].state != 0) continue;
++            g_ew.cur = l;
++            threadIdx.x = tbase + (unsigned)l;
++#if defined(__x86_64__)
++            emul_ctx_switch(&g_ew.sched_sp, g_ew.lane[l].sp);
++#else
++            swapcontext(&g_ew.sched_uc, &g_ew.lane[l].uc);
++#endif
++        }
++        int waiting = 0, op = 0;
++        unsigned want = 0;
++        for (int l = 0; l < n; l++) {
++            const EmulLane &L = g_ew.lane[l];
++            if (L.state != 1) continue;
++            if (!waiting) { op = L.op; want = L.mask; }
++            else if (L.op != op || L.mask != want)
++                emul_warp_fail("lanes at different warp intrinsics");
++            waiting++;
++        }
++        if (!waiting) break;
++        const unsigned all = n == 32 ? ~0u : (1u << n) - 1;
++        if ((want & all) != want) emul_warp_fail("intrinsic mask names lanes the warp lacks");
++        for (int l = 0; l < n; l++)
++            if (((want >> l) & 1) && g_ew.lane[l].state != 1)
++                emul_warp_fail("a lane named in the mask has exited");
++        if (op == EMUL_OP_BALLOT) {
++            unsigned b = 0;
++            for (int l = 0; l < n; l++)
++                if (g_ew.lane[l].state == 1 && g_ew.lane[l].arg) b |= 1u << l;
++            for (int l = 0; l < n; l++)
++                if (g_ew.lane[l].state == 1) g_ew.lane[l].res = b & want;
++        } else {
++            for (int l = 0; l < n; l++) {
++                EmulLane &L = g_ew.lane[l];
++                if (L.state != 1) continue;
++                const int s = L.src & 31;
++                L.res = (s < n && g_ew.lane[s].state == 1) ? g_ew.lane[s].arg : L.arg;
++            }
++        }
++        for (int l = 0; l < n; l++) if (g_ew.lane[l].state == 1) g_ew.lane[l].state = 0;
++    }
++    g_ew.active = false;
++}
++static inline unsigned long long emul_warp_op(int op, unsigned mask,
++                                              unsigned long long arg, int src) {
++    if (!g_ew.active) { fprintf(stderr, "warp intrinsic outside a kernel\n"); abort(); }
++    EmulLane &L = g_ew.lane[g_ew.cur];
++    L.op = op; L.mask = mask; L.arg = arg; L.src = src; L.state = 1;
++    emul_to_sched(L);
++    return L.res;
++}
++static inline unsigned emul_ballot_sync(unsigned mask, int pred) {
++    return (unsigned)emul_warp_op(EMUL_OP_BALLOT, mask, pred != 0, 0);
++}
++static inline unsigned long long emul_shfl_sync(unsigned mask, unsigned long long v,
++                                                int src) {
++    return emul_warp_op(EMUL_OP_SHFL, mask, v, src);
++}
++
++// launch emulation: kernel<<<B,T>>>(args) is sed-rewritten to
++// EMUL_LAUNCH(kernel, B, T)(args)
++template <class F> struct Launcher {
++    unsigned B, T; F f;
++    template <class... A> void operator()(A&&... a) {
++        gridDim = {B,1,1}; blockDim = {T,1,1};
++        auto body = [&]() { f(a...); };
++        for (blockIdx.x = 0; blockIdx.x < B; blockIdx.x++)
++            for (unsigned w0 = 0; w0 < T; w0 += 32)
++                emul_run_warp(&emul_call_body<decltype(body)>, &body, w0,
++                              (int)(T - w0 < 32 ? T - w0 : 32));
++    }
++};
++#else
+ // launch emulation: kernel<<<B,T>>>(args) is sed-rewritten to
+ // EMUL_LAUNCH(kernel, B, T)(args)
+ template <class F> struct Launcher {
+@@ -71,6 +250,7 @@
+                 f(a...);
+     }
+ };
++#endif
+ template <class F> Launcher<F> make_launcher(unsigned B, unsigned T, F f) { return {B, T, f}; }
+ // (a third launch parameter -- dynamic shared memory -- is accepted and
+ // ignored: kernels only use shared memory in their device-only code)
+diff -ruN a/gf2_dlog.h b/gf2_dlog.h
+--- a/gf2_dlog.h	2026-10-26 04:06:21.800317439 -0400
++++ b/gf2_dlog.h	2026-10-26 04:06:21.802553449 -0400
+@@ -319,6 +319,14 @@
+ #endif
+ }
+ 
++GF2_HD int gf2f_popc32(u32 x) {
++#if defined(__CUDA_ARCH__)
++    return __popc(x);
++#else
++    return __builtin_popcount(x);
++#endif
++}
++
+ // the least of the d-bit rotations of w (reference loop; rare callers only)
+ GF2_HD u64 gf2f_min_rotation(u64 w, int d, u64 M) {
+     u64 best = w, x = w;
+@@ -342,10 +350,44 @@
+ // smaller of u and rep(~u).  A Lyndon word starts with its longest zero run
+ // and rep(~u) with u's longest run of ones, so comparing those decides
+ // nearly every tie; the rest compare with the least rotation of ~u.
++//
++// Round 7, the same rule computed faster: the least rotation of ~u starts
++// at one of its longest zero runs, i.e. at one of u's longest runs of ones
++// (of length z1 = z0 here), so only those rotations are compared -- one or
++// two, typically -- instead of all d.  Round 6's version below (the
++// reference) ran a d-step loop for ~3% of the words at even d, inside the
++// enumeration loop, where a warp waits for its slowest lane (in 4-7% of the
++// loop's iterations at d=44, by tools/fillsim.cpp).  Identical roles:
++// checked against the reference on
++// every Lyndon word of length <= 36 and on 4.5e10 of length 44 (t_pair.cpp,
++// gf2_dlog_selftest.cpp part 9, and on the device by --selftest).
+ GF2_HD int gf2f_pair_role(u64 u, int d, u64 M) {
+     const int ones = gf2f_popc64(u);
+     if (2 * ones < d) return 1;
+     if (2 * ones > d) return 0;
++    const int z0 = gf2f_clz64(u) - (64 - d);    // u's leading = longest 0-run
++    // bit b set iff bits b..b+z0-1 of u are ones (u starts with 0 and ends
++    // with 1: no run of ones wraps around)
++    u64 y = gf2f_zero_runs(u, z0);
++    if (!y) return 1;                           // u's longest 1-run < z0
++    if (y & (y >> 1)) return 0;                 // ... or > z0
++    // equal: rep(~u) starts at one of the runs of exactly z0 ones (one bit
++    // of y each, at its low end); rotate it to the top (s in 1..d-z0)
++    const u64 w = ~u & M;
++    u64 rc = M;
++    for (; y; y &= y - 1) {
++        const int s = d - z0 - gf2f_ctz64(y);
++        const u64 t = ((w << s) | (w >> (d - s))) & M;
++        if (t < rc) rc = t;
++    }
++    return u < rc ? 1 : u > rc ? 0 : 2;
++}
++
++// round 6's computation of the same role (the reference for the tests)
++GF2_HD int gf2f_pair_role_ref(u64 u, int d, u64 M) {
++    const int ones = gf2f_popc64(u);
++    if (2 * ones < d) return 1;
++    if (2 * ones > d) return 0;
+     const int z0 = gf2f_clz64(u) - (64 - d);    // u's leading = longest 0-run
+     int z1 = 0;                                 // u's longest 1-run (u starts
+     for (u64 x = u; x; x &= x >> 1) z1++;       // with 0: no wrap-around)
+diff -ruN a/gf2_dlog_selftest.cpp b/gf2_dlog_selftest.cpp
+--- a/gf2_dlog_selftest.cpp	2026-10-26 04:06:21.807244784 -0400
++++ b/gf2_dlog_selftest.cpp	2026-10-26 04:06:21.814893027 -0400
+@@ -1,4 +1,4 @@
+-// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, rounds 3-6)
++// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, rounds 3-7)
+ //
+ //   g++ -O2 -march=native -std=c++17 -I. -Icommon -o gf2_dlog_selftest gf2_dlog_selftest.cpp
+ //   (or: make gf2_dlog_selftest)
+@@ -43,7 +43,9 @@
+ // 9. reciprocal pairs (round 6): for every class of degree d <= 22 the pair
+ //    role of it and of its partner rep(~u) are complementary (self-
+ //    reciprocal classes alone), the counts match I(d) and the number of
+-//    self-reciprocal irreducibles; I(d) for every d <= 55
++//    self-reciprocal irreducibles; I(d) for every d <= 55.  Round 7: the
++//    roles equal round 6's (gf2f_pair_role_ref) there and on stretches of
++//    classes at every d = 23..55
+ //
+ // Exit status 0 iff everything matches.  The same code runs on the GPU in
+ // coarse_sieve --selftest; this is the CPU-side cross-check.
+@@ -596,6 +598,9 @@
+                 const int role = gf2f_pair_role(u, d, M);
+                 const u64 pr = gf2f_min_rotation(~u & M, d, M);
+                 const int prole = gf2f_pair_role(pr, d, M);
++                // round 7: the fast tie-break gives round 6's roles
++                if (role != gf2f_pair_role_ref(u, d, M) ||
++                    prole != gf2f_pair_role_ref(pr, d, M)) bad++;
+                 if (role == 1) { n1++; if (prole != 0 || pr == u) bad++; }
+                 else if (role == 0) { n0++; if (prole != 1 || pr == u) bad++; }
+                 else { n2++; if (pr != u) bad++; }
+@@ -612,6 +617,44 @@
+             fails++;
+         }
+     }
++    // d = dmax_exh+1..55: stretches of consecutive Lyndon words from random
++    // places (leading zero runs of every length), the same checks against
++    // round 6's roles and of the partner's role
++    std::mt19937_64 rng(0x9A1F0D7ULL);
++    u64 nsamp = 0, nties = 0, nscan = 0, nbad = 0;
++    for (int d = dmax_exh + 1; d <= 55; d++) {
++        const u64 M = ((u64)1 << d) - 1, top = (u64)1 << (d - 1);
++        for (int k = 0; k < 64; k++) {
++            const int sh = 1 + (int)(rng() % (u64)(d / 2));     // leading zeros
++            u64 lo = (rng() >> (64 - d)) >> sh;
++            if (lo < 1) lo = 1;
++            int p;
++            u64 u = fkm_seek(lo, d, &p);
++            for (int steps = 0; steps < 6000 && u < top; steps++, u = fkm_next(u, d, &p)) {
++                if (p != d) continue;
++                nsamp++;
++                const int role = gf2f_pair_role(u, d, M);
++                const u64 pr = gf2f_min_rotation(~u & M, d, M);
++                const int prole = gf2f_pair_role(pr, d, M);
++                if (role != gf2f_pair_role_ref(u, d, M) ||
++                    prole != gf2f_pair_role_ref(pr, d, M)) nbad++;
++                if (2 * gf2f_popc64(u) == d) {
++                    nties++;
++                    const int z0 = gf2f_clz64(u) - (64 - d);
++                    int z1 = 0;
++                    for (u64 x = u; x; x &= x >> 1) z1++;
++                    if (z0 == z1) nscan++;
++                }
++                if (role == 1 ? prole != 0 || pr == u
++                    : role == 0 ? prole != 1 || pr == u : pr != u) nbad++;
++            }
++        }
++    }
++    nchecked += nsamp;
++    printf("   sampled d=%d..55: %llu classes (%llu with as many ones as zeros, "
++           "%llu of them by the run scan), %llu wrong%s\n", dmax_exh + 1,
++           (ull)nsamp, (ull)nties, (ull)nscan, (ull)nbad, nbad ? "  <-- FAIL" : "");
++    if (nbad || nscan < 10000) fails++;
+     // I(d) for all d <= 55 by the necklace identity sum_{e|d} e I(e) = 2^d
+     for (int d = 1; d <= 55; d++) {
+         unsigned __int128 t = 0;
+@@ -656,9 +699,9 @@
+     int f8 = test_rr(dlo, std::min(dhi, rr_dmax), budget, samples);
+     u64 n9 = 0;
+     int f9 = test_pairs(22, n9);
+-    printf("9. reciprocal pairs: every class d=2..22 (%llu), pair roles and counts "
+-           "(I(d), self-reciprocal) %s; I(d) d<=55 %s\n", (ull)n9,
+-           f9 ? "FAILED" : "ok", f9 ? "(see above)" : "ok");
++    printf("9. reciprocal pairs: every class d=2..22 and samples to d=55 (%llu), "
++           "pair roles (as round 6's) and counts (I(d), self-reciprocal) %s; "
++           "I(d) d<=55 %s\n", (ull)n9, f9 ? "FAILED" : "ok", f9 ? "(see above)" : "ok");
+     bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7 && !b8 && !b8s && !f8 && !f9;
+     printf("gf2_dlog_selftest: %s (%.0fs)\n", ok ? "ALL OK" : "FAILURES", now() - t0);
+     (void)g_bad;
+diff -ruN a/tools/cstat.cpp b/tools/cstat.cpp
+--- a/tools/cstat.cpp	1969-12-31 19:00:00.000000000 -0500
++++ b/tools/cstat.cpp	2026-10-26 04:06:21.822958752 -0400
+@@ -0,0 +1,129 @@
++// cstat.cpp -- per-chunk class statistics of coarse_sieve's pass (round 7)
++//
++//   g++ -O2 -march=native -std=c++17 -I.. -o cstat cstat.cpp -lpthread
++//   ./cstat d pos_lo pos_hi [threads]
++//
++// For the pass positions pos_lo..pos_hi-1 of degree d (the chunk geometry
++// and the scrambled order of coarse_sieve.cu: chunk_at), enumerates every
++// Lyndon word of the chunk by FKM and prints, per position, the chunk, the
++// FKM steps, the classes (Lyndon words), the canonical ones (pair role 1),
++// the ties (as many ones as zeros) and the ties that reach the run scan
++// (leading zero run = longest run of ones).  Every class's pair role is
++// computed both by gf2f_pair_role (round 7) and gf2f_pair_role_ref (round
++// 6), and any difference is counted (exit status 1 if there is one).
++//
++// Used for: which chunks hold the work (68-73% of the chunks hold no class
++// at d = 44-47; the profiling positions of the round-7 handoff), the
++// class counts behind the warp simulation (fillsim.cpp), and the check of
++// the round-7 tie-break against round 6's (all of d = 2..36, 4.5e10
++// classes of d=44, 9.3e10 of d=47).
++#include "gf2_dlog.h"
++#include <cstdio>
++#include <cstdlib>
++#include <thread>
++#include <vector>
++#include <atomic>
++
++typedef unsigned long long ull;
++
++// coarse_sieve.cu's pass order (round 6, unchanged in round 7)
++#define CHUNK_BLOCK 8
++static u64 chunk_at(int p, int nchunks) {
++    if (nchunks <= CHUNK_BLOCK || nchunks % CHUNK_BLOCK) return (u64)p;
++    const u64 nb = (u64)(nchunks / CHUNK_BLOCK);
++    if (nb & (nb - 1)) return (u64)p;
++    int k = 0;
++    while (((u64)1 << k) < nb) k++;
++    const u64 b = (u64)(p / CHUNK_BLOCK);
++    u64 x = 0;
++    for (int i = 0; i < k; i++) x |= ((b >> i) & 1) << (k - 1 - i);
++    u64 y = x;
++    for (int i = k - 1; i >= 0; i--) {
++        u64 h = ((x >> (i + 1)) + 1) * 0x9E3779B97F4A7C15ULL + (u64)i * 0xD1B54A32D192ED03ULL;
++        h ^= h >> 31; h *= 0xBF58476D1CE4E5B9ULL; h ^= h >> 29;
++        y ^= (h >> 63) << i;
++    }
++    return y * CHUNK_BLOCK + (u64)(p % CHUNK_BLOCK);
++}
++
++// the number of rotations the round-7 tie-break compares (0: no scan)
++static int scan_count(u64 u, int d) {
++    if (2 * gf2f_popc64(u) != d) return 0;
++    const int z0 = gf2f_clz64(u) - (64 - d);
++    u64 y = gf2f_zero_runs(u, z0);
++    if (!y || (y & (y >> 1))) return 0;
++    return gf2f_popc64(y);
++}
++
++struct St {
++    ull steps = 0, lyn = 0, r1 = 0, r0 = 0, r2 = 0, tie = 0, zeq = 0, bad = 0;
++    ull cand[8] = {0};
++};
++
++int main(int argc, char **argv) {
++    if (argc < 4) { fprintf(stderr, "cstat d pos_lo pos_hi [threads]\n"); return 1; }
++    const int d = atoi(argv[1]);
++    const int plo = atoi(argv[2]), phi = atoi(argv[3]);
++    const int nth = argc > 4 ? atoi(argv[4]) : 2;
++    const u64 M = ((u64)1 << d) - 1;
++    // coarse_sieve.cu's logs_geometry
++    const u64 total = (u64)1 << (d - 1);
++    u64 run = 1u << 14;
++    while (run > 64 && total / run < ((u64)1 << 17)) run >>= 1;
++    u64 chunk = run * (u64)(1u << 17);
++    if (chunk > total) chunk = total;
++    const int nchunks = (int)((total + chunk - 1) / chunk);
++    if (plo < 0 || phi > nchunks || plo >= phi) {
++        fprintf(stderr, "positions %d..%d: d=%d has %d chunks\n", plo, phi - 1, d, nchunks);
++        return 1;
++    }
++    std::vector<St> per(phi - plo);
++    std::atomic<int> next(plo);
++    auto work = [&]() {
++        for (;;) {
++            const int p = next++;
++            if (p >= phi) return;
++            St s;
++            const u64 lo = chunk_at(p, nchunks) * chunk, hi = lo + chunk;
++            int pp;
++            u64 w = fkm_seek(lo, d, &pp);
++            while (w < hi) {
++                s.steps++;
++                if (pp == d) {
++                    s.lyn++;
++                    const int rn = gf2f_pair_role(w, d, M);
++                    if (rn != gf2f_pair_role_ref(w, d, M)) s.bad++;
++                    if (rn == 1) s.r1++; else if (rn == 0) s.r0++; else s.r2++;
++                    if (2 * gf2f_popc64(w) == d) {
++                        s.tie++;
++                        const int nc = scan_count(w, d);
++                        if (nc) { s.zeq++; s.cand[nc < 7 ? nc : 7]++; }
++                    }
++                }
++                if (w == M) break;
++                w = fkm_next(w, d, &pp);
++            }
++            per[p - plo] = s;
++        }
++    };
++    std::vector<std::thread> th;
++    for (int i = 0; i < nth; i++) th.emplace_back(work);
++    for (auto &t : th) t.join();
++    St T;
++    for (int i = 0; i < phi - plo; i++) {
++        const St &s = per[i];
++        printf("pos %6d chunk %8llu steps %11llu lyndon %11llu canon %11llu tie %10llu zeq %9llu\n",
++               plo + i, (ull)chunk_at(plo + i, nchunks), s.steps, s.lyn, s.r1, s.tie, s.zeq);
++        T.steps += s.steps; T.lyn += s.lyn; T.r1 += s.r1; T.r0 += s.r0; T.r2 += s.r2;
++        T.tie += s.tie; T.zeq += s.zeq; T.bad += s.bad;
++        for (int k = 0; k < 8; k++) T.cand[k] += s.cand[k];
++    }
++    printf("TOTAL d=%d nchunks %d positions %d..%d: steps %llu lyndon %llu (%.3f steps/word) "
++           "canon %llu skip %llu self %llu; tie %llu (%.4f of words), z0==z1 %llu (%.4f of ties); "
++           "candidates:", d, nchunks, plo, phi - 1, T.steps, T.lyn,
++           T.lyn ? (double)T.steps / T.lyn : 0.0, T.r1, T.r0, T.r2, T.tie,
++           T.lyn ? (double)T.tie / T.lyn : 0.0, T.zeq, T.tie ? (double)T.zeq / T.tie : 0.0);
++    for (int k = 1; k < 8; k++) printf(" %d:%llu", k, T.cand[k]);
++    printf("; MISMATCHES round 7 / round 6 roles %llu\n", T.bad);
++    return T.bad != 0;
++}
+diff -ruN a/tools/estimate.py b/tools/estimate.py
+--- a/tools/estimate.py	1969-12-31 19:00:00.000000000 -0500
++++ b/tools/estimate.py	2026-10-26 04:06:21.823523233 -0400
+@@ -0,0 +1,37 @@
++# estimate.py -- per-degree estimate of round 7's gain (coarse_sieve round 7)
++#
++#   python3 estimate.py        (in the directory of passavg.py's outputs,
++#                               pavg2_<d>.txt: fills 0,1,2 of each degree)
++#
++# From the simulated counts and the round-6 tune/pass times (the round-6
++# hardware log); see the round-7 handoff, section 3.  Model, per class
++# credited: c_fill * (enumeration lane-steps) + c_batch * (batch slots,
++# relative to full batches); c_batch from the tune line (the dense sample,
++# ~full batches), scaled by q = 1 (as measured) or 0.8 (the sample's runs:
++# some lanes had 4, most 3), c_fill from the pass's time.  A pooled step
++# costs OVER times a round-6 one.
++import re
++tune={40:0.363,41:0.494,42:0.382,43:0.553,44:0.384,45:0.582,46:0.830,47:0.586}
++real={40:0.704,41:0.662,42:0.689,43:0.687,44:0.671,45:0.726,46:1.039,47:0.715}
++eng={40:'tower',41:'RR',42:'tower',43:'RR',44:'tower',45:'RR',46:'classic',47:'RR'}
++rows={}
++for d in tune:
++    try: t=open('pavg2_%d.txt'%d).read()
++    except: continue
++    for m in re.finditer(r'fill (\d): lane-steps per class ([0-9.]+), batch slots used ([0-9.]+)%, lane-batches per 1000 classes ([0-9.]+)',t):
++        rows[(d,int(m.group(1)))]=(float(m.group(2)),float(m.group(3)),float(m.group(4)))
++OVER=1.9   # a pooled enumeration iteration costs ~1.9x a round-6 one (~40 more instructions)
++for d in sorted(tune):
++    if (d,0) not in rows or (d,2) not in rows: continue
++    S6,_,B6=rows[(d,0)]; S7,_,B7=rows[(d,2)]
++    ratio=B6/B7
++    out=[]
++    for q in (1.0,0.8):
++        cb=q*tune[d]
++        cf=(real[d]-cb*ratio)/S6
++        if cf>0:
++            t7=cf*OVER*S7+cb
++            out.append("q=%.1f: c_fill %.4f, gain %.2fx"%(q,cf,real[d]/t7))
++        else:
++            out.append("q=%.1f: does not fit (padding cheaper than a full slot)"%q)
++    print("d=%d %-7s batches r6/r7 %.2f, steps %.1f -> %.1f; "%(d,eng[d],ratio,S6,S7)+"; ".join(out))
+diff -ruN a/tools/fillsim.cpp b/tools/fillsim.cpp
+--- a/tools/fillsim.cpp	1969-12-31 19:00:00.000000000 -0500
++++ b/tools/fillsim.cpp	2026-10-26 04:06:21.823286009 -0400
+@@ -0,0 +1,196 @@
++// fillsim.cpp -- lockstep simulation of the batched kernel's fill loop
++// (coarse_sieve round 7)
++//
++//   g++ -O2 -march=native -std=c++17 -I.. -o fillsim fillsim.cpp
++//   ./fillsim d chunk [fill [warps [threads blocks [nopair]]]]
++//     chunk    the chunk index, or -1 for the tuner's dense sample
++//     fill     0 round 6 (each lane its own batch, runs t + k*stride),
++//              1 the same with rotated runs, 2 pooled with rotated runs
++//              (COARSE_FILL=0..2; 3, runs from a counter, depends on timing
++//              and is not modelled)
++//     warps    how many warps of the launch to simulate, drawn at random
++//              (fixed seed) from all of it (default 64 of 640; evenly
++//              spaced warps would see runs whose bits above the lane share
++//              a pattern, and so a biased sample of the chunk)
++//     threads blocks   the launch (default 512 x 40: tower and RR kernels
++//              on a 40-SM card; PH runs 128 x 80)
++//     nopair   1: every class processed, as in round 5
++//
++// Each warp's 32 lanes run k_logs_batch's fill loop in lockstep: an
++// iteration is one pass of the loop body for every lane still filling, and
++// the warp processes its batches together, once no lane is filling.  The
++// counts, per class credited (a canonical class credits 2, a self-
++// reciprocal one 1):
++//   lane-steps   fill iterations x 32: what the warp spends on enumeration,
++//                idle lanes included (FKM steps alone would be ~1-2)
++//   slots used   batch slots holding a class (the rest is the batches'
++//                padding: lanes with nothing to process, issuing anyway)
++// and the warps' imbalance (each warp's fill iterations + 1000 x its batch
++// calls, max over mean) and, for fills 0-1, how many iterations had a lane
++// at a tie and at round 6's d-step tie-break loop.
++#include "gf2_dlog.h"
++#include <cstdio>
++#include <cstdlib>
++#include <vector>
++#include <random>
++#include <algorithm>
++
++typedef unsigned long long ull;
++#define LB 32
++
++static u64 dense_stretch(int d, int L) {    // coarse_sieve's logs_dense_stretch
++    const int hb = d - L;
++    const int z = L / 2 < hb - 1 ? L / 2 : hb - 1;
++    u64 H = 0;
++    for (int b = hb - z - 1; b >= 0; b -= 2) H |= (u64)1 << b;
++    return H << L;
++}
++
++struct Lane {
++    bool have = false, done = false, pend = false;
++    u64 w = 0, whi = 0, rr = 0, k = 0;
++    int p = 0, n = 0;
++};
++
++int main(int argc, char **argv) {
++    if (argc < 3) {
++        fprintf(stderr, "fillsim d chunk [fill [warps [threads blocks [nopair]]]]\n");
++        return 1;
++    }
++    const int d = atoi(argv[1]);
++    const long long chunk_ix = atoll(argv[2]);
++    const int fill = argc > 3 ? atoi(argv[3]) : 0;
++    const int wsim = argc > 4 ? atoi(argv[4]) : 64;
++    const int tpb = argc > 6 ? atoi(argv[5]) : 512;
++    const int blocks = argc > 6 ? atoi(argv[6]) : 40;
++    const bool nopair = argc > 7 && atoi(argv[7]) != 0;
++    const bool rot = fill >= 1, pool = fill >= 2;
++    const u64 M = ((u64)1 << d) - 1;
++    const u64 total = (u64)1 << (d - 1);
++    u64 run = 1u << 14;
++    while (run > 64 && total / run < ((u64)1 << 17)) run >>= 1;
++    u64 chunk = run * (u64)(1u << 17);
++    if (chunk > total) chunk = total;
++    u64 ulo, uhi;
++    if (chunk_ix < 0) {
++        const int lb = d - 4 < 27 ? d - 4 : 27;
++        ulo = dense_stretch(d, lb);
++        uhi = ulo + ((u64)1 << lb);
++    } else {
++        ulo = (u64)chunk_ix * chunk;
++        uhi = ulo + chunk;
++    }
++    const u64 krun = run >= 512 ? run / 8 : run;
++    const u64 nruns = (uhi - ulo + krun - 1) / krun;
++    const u64 stride = (u64)tpb * blocks;
++    const u64 nwarps = stride / 32;
++    ull it_fill = 0, batches = 0, processed = 0, credited = 0, lyndon = 0,
++        steps = 0, it_tie = 0, it_scan = 0;
++    std::vector<double> wcost;
++    auto run_at = [&](u64 rr, u64 k) -> u64 {          // logs_run_at
++        if (!rot || (rr | 31) >= nruns) return rr;
++        return (rr & ~(u64)31) | ((rr + k) & 31);
++    };
++    // one pass of the fill loop's body for a lane; returns the role of the
++    // class it found (0: none)
++    auto step = [&](Lane &L, bool &tie, bool &scan) -> int {
++        if (!L.have) {
++            if (L.rr >= nruns) { L.done = true; return 0; }
++            const u64 lo = ulo + run_at(L.rr, L.k) * krun;
++            L.whi = uhi - lo > krun ? lo + krun : uhi;
++            L.rr += stride; L.k++;
++            L.w = fkm_seek(lo, d, &L.p);
++            L.have = true;
++        }
++        if (L.w >= L.whi) { L.have = false; return 0; }
++        steps++;
++        int role = 0;
++        if (L.p == d) {
++            lyndon++;
++            role = nopair ? 2 : gf2f_pair_role(L.w, d, M);
++            if (!nopair && 2 * gf2f_popc64(L.w) == d) {
++                tie = true;
++                const int z0 = gf2f_clz64(L.w) - (64 - d);
++                int z1 = 0;
++                for (u64 x = L.w; x; x &= x >> 1) z1++;
++                if (z0 == z1) scan = true;
++            }
++            if (role) credited += role == 1 ? 2 : 1;
++        }
++        L.w = fkm_next(L.w, d, &L.p);
++        return role;
++    };
++    std::vector<u64> pick(nwarps);
++    for (u64 i = 0; i < nwarps; i++) pick[i] = i;
++    std::mt19937_64 rng(0xF111517ULL + (u64)chunk_ix);
++    std::shuffle(pick.begin(), pick.end(), rng);
++    const int nsim = wsim < (int)nwarps ? wsim : (int)nwarps;
++    for (int wi = 0; wi < nsim; wi++) {
++        const u64 wid = pick[wi];
++        const ull it0 = it_fill, b0 = batches;
++        Lane ln[32];
++        for (int l = 0; l < 32; l++) ln[l].rr = wid * 32 + l;
++        for (;;) {
++            if (!pool) {
++                // every lane until its batch is full or its runs are done
++                for (;;) {
++                    bool any = false, tie = false, scan = false;
++                    for (int l = 0; l < 32; l++) {
++                        Lane &L = ln[l];
++                        if (L.done || L.n >= LB) continue;
++                        any = true;
++                        if (step(L, tie, scan)) L.n++;
++                    }
++                    if (!any) break;
++                    it_fill++;
++                    if (tie) it_tie++;
++                    if (scan) it_scan++;
++                }
++            } else {
++                // pooled: the found classes go to the lanes in turn; a class
++                // that finds no room waits with its lane
++                int dealt = 0;
++                for (;;) {
++                    bool live = false, tie = false, scan = false;
++                    int nf = 0;
++                    for (int l = 0; l < 32; l++) {
++                        Lane &L = ln[l];
++                        if (!L.pend && !L.done && step(L, tie, scan)) L.pend = true;
++                        if (!L.done) live = true;
++                        if (L.pend) nf++;
++                    }
++                    it_fill++;
++                    if (!nf) { if (!live) break; continue; }
++                    const int room = 32 * LB - dealt;
++                    const int take = nf < room ? nf : room;
++                    int r = 0;
++                    for (int l = 0; l < 32 && r < take; l++)
++                        if (ln[l].pend) { ln[l].pend = false; ln[(dealt + r) & 31].n++; r++; }
++                    dealt += take;
++                    if (dealt == 32 * LB) break;
++                }
++            }
++            bool anyb = false;
++            for (int l = 0; l < 32; l++) if (ln[l].n) anyb = true;
++            if (!anyb) break;
++            batches++;
++            for (int l = 0; l < 32; l++) { processed += ln[l].n; ln[l].n = 0; }
++        }
++        wcost.push_back((double)(it_fill - it0) + 1000.0 * (double)(batches - b0));
++    }
++    double mx = 0, sm = 0;
++    for (double c : wcost) { sm += c; if (c > mx) mx = c; }
++    printf("d=%d %s %lld, fill %d%s, %d of %llu warps: FKM steps %llu, classes %llu, "
++           "processed %llu, credited %llu\n", d, chunk_ix < 0 ? "dense sample" : "chunk",
++           chunk_ix, fill, nopair ? " (no pairs)" : "", nsim, (ull)nwarps, steps, lyndon,
++           processed, credited);
++    printf("  lane-steps per class %.3f; slots used %.1f%%; batch calls %llu; "
++           "warp imbalance (max/mean) %.3f", credited ? 32.0 * it_fill / credited : 0.0,
++           batches ? 100.0 * processed / (32.0 * LB * batches) : 0.0, batches,
++           wcost.empty() ? 0.0 : mx / (sm / wcost.size()));
++    if (!pool && it_fill)
++        printf("; iterations with a tie %.1f%%, at round 6's d-step loop %.1f%%",
++               100.0 * it_tie / it_fill, 100.0 * it_scan / it_fill);
++    printf("\n");
++    return 0;
++}
+diff -ruN a/tools/passavg.py b/tools/passavg.py
+--- a/tools/passavg.py	1969-12-31 19:00:00.000000000 -0500
++++ b/tools/passavg.py	2026-10-26 04:06:21.823483684 -0400
+@@ -0,0 +1,44 @@
++#!/usr/bin/env python3
++# passavg.py -- pass averages of the fill simulation (coarse_sieve round 7)
++#
++#   ./cstat 44 0 512 2 > cstat44.txt          # classes of the first 512 positions
++#   python3 passavg.py 44 cstat44.txt 0,1,2 16
++#
++# Runs ./fillsim on every non-empty chunk listed in a cstat output (the first
++# positions of the pass are a stratified sample of it, by the design of the
++# pass order), with each of the given fills and `warps` warps per chunk, and
++# sums the counts: lane-steps per class credited, the share of batch slots
++# holding a class, and batch calls (lane-batches) per 1000 classes credited.
++import re
++import subprocess
++import sys
++
++d = int(sys.argv[1])
++statf = sys.argv[2]
++fills = [int(x) for x in sys.argv[3].split(',')]
++warps = sys.argv[4] if len(sys.argv) > 4 else '16'
++chunks = []
++for line in open(statf):
++    if line.startswith('pos'):
++        f = line.split()
++        if int(f[7]) > 0:
++            chunks.append(int(f[3]))
++print("d=%d: %d non-empty chunks in the sample" % (d, len(chunks)))
++for fill in fills:
++    it = proc = cred = batch = 0.0
++    for c in chunks:
++        out = subprocess.run(['./fillsim', str(d), str(c), str(fill), warps],
++                             capture_output=True, text=True).stdout
++        l1 = re.search(r'processed (\d+), credited (\d+)', out)
++        l2 = re.search(r'lane-steps per class ([0-9.]+); slots used [0-9.]+%; batch calls (\d+)', out)
++        p, cr = int(l1.group(1)), int(l1.group(2))
++        ls, b = float(l2.group(1)), int(l2.group(2))
++        it += ls * cr / 32.0          # fill iterations
++        proc += p; cred += cr; batch += b
++    if not cred or not batch:
++        print("fill %d: no classes in the simulated warps (more warps?)" % fill)
++        continue
++    print("fill %d: lane-steps per class %.3f, batch slots used %.1f%%, "
++          "lane-batches per 1000 classes %.3f" %
++          (fill, 32.0 * it / cred, 100.0 * proc / (batch * 32 * 32),
++           1000.0 * batch * 32 / cred))

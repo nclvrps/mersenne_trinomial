@@ -1,4 +1,4 @@
-// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, rounds 3-6)
+// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, rounds 3-7)
 //
 //   g++ -O2 -march=native -std=c++17 -I. -Icommon -o gf2_dlog_selftest gf2_dlog_selftest.cpp
 //   (or: make gf2_dlog_selftest)
@@ -43,7 +43,9 @@
 // 9. reciprocal pairs (round 6): for every class of degree d <= 22 the pair
 //    role of it and of its partner rep(~u) are complementary (self-
 //    reciprocal classes alone), the counts match I(d) and the number of
-//    self-reciprocal irreducibles; I(d) for every d <= 55
+//    self-reciprocal irreducibles; I(d) for every d <= 55.  Round 7: the
+//    roles equal round 6's (gf2f_pair_role_ref) there and on stretches of
+//    classes at every d = 23..55
 //
 // Exit status 0 iff everything matches.  The same code runs on the GPU in
 // coarse_sieve --selftest; this is the CPU-side cross-check.
@@ -596,6 +598,9 @@ static int test_pairs(int dmax_exh, u64 &nchecked) {
                 const int role = gf2f_pair_role(u, d, M);
                 const u64 pr = gf2f_min_rotation(~u & M, d, M);
                 const int prole = gf2f_pair_role(pr, d, M);
+                // round 7: the fast tie-break gives round 6's roles
+                if (role != gf2f_pair_role_ref(u, d, M) ||
+                    prole != gf2f_pair_role_ref(pr, d, M)) bad++;
                 if (role == 1) { n1++; if (prole != 0 || pr == u) bad++; }
                 else if (role == 0) { n0++; if (prole != 1 || pr == u) bad++; }
                 else { n2++; if (pr != u) bad++; }
@@ -612,6 +617,44 @@ static int test_pairs(int dmax_exh, u64 &nchecked) {
             fails++;
         }
     }
+    // d = dmax_exh+1..55: stretches of consecutive Lyndon words from random
+    // places (leading zero runs of every length), the same checks against
+    // round 6's roles and of the partner's role
+    std::mt19937_64 rng(0x9A1F0D7ULL);
+    u64 nsamp = 0, nties = 0, nscan = 0, nbad = 0;
+    for (int d = dmax_exh + 1; d <= 55; d++) {
+        const u64 M = ((u64)1 << d) - 1, top = (u64)1 << (d - 1);
+        for (int k = 0; k < 64; k++) {
+            const int sh = 1 + (int)(rng() % (u64)(d / 2));     // leading zeros
+            u64 lo = (rng() >> (64 - d)) >> sh;
+            if (lo < 1) lo = 1;
+            int p;
+            u64 u = fkm_seek(lo, d, &p);
+            for (int steps = 0; steps < 6000 && u < top; steps++, u = fkm_next(u, d, &p)) {
+                if (p != d) continue;
+                nsamp++;
+                const int role = gf2f_pair_role(u, d, M);
+                const u64 pr = gf2f_min_rotation(~u & M, d, M);
+                const int prole = gf2f_pair_role(pr, d, M);
+                if (role != gf2f_pair_role_ref(u, d, M) ||
+                    prole != gf2f_pair_role_ref(pr, d, M)) nbad++;
+                if (2 * gf2f_popc64(u) == d) {
+                    nties++;
+                    const int z0 = gf2f_clz64(u) - (64 - d);
+                    int z1 = 0;
+                    for (u64 x = u; x; x &= x >> 1) z1++;
+                    if (z0 == z1) nscan++;
+                }
+                if (role == 1 ? prole != 0 || pr == u
+                    : role == 0 ? prole != 1 || pr == u : pr != u) nbad++;
+            }
+        }
+    }
+    nchecked += nsamp;
+    printf("   sampled d=%d..55: %llu classes (%llu with as many ones as zeros, "
+           "%llu of them by the run scan), %llu wrong%s\n", dmax_exh + 1,
+           (ull)nsamp, (ull)nties, (ull)nscan, (ull)nbad, nbad ? "  <-- FAIL" : "");
+    if (nbad || nscan < 10000) fails++;
     // I(d) for all d <= 55 by the necklace identity sum_{e|d} e I(e) = 2^d
     for (int d = 1; d <= 55; d++) {
         unsigned __int128 t = 0;
@@ -656,9 +699,9 @@ int main(int argc, char **argv) {
     int f8 = test_rr(dlo, std::min(dhi, rr_dmax), budget, samples);
     u64 n9 = 0;
     int f9 = test_pairs(22, n9);
-    printf("9. reciprocal pairs: every class d=2..22 (%llu), pair roles and counts "
-           "(I(d), self-reciprocal) %s; I(d) d<=55 %s\n", (ull)n9,
-           f9 ? "FAILED" : "ok", f9 ? "(see above)" : "ok");
+    printf("9. reciprocal pairs: every class d=2..22 and samples to d=55 (%llu), "
+           "pair roles (as round 6's) and counts (I(d), self-reciprocal) %s; "
+           "I(d) d<=55 %s\n", (ull)n9, f9 ? "FAILED" : "ok", f9 ? "(see above)" : "ok");
     bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7 && !b8 && !b8s && !f8 && !f9;
     printf("gf2_dlog_selftest: %s (%.0fs)\n", ok ? "ALL OK" : "FAILURES", now() - t0);
     (void)g_bad;
