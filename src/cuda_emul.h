@@ -61,6 +61,17 @@ static inline unsigned long long atomicAdd(unsigned long long* a, unsigned long 
 static inline unsigned atomicAdd(unsigned* a, unsigned v) { unsigned o=*a; *a+=v; return o; }
 static inline unsigned long long atomicXor(unsigned long long* a, unsigned long long v) { auto o=*a; *a^=v; return o; }
 static inline unsigned long long atomicCAS(unsigned long long* a, unsigned long long c, unsigned long long v) { auto o=*a; if (o==c) *a=v; return o; }
+// (round 8) a load hint and the cycle counter: a plain load, and a host clock
+template <class T> static inline T __ldcg(const T* p) { return *p; }
+static inline long long clock64() {
+    unsigned lo, hi;
+#if defined(__x86_64__) || defined(__i386__)
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+#else
+    lo = hi = 0;
+#endif
+    return (long long)(((unsigned long long)hi << 32) | lo);
+}
 // ---------------------------------------------------------------------------
 #if defined(EMUL_LOCKSTEP_WARPS)
 // Lockstep warps (coarse_sieve round 7; a program opts in by defining
