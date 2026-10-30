@@ -50,6 +50,7 @@ static inline cudaError_t cudaEventCreateWithFlags(cudaEvent_t* e, unsigned) { *
 static inline cudaError_t cudaEventRecord(cudaEvent_t) { return 0; }
 static inline cudaError_t cudaEventRecord(cudaEvent_t, int) { return 0; }
 static inline cudaError_t cudaEventSynchronize(cudaEvent_t) { return 0; }
+static inline cudaError_t cudaEventQuery(cudaEvent_t) { return 0; }
 static inline cudaError_t cudaEventElapsedTime(float* f, cudaEvent_t, cudaEvent_t) { *f = 0; return 0; }
 static inline cudaError_t cudaEventDestroy(cudaEvent_t) { return 0; }
 struct dim3s { unsigned x, y, z; };
