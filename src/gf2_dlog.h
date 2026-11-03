@@ -664,10 +664,10 @@ GF2_HD void pf_local(const void *p) {
 // plane has three steps (~300 instructions) to arrive -- in the source:
 // ptxas sinks the four loads to the end of the loop body, which leaves the
 // first plane of each group ~55 instructions (sm_75, d=53).  So with pf
-// (the sieve's default, COARSE_PREFETCH) each group also prefetches into
-// L1 the planes of the group after next -- ptxas sinks those too, next to
-// the loads, which puts them one group (~470 instructions) ahead of the
-// loads of those planes.
+// (COARSE_PREFETCH=1; the sieve's default in round 9 only) each group also
+// prefetches into L1 the planes of the group after next -- ptxas sinks
+// those too, next to the loads, which puts them one group (~470
+// instructions) ahead of the loads of those planes.
 template <int D>
 GF2_HD void bs_pow_g(const u32 (&U)[D], u32 (&G)[D], bool pf = false) {
     GF2D_UNROLL
