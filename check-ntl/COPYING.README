@@ -1,0 +1,47 @@
+check-ntl.c is a copy of:
+https://maths-people.anu.edu.au/~brent/ftp/trinom/check-ntl.c
+linked to at
+https://maths-people.anu.edu.au/~brent/trinom.html
+
+It is included here for convenience.
+
+
+check-ntl.c dates from 2013 or earlier.
+It is a short file that contains no copyright or licensing information,
+but since it is incorporated in Richard Brent's academic webpage
+and served from an FTP subdirectory there,
+it was presumably written by him.
+
+Since it has different authorship, for copyright purposes
+it is not necessarily covered by the same license terms
+as the other files in this Git repository,
+which are licensed under GPL v3 (or later).
+
+check-ntl uses and links to the NTL library.
+The NTL library uses the GMP library,
+and for performance reasons,
+the NTL library file that is used for linking
+should be one that was compiled with
+./configure NTL_GF2X_LIB=on
+which uses the GF2X library
+
+The NTL library is licensed under LGPL v2.1 (or later)
+The GMP library is licensed under either LGPL v3 or GPL v2 (or later)
+The GF2X library has complicated licensing terms.
+It is licensed under either GPL v3 or LGPL v2.1 (or later),
+however the applicable license is not at the discretion of the user,
+but rather depends on the exact circumstances of its use.
+The apps/ subdir of the GF2X library is licensed under GPL v2 (or later)
+The GF2X library was written by Richard Brent, Pierrick Gaudry, Emmanuel Thomé, Paul Zimmermann
+
+
+
+
+
+verify_gf2x_trinomial.py was written for this project by Claude AI in July 2026
+and for copyright purposes it has the same authorship and same GPL license
+as the other files in this Git repository.
+
+It is a much slower implementation of the same thing that check-ntl does,
+and serves as a double-check, since it is algorithmically simpler and relies
+only on the GMP library and not on NTL or GF2X.
