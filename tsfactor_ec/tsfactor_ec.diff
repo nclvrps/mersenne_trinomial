@@ -1,0 +1,4122 @@
+--- tsfactor_orig/Makefile	2026-11-16 02:44:35.488175876 -0500
++++ tsfactor/Makefile	2026-11-16 02:56:54.708011537 -0500
+@@ -92,7 +92,7 @@
+ trinomial_scan: trinomial_scan.cu gf2_trinomial_cuda.h gf2_gcd.h
+ 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
+ 
+-tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_ntl.cpp
++tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h
+ 	@echo "== $(NTLMSG) =="
+ 	@if [ "$(NTL_OK)" != "1" ] && [ "$(ALLOW_NO_NTL)" != "1" ]; then \
+ 	  echo "ERROR: tsfactor needs NTL for factor resolution (CanZass)."; \
+@@ -100,6 +100,16 @@
+ 	  exit 1; fi
+ 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ tsfactor.cu $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
+ 
++# CPU-only timing of the gcd paths on this machine's CPU and gf2x build:
++# NTL's gcd against tsfactor's default (the certified chain), plus the
++# reference rows.  No GPU.   ./gcdbench 136279841 588 [finish] [quick] [threads]
++gcdbench: gcdbench.cpp gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_cantor_core.h
++	$(CXX) $(CXXFLAGS) $(INC) -DHAVE_NTL -o $@ gcdbench.cpp $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp)) $(NTLLIB) -pthread
++
++# CPU-only: every gcd path against NTL on randomized corner-case inputs
++gcdstress: gcdstress.cpp gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_cantor_core.h
++	$(CXX) $(CXXFLAGS) $(INC) -DHAVE_NTL -o $@ gcdstress.cpp $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp)) $(NTLLIB) -pthread
++
+ check_ref: check_ref.cpp
+ 	g++ -O2 -std=c++17 -o $@ $<
+ 
+@@ -130,7 +140,7 @@
+ emul-tsfactor:
+ 	@echo "== $(NTLMSG) =="
+ 	mkdir -p build_emul
+-	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h; do \
++	for h in gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h gf2_ec.h; do \
+ 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
+ 	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
+ 	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
+@@ -141,7 +151,7 @@
+ 
+ emul-trinomial_scan:
+ 	mkdir -p build_emul
+-	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h; do \
++	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h gf2_ec.h; do \
+ 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
+ 	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
+ 	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
+@@ -158,5 +168,5 @@
+ 	./build_emul/tsfactor --selftest
+ 
+ clean:
+-	rm -rf $(CPU) $(CUDA) build_emul
++	rm -rf $(CPU) $(CUDA) gcdbench gcdstress build_emul
+ .PHONY: all cpu cuda clean emultest ntl-diag
+--- tsfactor_orig/gf2_gcd.h	2026-11-16 02:44:35.491593286 -0500
++++ tsfactor/gf2_gcd.h	2026-11-16 03:10:59.490942468 -0500
+@@ -115,6 +115,9 @@
+ // least factor degree of g AND its lex-least mask, via one CanZass
+ bool factor_min_degree_ntl(const u64 *g, size_t gw, u64 &min_deg,
+                            std::vector<u64> &least_mask);
++// does f divide x^r + x^s + 1?  (x^r mod f by repeated squaring: a few
++// dozen modular squarings at deg f, independent of how f was obtained)
++bool trinomial_divisible_ntl(const u64 *f, size_t fw, u64 r, u64 s);
+ #endif
+ 
+ #define GCD_KEEP_MAX_BITS ((u64)1 << 22)
+@@ -182,6 +185,55 @@
+ u64 poly_gcd_hybrid(const u64 *a, size_t aw, const u64 *b, size_t bw,
+                     std::vector<u64> *gout, u64 keep_max_bits,
+                     GpuMulHook *gm);
++// CERTIFIED gcd (error checking; theory in errorcheck_handoff.md).  Same
++// engine, but every transformation of the working pair,
++//     (a, b) <- M (a, b)     and     (a, b) <- (b, a - q b),
++// is verified on the host with cyclic folds carried from one step to the
++// next, and the NTL finish is replaced by an extended gcd whose Bezout
++// identity is verified the same way.  Each step being an exact
++// GF(2)[x]-linear combination, every common divisor of the inputs divides
++// every later pair, hence the result:  gcd(a, b) | g_returned.  So a
++// returned degree of 0 PROVES the inputs coprime -- a fault anywhere in the
++// gcd (CPU, RAM, or the GPU multiplications) cannot turn a hit into a
++// miss.  (A fault could at worst add a spurious factor to g; the caller's
++// check that a reported factor divides T rejects that.)  Cost: linear-time
++// folds plus the extended finish of the last hyb_ntl_finish_bits -- a few
++// percent of the gcd.
++//   gm may be null: the chain then runs on CPU multiplications.
++//   fa_expect / fb_expect (may be null): folds the inputs must match.
++//   *status receives one of the GCD_CERT_ codes.
++struct EcFold;
++enum { GCD_CERT_OK = 0,      // certified
++       GCD_CERT_INPUT = 1,   // an input does not match its expected fold
++       GCD_CERT_FAIL = 2,    // a step identity failed: fault during the gcd
++       GCD_CERT_NONE = 3 };  // not certified (builds without NTL only: if
++                             // the chain declines, the gcd is certified by
++                             // one verified XGCD instead)
++u64 poly_gcd_certified(const u64 *a, size_t aw, const u64 *b, size_t bw,
++                       std::vector<u64> *gout, u64 keep_max_bits,
++                       GpuMulHook *gm, const EcFold *fa_expect,
++                       const EcFold *fb_expect, int *status);
++// Certify with ONE verified NTL extended gcd of the whole problem instead of
++// the chain (tsfactor --ecg-xgcd).  About 1.4x NTL's plain gcd; kept as an
++// independent reference and for A/B timing (gcdbench).
++extern bool hyb_cert_xgcd;
++// Apply each half-gcd matrix to the LOW part of the operands only, reusing
++// the high part the recursion already reduced (default on; roughly halves
++// the engine's multiplication work).  false restores the full application,
++// for A/B timing (tsfactor --gcd-full-apply, gcdbench).
++extern bool hyb_split_apply;
++extern bool hyb_force_fallback;  // TEST: make the chain decline
++// Threads for the independent products of ONE gcd (CPU multiplications
++// only): the four products of a matrix application and the eight of a
++// matrix product run side by side when both operands have at least
++// hyb_mt_min_bits bits.  Default 1.  Needs a thread-safe NTL (NTL_THREADS,
++// the default configuration; hyb_threads_ok() reports it) and gf2x >= 1.2.
++extern int hyb_threads;
++extern u64 hyb_mt_min_bits;
++bool hyb_threads_ok();
++extern long hyb_fault_at;        // TEST: corrupt the N-th verified step
++void hyb_fault_reset();          // TEST: restart the step counter
++long hyb_fault_count();          // TEST: verified steps seen so far
+ extern u64 hyb_gpu_min_bits;     // offload mults with an operand >= this
+ extern u64 hyb_ntl_finish_bits;  // hand the pair to NTL below this
+ void hyb_get_stats(u64 &gpu_mults, u64 &cpu_mults, u64 &fallbacks);
+--- tsfactor_orig/gf2_gcd_ntl.cpp	2026-11-16 02:44:35.491621892 -0500
++++ tsfactor/gf2_gcd_ntl.cpp	2026-11-16 02:56:54.722000981 -0500
+@@ -91,6 +91,24 @@
+     return true;
+ }
+ 
++#ifdef HAVE_NTL
++// f | x^r + x^s + 1 ?   Used to confirm every reported factor: a wrong gcd
++// or a wrong factorisation cannot survive this test.
++bool trinomial_divisible_ntl(const u64 *f, size_t fw, u64 r, u64 s) {
++    GF2X Fp;
++    to_gf2x(Fp, f, fw);
++    if (deg(Fp) <= 0) return false;
++    GF2XModulus F;
++    build(F, Fp);
++    GF2X xr, xs;
++    PowerXMod(xr, conv<ZZ>((unsigned long)r), F);
++    PowerXMod(xs, conv<ZZ>((unsigned long)s), F);
++    add(xr, xr, xs);
++    add(xr, xr, GF2X(1L));
++    return IsZero(xr);
++}
++#endif // HAVE_NTL
++
+ // ===========================================================================
+ // Hybrid HGCD (handoff item C4): reduce a full-size gcd to a small one
+ // with the classical polynomial half-gcd recursion, offloading every
+@@ -100,6 +118,11 @@
+ // to plain NTL gcd on the original inputs if anything looks off.
+ #ifdef HAVE_NTL
+ #include <mutex>
++#include <atomic>
++#include <thread>
++#include <NTL/config.h>
++#define GF2_EC_HOST_ONLY
++#include "gf2_ec.h"
+ 
+ u64 hyb_gpu_min_bits   = (u64)1 << 21;   // >= 2 Mbit -> offer to the GPU
+ u64 hyb_ntl_finish_bits = (u64)1 << 22;  // <= 4 Mbit -> NTL finishes
+@@ -123,10 +146,50 @@
+ #endif
+ }
+ 
++long hyb_fault_at = 0;                   // test hook, see gf2_gcd.h
++bool hyb_cert_xgcd = false;              // see gf2_gcd.h
++bool hyb_force_fallback = false;         // test hook, see gf2_gcd.h
++bool hyb_split_apply = true;             // see gf2_gcd.h
++int hyb_threads = 1;                     // see gf2_gcd.h
++u64 hyb_mt_min_bits = (u64)1 << 15;      // see gf2_gcd.h
++bool hyb_threads_ok() {
++#ifdef NTL_THREADS
++    return true;
++#else
++    return false;
++#endif
++}
++static std::atomic<long> hyb_fault_ctr{0};
++
+ namespace hyb {
+ 
+ using V = std::vector<u64>;
+ 
++// ---- certification state: the folds of the CURRENT working pair, carried
++// from the step that produced each operand to the step that consumes it.
++// They are never recomputed in between, so an operand that changes in RAM
++// between two steps breaks the next identity.
++struct Cert {
++    EcFold fa, fb;
++    bool ok = true;
++    u64 n = 0;               // identities verified
++};
++static inline void vfold(EcFold &f, const V &v) {
++    ecf_fold_host(f, v.data(), v.size());
++}
++static bool fault_now() {                // test hook
++    if (!hyb_fault_at) return false;
++    return ++hyb_fault_ctr == hyb_fault_at;
++}
++static void flip_mid(V &v) {
++    if (v.empty()) v.push_back(0);
++    v[v.size() / 2] ^= 1ULL << 17;
++}
++static void flip_low(V &v) {             // a bit in the low quarter
++    if (v.empty()) v.push_back(0);
++    v[v.size() / 4] ^= 1ULL << 5;
++}
++
+ static inline int64_t vdeg(const V &a) {
+     for (size_t i = a.size(); i-- > 0;)
+         if (a[i]) return (int64_t)(i * 64 + 63 - __builtin_clzll(a[i]));
+@@ -177,6 +240,16 @@
+     return out;
+ }
+ 
++static V vlow(const V &a, u64 k) {       // a mod x^k (the low k bits)
++    size_t nw = (size_t)((k + 63) >> 6);
++    if (nw > a.size()) nw = a.size();
++    V out(a.begin(), a.begin() + nw);
++    if ((k & 63) && nw == (size_t)((k + 63) >> 6))
++        out[nw - 1] &= (1ULL << (k & 63)) - 1;
++    vtrim(out);
++    return out;
++}
++
+ // CPU product via NTL (routes through gf2x when NTL is so built)
+ static V cpu_mul(const V &a, const V &b) {
+     NTL::GF2X A, B, C;
+@@ -234,7 +307,20 @@
+ 
+ // One full division step: (a, b) <- (b, a mod b); returns quotient.
+ // Shift-xor for small operands; NTL DivRem (subquadratic) for large.
+-static V divstep(V &a, V &b) {
++// With C, the step is verified:  rem = a + q*b  in the fold ring.
++static void cert_divstep(Cert &C, const V &q, V &rem) {
++    if (fault_now()) flip_mid(rem);
++    EcFold fq, fr, t;
++    vfold(fq, q);
++    vfold(fr, rem);
++    ecf_mul(t, fq, C.fb);
++    ecf_xor(t, C.fa);
++    if (!ecf_eq(t, fr)) { C.ok = false; return; }
++    C.fa = C.fb;
++    C.fb = fr;
++    C.n++;
++}
++static V divstep(V &a, V &b, Cert *C = nullptr) {
+     int64_t da = vdeg(a), db = vdeg(b);
+     if ((u64)da + 1 > ((u64)1 << 16)) {
+         NTL::GF2X A, B, Q, R;
+@@ -247,6 +333,7 @@
+         vtrim(q); vtrim(r);
+         a = b;
+         b = r;
++        if (C) cert_divstep(*C, q, b);
+         return q;
+     }
+     V q;
+@@ -260,6 +347,7 @@
+     }
+     vtrim(a);
+     std::swap(a, b);           // a = old b, b = remainder
++    if (C) cert_divstep(*C, q, b);
+     return q;
+ }
+ 
+@@ -300,18 +388,128 @@
+     return true;
+ }
+ 
+-// (a, b) <- M (a, b)
+-static void mat_apply(const Mat2 &M, V &a, V &b, GpuMulHook *gm) {
++// Run job(0..n-1), on up to hyb_threads threads (the caller is one of them).
++// The jobs are the independent products of one matrix operation: each reads
++// shared operands and writes its own result.
++template <class F> static void par_run(int n, F job) {
++    int nt = hyb_threads < n ? hyb_threads : n;
++    if (nt <= 1) {
++        for (int i = 0; i < n; i++) job(i);
++        return;
++    }
++    std::atomic<int> next{0};
++    auto worker = [&]() {
++        for (;;) {
++            int i = next.fetch_add(1);
++            if (i >= n) break;
++            job(i);
++        }
++    };
++    std::vector<std::thread> th;
++    th.reserve((size_t)nt - 1);
++    for (int t = 1; t < nt; t++) th.emplace_back(worker);
++    worker();
++    for (auto &t : th) t.join();
++}
++
++// worth a thread: both operands of at least hyb_mt_min_bits
++static inline bool mt_worth(const V &a, const V &b) {
++    return vbits(a) >= hyb_mt_min_bits && vbits(b) >= hyb_mt_min_bits;
++}
++
++// (o0, o1) = (m00 x + m01 y, m10 x + m11 y) on CPU multiplications, the four
++// products side by side when hyb_threads > 1 and they are large enough
++static void cpu_mat2(const Mat2 &M, const V &x, const V &y, V &o0, V &o1,
++                     GpuMulHook *gm) {
++    const V *ml[4] = {&M.m[0][0], &M.m[0][1], &M.m[1][0], &M.m[1][1]};
++    const V *op[4] = {&x, &y, &x, &y};
++    V p[4];
++    bool par = hyb_threads > 1 && !gm;
++    if (par) {
++        int big = 0;
++        for (int i = 0; i < 4; i++) big += mt_worth(*ml[i], *op[i]);
++        par = big >= 2;
++    }
++    if (par) par_run(4, [&](int i) { p[i] = vmul(*ml[i], *op[i], nullptr); });
++    else for (int i = 0; i < 4; i++) p[i] = vmul(*ml[i], *op[i], gm);
++    o0 = vadd(std::move(p[0]), p[1]);
++    o1 = vadd(std::move(p[2]), p[3]);
++}
++
++// (a, b) <- M (a, b).  With C the two products are verified against the
++// carried folds, whoever computed them (NTL/gf2x on the CPU or the GPU
++// hook):  phi(a') = phi(M00) phi(a) + phi(M01) phi(b), likewise b'.
++static void mat_apply(const Mat2 &M, V &a, V &b, GpuMulHook *gm,
++                      Cert *C = nullptr) {
+     if (M.ident) return;
++    if (C && fault_now()) flip_mid(a);       // test: operand rots in RAM
+     V na, nb;
+-    if (try_mat2(M.m[0][0], M.m[0][1], M.m[1][0], M.m[1][1],
+-                 a, b, na, nb, gm)) {
+-        a = std::move(na);
+-        b = std::move(nb);
+-        return;
++    if (!try_mat2(M.m[0][0], M.m[0][1], M.m[1][0], M.m[1][1],
++                  a, b, na, nb, gm))
++        cpu_mat2(M, a, b, na, nb, gm);
++    if (C) {
++        if (fault_now()) flip_mid(nb);       // test: a product is wrong
++        EcFold m00, m01, m10, m11, fna, fnb, t1, t2;
++        vfold(m00, M.m[0][0]); vfold(m01, M.m[0][1]);
++        vfold(m10, M.m[1][0]); vfold(m11, M.m[1][1]);
++        vfold(fna, na);
++        vfold(fnb, nb);
++        ecf_mul(t1, m00, C->fa);
++        ecf_mul(t2, m01, C->fb);
++        ecf_xor(t1, t2);
++        bool ok = ecf_eq(t1, fna);
++        ecf_mul(t1, m10, C->fa);
++        ecf_mul(t2, m11, C->fb);
++        ecf_xor(t1, t2);
++        ok = ok && ecf_eq(t1, fnb);
++        if (!ok) C->ok = false;
++        else { C->fa = fna; C->fb = fnb; C->n++; }
++    }
++    a = std::move(na);
++    b = std::move(nb);
++}
++
++// (a, b) <- M (a, b), where the caller already holds
++//     (ah, bh) = M (a >> k, b >> k)
++// -- the pair the recursion that PRODUCED M reduced in place.  Writing
++// a = ah0 x^k + al gives  M (a, b) = x^k (ah, bh) + M (al, bl), so only the
++// low k bits have to be multiplied: the products are (deg M) x k instead of
++// (deg M) x (deg a), about half the size at every level of the recursion.
++// (gf2x/apps/halfgcd.cpp does the same; NTL's own HalfGCD does not.)
++// The verification, when C is given, is exactly that of mat_apply: it is
++// the identity for the WHOLE step, however a' and b' were assembled.
++static void mat_apply_split(const Mat2 &M, V &a, V &b, const V &ah,
++                            const V &bh, u64 k, GpuMulHook *gm,
++                            Cert *C = nullptr) {
++    if (M.ident) return;                     // then (ah, bh) is unchanged too
++    if (C && fault_now()) flip_low(a);       // test: operand rots in RAM
++    V al = vlow(a, k), bl = vlow(b, k);
++    V na, nb;
++    if (!try_mat2(M.m[0][0], M.m[0][1], M.m[1][0], M.m[1][1],
++                  al, bl, na, nb, gm))
++        cpu_mat2(M, al, bl, na, nb, gm);
++    vxor_shl(na, ah, k);
++    vxor_shl(nb, bh, k);
++    vtrim(na);
++    vtrim(nb);
++    if (C) {
++        if (fault_now()) flip_mid(nb);       // test: a product is wrong
++        EcFold m00, m01, m10, m11, fna, fnb, t1, t2;
++        vfold(m00, M.m[0][0]); vfold(m01, M.m[0][1]);
++        vfold(m10, M.m[1][0]); vfold(m11, M.m[1][1]);
++        vfold(fna, na);
++        vfold(fnb, nb);
++        ecf_mul(t1, m00, C->fa);
++        ecf_mul(t2, m01, C->fb);
++        ecf_xor(t1, t2);
++        bool ok = ecf_eq(t1, fna);
++        ecf_mul(t1, m10, C->fa);
++        ecf_mul(t2, m11, C->fb);
++        ecf_xor(t1, t2);
++        ok = ok && ecf_eq(t1, fnb);
++        if (!ok) C->ok = false;
++        else { C->fa = fna; C->fb = fnb; C->n++; }
+     }
+-    na = vadd(vmul(M.m[0][0], a, gm), vmul(M.m[0][1], b, gm));
+-    nb = vadd(vmul(M.m[1][0], a, gm), vmul(M.m[1][1], b, gm));
+     a = std::move(na);
+     b = std::move(nb);
+ }
+@@ -338,6 +536,19 @@
+     if (B.ident) return A;
+     Mat2 C;
+     C.ident = false;
++    if (hyb_threads > 1 && !gm && mt_worth(A.m[1][1], B.m[1][1])) {
++        // the eight products of C = A B, side by side
++        V p[8];
++        par_run(8, [&](int t) {
++            int i = t >> 2, j = (t >> 1) & 1, k = t & 1;
++            p[t] = vmul(A.m[i][k], B.m[k][j], nullptr);
++        });
++        for (int i = 0; i < 2; i++)
++            for (int j = 0; j < 2; j++)
++                C.m[i][j] = vadd(std::move(p[i * 4 + j * 2]),
++                                 p[i * 4 + j * 2 + 1]);
++        return C;
++    }
+     for (int j = 0; j < 2; j++) {
+         // column j of C is a batched matrix-vector product with A
+         if (try_mat2(A.m[0][0], A.m[0][1], A.m[1][0], A.m[1][1],
+@@ -357,7 +568,12 @@
+ // by unimodular steps until deg a >= mm > deg b, returning the transform
+ // (composed only when need_matrix).  `ok` is cleared if the classical
+ // postcondition ever fails -- caller then falls back to plain NTL.
+-static Mat2 hgcd(V &a, V &b, GpuMulHook *gm, bool need_matrix, bool &ok) {
++// C (certification) is passed only by the top-level caller and is NOT
++// handed down the recursion: the recursive calls work on truncated copies
++// whose only product is the matrix, and ANY matrix applied through a
++// verified mat_apply preserves "gcd(inputs) divides the pair".
++static Mat2 hgcd(V &a, V &b, GpuMulHook *gm, bool need_matrix, bool &ok,
++                 Cert *C = nullptr) {
+     Mat2 M;
+     int64_t n = vdeg(a);
+     if (n <= 0) return M;
+@@ -366,7 +582,7 @@
+     if ((u64)n <= HGCD_BASE_BITS) {
+         int guard = 0;
+         while (!vzero(b) && (u64)vdeg(b) >= mm) {
+-            V q = divstep(a, b);
++            V q = divstep(a, b, C);
+             mat_lstep(M, q, gm);
+             if (++guard > (int)HGCD_BASE_BITS + 4) { ok = false; break; }
+         }
+@@ -377,7 +593,8 @@
+         V a1 = vshr(a, mm), b1 = vshr(b, mm);
+         Mat2 R = hgcd(a1, b1, gm, true, ok);
+         if (!ok) return M;
+-        mat_apply(R, a, b, gm);
++        if (hyb_split_apply) mat_apply_split(R, a, b, a1, b1, mm, gm, C);
++        else mat_apply(R, a, b, gm, C);
+         M = std::move(R);
+     }
+     if (vzero(b) || (u64)vdeg(b) < mm) {
+@@ -386,7 +603,7 @@
+     }
+     // one division step across the straddle
+     {
+-        V q = divstep(a, b);
++        V q = divstep(a, b, C);
+         mat_lstep(M, q, gm);
+     }
+     if (vzero(b) || (u64)vdeg(b) < mm) {
+@@ -401,7 +618,8 @@
+         V a3 = vshr(a, k), b3 = vshr(b, k);
+         Mat2 S = hgcd(a3, b3, gm, true, ok);
+         if (!ok) return M;
+-        mat_apply(S, a, b, gm);
++        if (hyb_split_apply) mat_apply_split(S, a, b, a3, b3, k, gm, C);
++        else mat_apply(S, a, b, gm, C);
+         if (need_matrix) M = mat_mul(S, M, gm);
+     }
+     if (!((u64)vdeg(a) >= mm && (vzero(b) || (u64)vdeg(b) < mm)))
+@@ -411,34 +629,61 @@
+ 
+ } // namespace hyb
+ 
+-u64 poly_gcd_hybrid(const u64 *aw_, size_t awn, const u64 *bw_, size_t bwn,
+-                    std::vector<u64> *gout, u64 keep_max_bits,
+-                    GpuMulHook *gm) {
++// Shared driver.  cert == nullptr: the original hybrid gcd.  Otherwise the
++// certified one; *status as documented in gf2_gcd.h.
++static u64 hyb_gcd_core(const u64 *aw_, size_t awn, const u64 *bw_, size_t bwn,
++                        std::vector<u64> *gout, u64 keep_max_bits,
++                        GpuMulHook *gm, hyb::Cert *C, int *status,
++                        bool xgcd_only = false) {
+     using namespace hyb;
+     V a(aw_, aw_ + awn), b(bw_, bw_ + bwn);
+     vtrim(a); vtrim(b);
+-    if (vdeg(a) < vdeg(b)) std::swap(a, b);
++    if (vdeg(a) < vdeg(b)) {
++        std::swap(a, b);
++        if (C) std::swap(C->fa, C->fb);
++    }
+     bool ok = true;
+     int guard = 0;
+-    while (!vzero(b) && (u64)vdeg(b) > hyb_ntl_finish_bits && ok) {
++    // xgcd_only (certified mode only): skip the reduction chain and go
++    // straight to the verified extended gcd of the whole problem -- NTL's
++    // XGCD, about 1.4x its GCD.  That is the reference certificate
++    // (hyb_cert_xgcd) and the safety net when the chain declines.
++    const bool chain = !(C && xgcd_only);
++    while (chain && !vzero(b) && (u64)vdeg(b) > hyb_ntl_finish_bits && ok &&
++           (!C || C->ok)) {
++        if (hyb_force_fallback) { ok = false; break; }   // test hook
+         if (vdeg(a) == vdeg(b)) {
+-            divstep(a, b);
++            divstep(a, b, C);
+             continue;
+         }
+         int64_t before = vdeg(a);
+-        hgcd(a, b, gm, false, ok);
++        hgcd(a, b, gm, false, ok, C);
+         if (!ok) break;
++        if (C && !C->ok) break;
+         if (!vzero(b) && (u64)vdeg(b) > hyb_ntl_finish_bits)
+-            divstep(a, b);       // step past the straddle: strict halving
++            divstep(a, b, C);    // step past the straddle: strict halving
+         if (vdeg(a) >= before) ok = false;
+         if (++guard > 300) ok = false;
+     }
++    if (C && !C->ok) {                   // a step identity failed
++        *status = GCD_CERT_FAIL;
++        return 0;
++    }
+     if (!ok) {
+         { std::lock_guard<std::mutex> lk(hyb_stat_mu); hyb_n_fb++; }
++        if (C) {                         // the caller certifies another way
++            *status = GCD_CERT_NONE;
++            return 0;
++        }
+         return poly_gcd_ntl(aw_, awn, bw_, bwn, gout, keep_max_bits);
+     }
+     if (vzero(b)) {
+         int64_t d = vdeg(a);
++        if (C) {                         // the answer itself, as read now
++            EcFold f;
++            vfold(f, a);
++            if (!ecf_eq(f, C->fa)) { *status = GCD_CERT_FAIL; return 0; }
++        }
+         if (d <= 0) return 0;
+         if (gout && (u64)d + 1 <= keep_max_bits) {
+             vtrim(a);
+@@ -447,7 +692,76 @@
+         }
+         return (u64)d;
+     }
+-    return poly_gcd_ntl(a.data(), a.size(), b.data(), b.size(), gout,
+-                        keep_max_bits);
++    if (!C)
++        return poly_gcd_ntl(a.data(), a.size(), b.data(), b.size(), gout,
++                            keep_max_bits);
++    // Certified finish: an extended gcd of the reduced pair.  NTL is the
++    // (untrusted) prover; the Bezout identity  u a + v b = d  is checked
++    // against the carried folds, so d is a combination of the inputs.
++    GF2X A, B, D, U, W;
++    to_gf2x(A, a.data(), a.size());
++    to_gf2x(B, b.data(), b.size());
++    XGCD(D, U, W, A, B);
++    V dv, uv, wv;
++    from_gf2x(dv, D);
++    from_gf2x(uv, U);
++    from_gf2x(wv, W);
++    if (fault_now()) flip_mid(dv);       // test hook
++    EcFold fd, fu, fw, t1, t2;
++    vfold(fd, dv);
++    vfold(fu, uv);
++    vfold(fw, wv);
++    ecf_mul(t1, fu, C->fa);
++    ecf_mul(t2, fw, C->fb);
++    ecf_xor(t1, t2);
++    if (!ecf_eq(t1, fd)) { *status = GCD_CERT_FAIL; return 0; }
++    C->n++;
++    int64_t d = vdeg(dv);
++    if (d <= 0) return 0;
++    if (gout && (u64)d + 1 <= keep_max_bits) *gout = std::move(dv);
++    return (u64)d;
++}
++
++u64 poly_gcd_hybrid(const u64 *aw_, size_t awn, const u64 *bw_, size_t bwn,
++                    std::vector<u64> *gout, u64 keep_max_bits,
++                    GpuMulHook *gm) {
++    return hyb_gcd_core(aw_, awn, bw_, bwn, gout, keep_max_bits, gm, nullptr,
++                        nullptr);
++}
++
++u64 poly_gcd_certified(const u64 *aw_, size_t awn, const u64 *bw_, size_t bwn,
++                       std::vector<u64> *gout, u64 keep_max_bits,
++                       GpuMulHook *gm, const EcFold *fa_expect,
++                       const EcFold *fb_expect, int *status) {
++    hyb::Cert C;
++    ecf_fold_host(C.fa, aw_, awn);
++    ecf_fold_host(C.fb, bw_, bwn);
++    int st = GCD_CERT_OK;
++    if ((fa_expect && !ecf_eq(C.fa, *fa_expect)) ||
++        (fb_expect && !ecf_eq(C.fb, *fb_expect))) {
++        if (status) *status = GCD_CERT_INPUT;
++        return 0;
++    }
++    if (gout) gout->clear();
++    const EcFold fa0 = C.fa, fb0 = C.fb;
++    u64 d = hyb_gcd_core(aw_, awn, bw_, bwn, gout, keep_max_bits, gm, &C,
++                         &st, hyb_cert_xgcd);
++    if (st == GCD_CERT_NONE) {
++        // The chain declined (a postcondition of the half-gcd did not hold:
++        // never observed, but the engine is written to notice).  Certify
++        // the original problem with one verified extended gcd instead, so
++        // the answer is still a proof.
++        C = hyb::Cert();
++        C.fa = fa0;
++        C.fb = fb0;
++        st = GCD_CERT_OK;
++        if (gout) gout->clear();
++        d = hyb_gcd_core(aw_, awn, bw_, bwn, gout, keep_max_bits, nullptr,
++                         &C, &st, true);
++    }
++    if (status) *status = st;
++    return d;
+ }
++void hyb_fault_reset() { hyb_fault_ctr = 0; }
++long hyb_fault_count() { return hyb_fault_ctr.load(); }
+ #endif // HAVE_NTL
+--- tsfactor_orig/tsfactor.cu	2026-11-16 02:44:35.491785084 -0500
++++ tsfactor/tsfactor.cu	2026-11-16 02:56:54.710488464 -0500
+@@ -35,6 +35,14 @@
+ //                                  for production r)
+ //          make emul-tsfactor     (CPU emulation of the kernels)
+ // Test:    ./tsfactor --selftest
++//
++// Error checking (ON by default; --no-ec disables): every block is
++// verified on the fly -- the h-table by a Frobenius-linear Gerbicz
++// chain, the Horner build / FFT product / reduction by cyclic folds,
++// the h-table initialisation from a closed form, and every transfer
++// and RAM snapshot by a fold on both sides.  A failed check restarts
++// the scan from the newest verified state; see gf2_ec.h for the
++// mechanisms and tsfactor_handoff.md (round 7) for the integration.
+ // Bench:   ./tsfactor --bench <r> [s]
+ // Run:     ./tsfactor <r> <survivors.txt> --skip 36 [options]
+ //
+@@ -43,6 +51,7 @@
+ 
+ #include "gf2_trinomial_cuda.h"
+ #include "gf2_gcd.h"
++#include "gf2_ec.h"
+ #include <cinttypes>
+ #include <algorithm>
+ #include <atomic>
+@@ -62,6 +71,8 @@
+ #include <unistd.h>
+ #include <ctype.h>
+ #include <math.h>
++#include <stdarg.h>
++#include <time.h>
+ 
+ // ---------------------------------------------------------------------------
+ // new kernels (all gather-form: every output word is produced by one
+@@ -90,12 +101,17 @@
+ // tail of the fused Horner: fold bits [r, r+m-2] of C down
+ // (x^(r+e) = x^(s+e) + x^e), add the leading x^m term, and leave all
+ // bits >= r zero.  Single thread; <= 63 sequential iterations.
+-__global__ void k_horner_tail(u64 *C, u64 r, u64 s, int m) {
++// `fired_out` (may be null) receives the mask of the e that were folded:
++// it is the quotient of the unreduced Horner sum by T, which the error
++// checker needs to predict phi(C) (gf2_ec.h, ecf_horner_predict).
++__global__ void k_horner_tail(u64 *C, u64 r, u64 s, int m, u64 *fired_out) {
+     if (blockIdx.x != 0 || threadIdx.x != 0) return;
++    u64 fired = 0;
+     for (int e = 0; e <= m - 2; e++) {
+         u64 p = r + (u64)e;
+         u64 bit = (C[p >> 6] >> (p & 63)) & 1;
+         if (bit) {
++            fired |= 1ULL << e;
+             C[p >> 6] ^= 1ULL << (p & 63);
+             u64 t1 = s + (u64)e;
+             C[t1 >> 6] ^= 1ULL << (t1 & 63);
+@@ -103,6 +119,7 @@
+         }
+     }
+     C[(u64)m >> 6] ^= 1ULL << (m & 63);         // + x^m  (m < r)
++    if (fired_out) *fired_out = fired;
+ }
+ 
+ // dst ^= (src * x) mod (x^r + x^s + 1); dst != src; both nw words with
+@@ -204,6 +221,138 @@
+ }
+ 
+ // ---------------------------------------------------------------------------
++// error checking: configuration, event log, statistics, fault injection
++// (the mechanisms themselves are described at the top of gf2_ec.h)
++
++enum { ECC_GERBICZ, ECC_PRODUCT, ECC_REDUCE, ECC_INIT, ECC_IDLE, ECC_XFER,
++       ECC_SNAP, ECC_GCD, ECC_FACTOR, ECC_N };
++static const char *ecc_name[ECC_N] = {
++    "h-table chain", "A*C product / Horner", "reduction mod T",
++    "h-table initialisation", "idle h-table", "device<->host transfer",
++    "host snapshot", "gcd", "factor verification" };
++
++struct EcCfg {
++    bool on = true;            // --no-ec
++    long window = 8;           // --ecw: blocks per h-table chain check
++    bool init_check = true;    // --eci0 disables the init verification
++    bool gcd_cert = false;     // the gcd is CERTIFIED (gf2_gcd.h).  main()
++                               // turns this on for every run with checking
++                               // unless --gcd-ntl / --ecg-dup ask otherwise;
++                               // the selftest sets it per suite
++    bool gcd_dup = false;      // --ecg-dup: every gcd computed twice, compared
++    bool timing = false;       // --ect: cost breakdown (adds device syncs)
++    int max_retry = 3;         // failed restarts from one point before giving up
++    std::string log_path;      // PREFIX.ec.log; empty = stderr only
++};
++static EcCfg g_ec;
++static bool g_ec_quiet = false;          // selftest: count events, do not print
++
++struct EcStats {
++    std::atomic<u64> fails[ECC_N];
++    std::atomic<u64> restarts{0}, xfer_retries{0}, gcd_reruns{0},
++        repairs{0};
++    std::atomic<u64> blocks{0}, windows{0};
++    std::atomic<u64> gcd_cert{0}, gcd_uncert{0};   // certified / fell back
++    // --ect accounting (scan thread only)
++    double t_block = 0, t_host = 0, t_window = 0, t_init = 0, t_xfer = 0,
++           t_verify = 0;
++    u64 n_init = 0, n_xfer = 0, n_verify = 0;
++    EcStats() { for (auto &f : fails) f = 0; }
++    u64 total() const {
++        u64 t = 0;
++        for (auto &f : fails) t += f.load();
++        return t;
++    }
++};
++static EcStats g_ecs;
++static std::mutex g_ec_log_mu;
++static std::atomic<u64> g_hold_restores{0};   // fine DDF stepped back (selftest)
++
++// Report an error-checking event: cat >= 0 is a detection in that category
++// (counted), cat < 0 an informational note.  Always goes to stderr the
++// moment it happens, and to PREFIX.ec.log so that an unattended run leaves
++// a record.
++static void ec_event(int cat, const char *fmt, ...)
++    __attribute__((format(printf, 2, 3)));
++static void ec_event(int cat, const char *fmt, ...) {
++    char msg[640];
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(msg, sizeof msg, fmt, ap);
++    va_end(ap);
++    if (cat >= 0) g_ecs.fails[cat]++;
++    if (g_ec_quiet) return;
++    std::lock_guard<std::mutex> lk(g_ec_log_mu);
++    if (cat >= 0) fprintf(stderr, "EC FAIL [%s] %s\n", ecc_name[cat], msg);
++    else fprintf(stderr, "EC: %s\n", msg);
++    fflush(stderr);
++    if (!g_ec.log_path.empty()) {
++        FILE *f = fopen(g_ec.log_path.c_str(), "a");
++        if (f) {
++            time_t now = time(nullptr);
++            char ts[32];
++            strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", localtime(&now));
++            fprintf(f, "%s  %-24s %s\n", ts,
++                    cat >= 0 ? ecc_name[cat] : "note", msg);
++            fclose(f);
++        }
++    }
++}
++
++// Fault injection, for validating the checker itself: --ec-fault SITE:N
++// flips one bit at the N-th opportunity of the named site (once), and the
++// selftest sweeps every site.  N = -1 fires at EVERY opportunity, which
++// models a persistent hardware fault.
++enum { ECI_NONE = 0, ECI_H, ECI_HMID, ECI_A, ECI_C, ECI_T, ECI_RED, ECI_IDLE,
++       ECI_INIT, ECI_XFER_H, ECI_XFER_A, ECI_SNAP, ECI_HOLD, ECI_JOB,
++       ECI_GCD, ECI_N };
++static const char *eci_name[ECI_N] = {
++    "none", "h", "hmid", "a", "c", "t", "red", "idle", "init", "xferh",
++    "xfera", "snap", "hold", "job", "gcd" };
++static const char *eci_desc[ECI_N] = {
++    "", "h-table entry after a block's squarings",
++    "h-table entry between two squaring steps",
++    "accumulator A while idle between blocks",
++    "block polynomial C before the product",
++    "unreduced FFT product", "reduced product",
++    "h-table while idle between intervals",
++    "h-table during initialisation", "h-table snapshot in transfer",
++    "accumulator in transfer", "h-table snapshot in host RAM",
++    "bisection hold table in VRAM", "accumulator queued for the gcd",
++    "gcd result" };
++struct EcInject {
++    int site = ECI_NONE;
++    long at = 0;                         // N; -1 = every opportunity
++    std::atomic<long> ctr{0};
++    std::atomic<long> fired{0};
++    u64 seed = 1;
++    void arm(int s, long n, u64 sd) { site = s; at = n; ctr = 0; fired = 0;
++                                      seed = sd; }
++    void disarm() { site = ECI_NONE; }
++};
++static EcInject g_eci;
++static bool ec_inject_now(int site) {
++    if (g_eci.site != site) return false;
++    long c = ++g_eci.ctr;
++    if (g_eci.at >= 0 && (c != g_eci.at || g_eci.fired.load())) return false;
++    g_eci.fired++;
++    return true;
++}
++static u64 ec_inject_rnd(u64 n) {        // reproducible position in [0, n)
++    u64 z = (g_eci.seed += 0x9E3779B97F4A7C15ULL);
++    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
++    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
++    z ^= z >> 31;
++    return n ? z % n : 0;
++}
++static void ec_inject_note(int site, u64 bit) {
++    if (g_ec_quiet) return;
++    fprintf(stderr, "EC INJECT: flipped bit %" PRIu64 " (%s, opportunity "
++            "%ld)\n", bit, eci_desc[site], g_eci.ctr.load());
++    fflush(stderr);
++}
++
++// ---------------------------------------------------------------------------
+ // device context for the blocked scan
+ 
+ struct TsGPU {
+@@ -227,6 +376,24 @@
+     bool legacy_sq = false;    // force 3-kernel squaring path
+     double t_sq = 0, t_horner = 0, t_mul = 0;   // accumulated seconds
+ 
++    // ---- error checking (gf2_ec.h) ----
++    bool ec_on = false;        // checks active for the current scan
++    u64 *ecD = nullptr;        // window accumulator: XOR of the digests S_z
++    u64 *ecS0 = nullptr;       // digest at the start of the window
++    u64 *ecX = nullptr, *ecY = nullptr, *ecZ = nullptr;   // nw scratch each
++    u64 *ecPart = nullptr;     // partial folds (3 * EC_NBLK_MAX * EC_NF)
++    u64 *ecOut = nullptr;      // small result arena the host reads back
++    EcFold ecA;                // phi(dA), carried on the host block to block
++    EcFold ecC;                // phi(C) as last predicted (diagnostics)
++    long ec_w = 0;             // blocks accumulated in the current window
++    enum { ECO_CU = 0,                  // fold of the unreduced Horner sum
++           ECO_T = EC_NF,               // 3 segment folds of the product
++           ECO_A = 4 * EC_NF,           // fold of the reduced product
++           ECO_FIRED = 5 * EC_NF,       // Horner tail quotient mask
++           ECO_FLAG = 5 * EC_NF + 1,    // full-width compare result
++           ECO_TAB = 5 * EC_NF + 2,     // fold of a whole h-table
++           ECO_WORDS = 6 * EC_NF + 2 };
++
+     void init(u64 r_) {
+         r = r_;
+         nw = bits_to_words(r);
+@@ -271,6 +438,11 @@
+         cudaFree(dA); cudaFree(dC); cudaFree(dTmp);
+         cudaFree(dS0); cudaFree(dS1);
+         cudaFree(dFA); cudaFree(dFB);
++        if (ecD) {
++            cudaFree(ecD); cudaFree(ecS0); cudaFree(ecX); cudaFree(ecY);
++            cudaFree(ecZ); cudaFree(ecPart); cudaFree(ecOut);
++            ecD = nullptr;
++        }
+         F.fini();
+     }
+     u64 *hslot(int j) { return dH[hcur] + (size_t)j * nw; }
+@@ -305,7 +477,8 @@
+         int blocks, threads;
+         CudaFFT::launch_dims(nwc, blocks, threads);
+         k_horner_fused<<<blocks, threads>>>(dH[hcur], nw, m, dC, nwc);
+-        k_horner_tail<<<1, 1>>>(dC, r, s, m);
++        k_horner_tail<<<1, 1>>>(dC, r, s, m,
++                                ec_on ? ecOut + ECO_FIRED : nullptr);
+     }
+     // dS0 <- x * y (full 2r-1-bit product; x,y device residues < r bits)
+     void mul_full(const u64 *dx, const u64 *dy) {
+@@ -330,15 +503,202 @@
+         CudaFFT::launch_dims(nw, blocks, threads);
+         k_fold_pass<<<blocks, threads>>>(dS1, w1, dst, nw, r, s, r + s - 1);
+     }
+-    // A <- A * C mod T
++    // A <- A * C mod T.  With error checking the unreduced product and the
++    // reduced result are folded on the device (gf2_ec.h, mechanism 3); the
++    // host compares them in ec_block_verify.
+     void mul_A_by_C() {
+         mul_full(dA, dC);
++        if (ec_inject_now(ECI_T)) inject(dS0, 2 * r - 1, ECI_T);
++        if (ec_on) ec_after_mul();
+         reduce_into(dA);
++        if (ec_inject_now(ECI_RED)) inject(dA, r, ECI_RED);
++        if (ec_on) ec_after_reduce();
++        if (ec_inject_now(ECI_A)) inject(dA, r, ECI_A);
+     }
+     void reset_A() {
+         int blocks, threads;
+         CudaFFT::launch_dims(nw, blocks, threads);
+         k_set_one<<<blocks, threads>>>(dA, nw);
++        ecf_one(ecA);
++    }
++
++    // ---- error checking ------------------------------------------------
++    void ec_setup(bool on) {
++        ec_on = on;
++        if (!on || ecD) return;
++        CUCHK(cudaMalloc(&ecD, nw * sizeof(u64)));
++        CUCHK(cudaMalloc(&ecS0, nw * sizeof(u64)));
++        CUCHK(cudaMalloc(&ecX, nw * sizeof(u64)));
++        CUCHK(cudaMalloc(&ecY, nw * sizeof(u64)));
++        CUCHK(cudaMalloc(&ecZ, nw * sizeof(u64)));
++        CUCHK(cudaMalloc(&ecPart,
++                         (size_t)3 * EC_NBLK_MAX * EC_NF * sizeof(u64)));
++        CUCHK(cudaMalloc(&ecOut, ECO_WORDS * sizeof(u64)));
++        CUCHK(cudaMemset(ecOut, 0, ECO_WORDS * sizeof(u64)));
++        ecf_one(ecA);
++    }
++    // --ect: isolate the device time of a group of checking kernels.  The
++    // extra synchronisation is only paid when timing is requested.
++    double ec_tic() const {
++        if (!g_ec.timing) return 0;
++        CUCHK(cudaDeviceSynchronize());
++        return trin_now_s();
++    }
++    void ec_toc(double t0, double &acc) const {
++        if (!g_ec.timing) return;
++        CUCHK(cudaDeviceSynchronize());
++        acc += trin_now_s() - t0;
++    }
++    // test hook: flip one bit of a device buffer holding `nbits` bits
++    void inject(u64 *buf, u64 nbits, int site) {
++        u64 bit = ec_inject_rnd(nbits);
++        k_ec_flip_bit<<<1, 1>>>(buf, bit);
++        ec_inject_note(site, bit);
++    }
++    void inject_h(u64 *base, int site) {
++        int j = (int)ec_inject_rnd((u64)m);
++        inject(base + (size_t)j * nw, r, site);
++    }
++    // fold of src[0..n) -> ecOut[off .. off+EC_NF)
++    void ec_fold_dev(const u64 *src, size_t n, size_t off) {
++        unsigned nb = ec_nblk_for(n);
++        k_ec_fold_part<<<nb, EC_NF>>>(src, n, ecPart);
++        k_ec_combine<<<1, EC_NF>>>(ecPart, nb, 1, ecOut + off);
++    }
++    void ec_read(size_t off, size_t n, u64 *dst) {
++        CUCHK(cudaMemcpy(dst, ecOut + off, n * sizeof(u64),
++                         cudaMemcpyDeviceToHost));
++    }
++    // fold of a whole h-table (m*nw words taken as one polynomial)
++    void ec_table_fold(const u64 *base, EcFold &f) {
++        ec_fold_dev(base, (size_t)m * nw, ECO_TAB);
++        ec_read(ECO_TAB, EC_NF, f.w);
++    }
++    // per block, before the Horner build: D ^= S_z and the fold of the
++    // unreduced Horner sum, in one pass over the table
++    void ec_block_pre() {
++        double t0 = ec_tic();
++        unsigned nb = ec_nblk_for(nwc);
++        k_ec_block_pass<<<nb, EC_NF>>>(dH[hcur], nw, m, ecD, nwc, ecPart);
++        k_ec_combine<<<1, EC_NF>>>(ecPart, nb, 1, ecOut + ECO_CU);
++        ec_toc(t0, g_ecs.t_block);
++    }
++    void ec_after_mul() {                  // dS0 = unreduced product
++        double t0 = ec_tic();
++        unsigned nb = ec_nblk_for(nw2);
++        k_ec_fold3_part<<<nb, EC_NF>>>(dS0, nw2, r, 2 * r - s, ecPart);
++        k_ec_combine<<<1, EC_NF>>>(ecPart, nb, 3, ecOut + ECO_T);
++        ec_toc(t0, g_ecs.t_block);
++    }
++    void ec_after_reduce() {
++        double t0 = ec_tic();
++        ec_fold_dev(dA, nw, ECO_A);
++        ec_toc(t0, g_ecs.t_block);
++    }
++    // host half of the per-block check.  Returns 0 if clean; bit 0: the
++    // Horner build or the FFT product is wrong (phi(t) != phi(A) phi(C));
++    // bit 1: the reduction is wrong.  Updates the carried phi(A).
++    int ec_block_verify() {
++        double t0 = ec_tic();
++        u64 buf[ECO_FLAG];
++        ec_read(0, ECO_FLAG, buf);
++        double t1 = g_ec.timing ? trin_now_s() : 0;
++        EcFold fCu, seg[3], fAn, fC, ft, fred, prod;
++        memcpy(fCu.w, buf + ECO_CU, sizeof fCu.w);
++        for (int g = 0; g < 3; g++)
++            memcpy(seg[g].w, buf + ECO_T + g * EC_NF, sizeof seg[g].w);
++        memcpy(fAn.w, buf + ECO_A, sizeof fAn.w);
++        ecf_horner_predict(fC, fCu, buf[ECO_FIRED], m, r, s);
++        ecf_reduce_predict(ft, fred, seg, r, s);
++        ecf_mul(prod, ecA, fC);
++        ecC = fC;
++        int rc = 0;
++        if (!ecf_eq(prod, ft)) rc |= 1;
++        if (!ecf_eq(fred, fAn)) rc |= 2;
++        ecA = fAn;
++        g_ecs.blocks++;
++        if (g_ec.timing) {
++            double t2 = trin_now_s();
++            g_ecs.t_block += t1 - t0;
++            g_ecs.t_host += t2 - t1;
++        }
++        return rc;
++    }
++    // h-table chain: restart it from the table as it stands
++    void ec_chain_reset() {
++        int blocks, threads;
++        CudaFFT::launch_dims(nw, blocks, threads);
++        k_ec_digest<<<blocks, threads>>>(dH[hcur], nw, m, ecS0);
++        k_set_zero<<<blocks, threads>>>(ecD, nw);
++        ec_w = 0;
++    }
++    // h-table chain check (gf2_ec.h, mechanism 1), compared at full width:
++    //     sigma(D) + D == S_start + S_now,   sigma = Frobenius^m.
++    // With no block since the last check (ec_w == 0, D == 0) it reduces to
++    // S_now == S_start: "the idle table has not changed".  Either way the
++    // next window starts from the digest taken here.  True if clean.
++    bool ec_window_check() {
++        double t0 = ec_tic();
++        int blocks, threads;
++        CudaFFT::launch_dims(nw, blocks, threads);
++        k_ec_digest<<<blocks, threads>>>(dH[hcur], nw, m, ecX);
++        const u64 *sig = ecD;
++        if (ec_w > 0) {
++            u64 *dst = ecY;
++            for (int t = 0; t < m; t++) {
++                square_slot(sig, dst);
++                sig = dst;
++                dst = (dst == ecY) ? ecZ : ecY;
++            }
++        }
++        k_ec_set_word<<<1, 1>>>(ecOut + ECO_FLAG, 0);
++        k_ec_or4<<<blocks, threads>>>(sig, ecD, ecS0, ecX, nw,
++                                      ecOut + ECO_FLAG);
++        u64 flag = 1;
++        ec_read(ECO_FLAG, 1, &flag);
++        std::swap(ecS0, ecX);
++        k_set_zero<<<blocks, threads>>>(ecD, nw);
++        ec_w = 0;
++        g_ecs.windows++;
++        ec_toc(t0, g_ecs.t_window);
++        return flag == 0;
++    }
++    // Verify the table at block start k from first principles (gf2_ec.h,
++    // mechanism 2):  (1 + y_k)(1 + S_k) == 1 + y_{k+m},  y_t = x^(2^t),
++    // using 1 + y_t = (1 + x)^(2^t).  Costs k + m squarings of one residue
++    // and one modmul -- about 1/m of building the table.  Leaves the chain
++    // reset at this table.  True if the table is right.
++    bool ec_verify_table_at(u64 k) {
++        double t0 = ec_tic();
++        int blocks, threads;
++        CudaFFT::launch_dims(nw, blocks, threads);
++        k_set_one<<<blocks, threads>>>(ecY, nw);
++        k_xor_x<<<1, 1>>>(ecY);                        // 1 + x
++        u64 *cur = ecY, *oth = ecZ;
++        for (u64 t = 0; t < k; t++) {
++            square_slot(cur, oth);
++            std::swap(cur, oth);
++        }
++        CUCHK(cudaMemcpy(ecX, cur, nw * sizeof(u64),
++                         cudaMemcpyDeviceToDevice));   // 1 + y_k
++        for (int t = 0; t < m; t++) {
++            square_slot(cur, oth);
++            std::swap(cur, oth);
++        }                                              // cur = 1 + y_{k+m}
++        ec_chain_reset();                              // ecS0 = S_k
++        CUCHK(cudaMemcpy(ecD, ecS0, nw * sizeof(u64),
++                         cudaMemcpyDeviceToDevice));
++        k_ec_flip_bit<<<1, 1>>>(ecD, 0);               // 1 + S_k
++        mul_full(ecX, ecD);
++        reduce_into(oth);
++        k_ec_set_word<<<1, 1>>>(ecOut + ECO_FLAG, 0);
++        k_ec_neq<<<blocks, threads>>>(oth, cur, nw, ecOut + ECO_FLAG);
++        u64 flag = 1;
++        ec_read(ECO_FLAG, 1, &flag);
++        k_set_zero<<<blocks, threads>>>(ecD, nw);
++        g_ecs.n_init++;
++        ec_toc(t0, g_ecs.t_init);
++        return flag == 0;
+     }
+ 
+     // h-table init at block start kstart: Pascal-triangle build of the
+@@ -362,8 +722,11 @@
+                 }
+             }
+         }
+-        for (u64 t = 0; t < kstart; t++)
++        if (ec_inject_now(ECI_INIT)) inject_h(dH[hcur], ECI_INIT);
++        for (u64 t = 0; t < kstart; t++) {
+             square_all_step();
++            if (ec_inject_now(ECI_INIT)) inject_h(dH[hcur], ECI_INIT);
++        }
+     }
+ 
+     void copy_h(u64 *dst_base, const u64 *src_base) {
+@@ -389,6 +752,79 @@
+     void A_from_host(const std::vector<u64> &in) {
+         CUCHK(cudaMemcpy(dA, in.data(), nw * sizeof(u64),
+                          cudaMemcpyHostToDevice));
++        // the carried fold comes from the host copy, so a bad upload shows
++        // up at the next product check
++        ecf_fold_host(ecA, in.data(), in.size() < nw ? in.size() : nw);
++    }
++
++    // ---- verified transfers (gf2_ec.h, mechanism 4) ----
++    // D2H of the current h-table; `f` receives its fold, computed on the
++    // device and confirmed against what arrived.  A mismatch is re-read: a
++    // transfer error is transient.  False if three reads all disagree.
++    bool h_to_host_ec(std::vector<u64> &out, EcFold &f) {
++        double t0 = ec_tic();
++        ec_table_fold(dH[hcur], f);
++        bool ok = false;
++        for (int tr = 0; tr < 3 && !ok; tr++) {
++            h_to_host(out);
++            if (ec_inject_now(ECI_XFER_H)) {
++                u64 bit = ec_inject_rnd((u64)out.size() * 64);
++                out[bit >> 6] ^= 1ULL << (bit & 63);
++                ec_inject_note(ECI_XFER_H, bit);
++            }
++            EcFold fh;
++            ecf_fold_host(fh, out.data(), out.size());
++            ok = ecf_eq(fh, f);
++            if (!ok) g_ecs.xfer_retries++;
++        }
++        g_ecs.n_xfer++;
++        ec_toc(t0, g_ecs.t_xfer);
++        return ok;
++    }
++    // H2D of an h-table.  `expect` (may be null) is the fold recorded when
++    // the host copy was captured.  Returns 0 if the device now holds exactly
++    // that table (and restarts the chain from it); 1 if the host copy no
++    // longer matches its recorded fold; 2 if the upload cannot be confirmed.
++    int h_from_host_ec(const std::vector<u64> &in, const EcFold *expect) {
++        double t0 = ec_tic();
++        EcFold fh, fd;
++        ecf_fold_host(fh, in.data(), in.size());
++        int rc = 2;
++        if (expect && !ecf_eq(fh, *expect)) {
++            rc = 1;
++        } else {
++            for (int tr = 0; tr < 3 && rc; tr++) {
++                h_from_host(in);
++                ec_table_fold(dH[hcur], fd);
++                if (ecf_eq(fd, fh)) rc = 0;
++                else g_ecs.xfer_retries++;
++            }
++        }
++        if (!rc) ec_chain_reset();
++        g_ecs.n_xfer++;
++        ec_toc(t0, g_ecs.t_xfer);
++        return rc;
++    }
++    // D2H of A, confirmed against the fold carried from its last product
++    // check: catches a bad transfer and a flip in the idle accumulator.
++    bool A_to_host_ec(std::vector<u64> &out) {
++        double t0 = ec_tic();
++        bool ok = false;
++        for (int tr = 0; tr < 3 && !ok; tr++) {
++            A_to_host(out);
++            if (ec_inject_now(ECI_XFER_A)) {
++                u64 bit = ec_inject_rnd(r);
++                out[bit >> 6] ^= 1ULL << (bit & 63);
++                ec_inject_note(ECI_XFER_A, bit);
++            }
++            EcFold f;
++            ecf_fold_host(f, out.data(), out.size());
++            ok = ecf_eq(f, ecA);
++            if (!ok) g_ecs.xfer_retries++;
++        }
++        g_ecs.n_xfer++;
++        ec_toc(t0, g_ecs.t_xfer);
++        return ok;
+     }
+ };
+ 
+@@ -402,6 +838,8 @@
+     u64 gdeg = 0;
+     std::vector<u64> g;      // always captured (up to r bits; a few MB)
+     double secs = 0;
++    bool ec_bad = false;     // error checking: this verdict cannot be trusted
++    const char *ec_why = "";
+ };
+ 
+ // gcd with full mask capture; an interval gcd is at most r bits and we
+@@ -443,12 +881,35 @@
+ #endif
+ }
+ 
++// Certified gcd (gf2_gcd.h): fa / fb are the folds the inputs must have.
++static u64 ts_gcd_cert(const u64 *a, size_t aw, const u64 *b, size_t bw,
++                       std::vector<u64> *gout, const EcFold *fa,
++                       const EcFold *fb, int *st) {
++#ifdef HAVE_NTL
++    return poly_gcd_certified(a, aw, b, bw, gout, g_keep_bits, g_gm, fa, fb,
++                              st);
++#else
++    (void)fa; (void)fb;
++    *st = 3;
++    return poly_gcd_naive(a, aw, b, bw, gout);
++#endif
++}
++
+ static const char *gcd_backend() {
+ #ifdef HAVE_NTL
+     if (!ntl_gf2x_backed())
+         return "NTL (HalfGCD + CanZass) -- WARNING: NTL built WITHOUT "
+                "gf2x; large-degree GCDs will be many times slower "
+                "(rebuild NTL with NTL_GF2X_LIB=on)";
++    if (g_ec.on && g_ec.gcd_cert)
++        return hyb_cert_xgcd
++                   ? "CERTIFIED: NTL extended gcd, Bezout identity "
++                     "fold-verified (--ecg-xgcd)"
++               : (g_gm || g_use_hybrid)
++                   ? "CERTIFIED half-gcd chain (GPU-offloaded mults, every "
++                     "step fold-verified) + verified XGCD finish"
++                   : "CERTIFIED half-gcd chain (CPU mults via NTL/gf2x, "
++                     "every step fold-verified) + verified XGCD finish";
+     if (g_use_hybrid)
+         return g_gm ? "hybrid HGCD (GPU-offloaded mults) + NTL finish"
+                     : "hybrid HGCD (CPU mults) + NTL finish";
+@@ -615,15 +1076,24 @@
+     std::condition_variable cv_job, cv_res;
+     struct Job {
+         u64 id;
+-        std::vector<u64> acc;
++        std::shared_ptr<std::vector<u64>> acc;
+         std::shared_ptr<const std::vector<u64>> mod;
++        EcFold f;              // fold of acc, as verified on arrival
++        EcFold fm;             // fold of the modulus
++        bool has_f;
+     };
+     std::deque<Job> jobs;
+     std::map<u64, GcdRes> results;
+-    std::set<u64> outstanding, discard;
++    std::map<u64, std::vector<GcdRes>> partial;  // --ecg: copies finished
++    std::map<u64, int> live;                     // id -> copies queued/running
++    std::set<u64> discard;
+     bool stopf = false;
+     std::vector<std::thread> ths;
+ 
++    static bool same(const GcdRes &a, const GcdRes &b) {
++        return !a.ec_bad && !b.ec_bad && a.gdeg == b.gdeg && a.g == b.g;
++    }
++
+     void worker() {
+         for (;;) {
+             std::unique_lock<std::mutex> lk(mu);
+@@ -631,29 +1101,151 @@
+             if (jobs.empty()) { if (stopf) return; continue; }
+             Job j = std::move(jobs.front());
+             jobs.pop_front();
++            bool stale = discard.count(j.id) > 0;   // verdict no longer wanted
+             lk.unlock();
+             GcdRes rres;
+-            double t0 = trin_now_s();
+-            rres.gdeg = ts_gcd(j.acc.data(), j.acc.size(), j.mod->data(),
+-                               j.mod->size(), &rres.g);
+-            rres.secs = trin_now_s() - t0;
++            if (!stale) {
++                double t0 = trin_now_s();
++                // The accumulator may have waited in host RAM behind other
++                // gcds: confirm it is still what the device produced.
++                bool okf = true;
++                if (j.has_f) {
++                    EcFold f;
++                    ecf_fold_host(f, j.acc->data(), j.acc->size());
++                    okf = ecf_eq(f, j.f);
++                }
++                if (!okf) {
++                    rres.ec_bad = true;
++                    rres.ec_why = "accumulator changed in host RAM while "
++                                  "queued for its gcd";
++                } else if (j.has_f && g_ec.gcd_cert) {
++                    // certified gcd; a failed certificate means a fault
++                    // DURING the gcd, so it is simply run again
++                    int st = 0;
++                    for (int tr = 0; tr < 2; tr++) {
++                        rres.g.clear();
++                        rres.gdeg = ts_gcd_cert(j.acc->data(), j.acc->size(),
++                                                j.mod->data(), j.mod->size(),
++                                                &rres.g, &j.f, &j.fm, &st);
++                        if (st == 0 || st == 3) break;
++                        ec_event(ECC_GCD, "gcd certificate failed (%s)%s",
++                                 st == 1 ? "an input changed in host RAM"
++                                         : "a step identity does not hold: "
++                                           "fault during the gcd",
++                                 tr == 0 ? " -- running the gcd again" : "");
++                        if (tr == 0) g_ecs.gcd_reruns++;
++                    }
++                    if (st == 1 || st == 2) {
++                        rres.ec_bad = true;
++                        rres.ec_why = "gcd certificate failed twice";
++                        rres.gdeg = 0;
++                        rres.g.clear();
++                    } else if (st == 3) {    // builds without NTL only
++                        if (g_ecs.gcd_uncert++ == 0)
++                            ec_event(-1, "this build has no certified gcd "
++                                     "(no NTL): the gcd is NOT checked");
++                    } else {
++                        g_ecs.gcd_cert++;
++                    }
++                } else {
++                    rres.gdeg = ts_gcd(j.acc->data(), j.acc->size(),
++                                       j.mod->data(), j.mod->size(), &rres.g);
++                    if (ec_inject_now(ECI_GCD)) {    // test hook
++                        if (rres.gdeg) { rres.gdeg = 0; rres.g.clear(); }
++                        else { rres.gdeg = 3; rres.g.assign(2, 0);
++                               rres.g[0] = 0xB; }    // x^3 + x + 1
++                        ec_inject_note(ECI_GCD, 0);
++                    }
++                }
++                rres.secs = trin_now_s() - t0;
++            }
+             lk.lock();
+-            outstanding.erase(j.id);
+-            if (discard.erase(j.id) == 0) results[j.id] = std::move(rres);
++            finish_locked(j, rres);
+             cv_res.notify_all();
+         }
+     }
+ 
++    // bookkeeping for one finished copy of a job (mu held)
++    void finish_locked(const Job &j, GcdRes &rres) {
++        int left = --live[j.id];
++        if (discard.count(j.id)) {
++            if (left <= 0) {
++                discard.erase(j.id);
++                live.erase(j.id);
++                partial.erase(j.id);
++            }
++            return;
++        }
++        GcdRes fin;
++        bool have = false;
++        if (!g_ec.gcd_dup || rres.ec_bad) {
++            fin = std::move(rres);
++            have = true;
++        } else {
++            // --ecg: the gcd is computed twice from the same verified input
++            // and the answers must agree; a third run breaks a tie
++            auto &pv = partial[j.id];
++            pv.push_back(std::move(rres));
++            if (pv.size() == 2) {
++                if (same(pv[0], pv[1])) {
++                    fin = pv[0];
++                    fin.secs = pv[0].secs > pv[1].secs ? pv[0].secs
++                                                       : pv[1].secs;
++                    have = true;
++                } else {
++                    ec_event(ECC_GCD, "two runs of one gcd disagree (degree %"
++                             PRIu64 " vs %" PRIu64 ") -- running it a third "
++                             "time", pv[0].gdeg, pv[1].gdeg);
++                    g_ecs.gcd_reruns++;
++                    jobs.push_front(j);
++                    left = ++live[j.id];
++                    cv_job.notify_one();
++                }
++            } else if (pv.size() >= 3) {
++                if (same(pv[2], pv[0])) fin = pv[0];
++                else if (same(pv[2], pv[1])) fin = pv[1];
++                else {
++                    fin.ec_bad = true;
++                    fin.ec_why = "three runs of one gcd gave three answers";
++                }
++                fin.secs = pv[0].secs + pv[1].secs + pv[2].secs;
++                have = true;
++            }
++        }
++        if (have) {
++            results[j.id] = std::move(fin);
++            partial.erase(j.id);
++            if (left <= 0) live.erase(j.id);
++            else discard.insert(j.id);     // drop the copy still in flight
++        }
++    }
++
+ public:
+     void start(int n) {
+         for (int i = 0; i < n; i++) ths.emplace_back([this] { worker(); });
+     }
++    // `f` (may be null) is the fold of acc established on the device; the
++    // worker re-checks it immediately before the gcd starts.
+     void submit(u64 id, std::vector<u64> acc,
+-                std::shared_ptr<const std::vector<u64>> mod) {
++                std::shared_ptr<const std::vector<u64>> mod,
++                const EcFold *f = nullptr) {
++        Job j;
++        j.id = id;
++        j.acc = std::make_shared<std::vector<u64>>(std::move(acc));
++        j.mod = std::move(mod);
++        j.has_f = (f != nullptr);
++        if (f) j.f = *f; else ecf_zero(j.f);
++        ecf_fold_host(j.fm, j.mod->data(), j.mod->size());
++        if (ec_inject_now(ECI_JOB) && !j.acc->empty()) {    // test hook
++            u64 bit = ec_inject_rnd((u64)j.acc->size() * 64 - 64);
++            (*j.acc)[bit >> 6] ^= 1ULL << (bit & 63);
++            ec_inject_note(ECI_JOB, bit);
++        }
++        int copies = g_ec.gcd_dup ? 2 : 1;
+         std::lock_guard<std::mutex> lk(mu);
+-        outstanding.insert(id);
+-        jobs.push_back(Job{id, std::move(acc), std::move(mod)});
+-        cv_job.notify_one();
++        live[id] = copies;
++        for (int c = 0; c < copies; c++) jobs.push_back(j);
++        cv_job.notify_all();
+     }
+     bool try_get(u64 id, GcdRes &out) {
+         std::lock_guard<std::mutex> lk(mu);
+@@ -672,8 +1264,9 @@
+     }
+     void forget_all_pending() {
+         std::lock_guard<std::mutex> lk(mu);
+-        for (u64 id : outstanding) discard.insert(id);
++        for (auto &kv : live) discard.insert(kv.first);
+         results.clear();
++        partial.clear();
+     }
+     // Block until nothing is queued or running, returning how many jobs
+     // were still in flight on entry.  forget_all_pending() only MARKS
+@@ -682,9 +1275,9 @@
+     // Anything a running gcd can touch must be drained before teardown.
+     size_t drain() {
+         std::unique_lock<std::mutex> lk(mu);
+-        size_t n = outstanding.size();
++        size_t n = live.size();
+         cv_res.wait(lk, [&] {
+-            return stopf || (jobs.empty() && outstanding.empty());
++            return stopf || (jobs.empty() && live.empty());
+         });
+         return n;
+     }
+@@ -993,15 +1586,22 @@
+     double ckpt_secs = 15 * 60.0;
+     long die_after_blocks = -1;   // test hook: simulate SIGTERM
+     long die_in_fine = -1;        // test hook: SIGTERM inside localize
++    // error checking: after an interval at least this long, download the
++    // next interval's start table BEFORE waiting on the gcd (see scan)
++    double ec_presnap_secs = 30.0;
+ };
+ 
+ struct ScanOut {
+-    enum Kind { FOUND, GAVE_UP, PRIMITIVE, RANGE, INTERRUPTED } kind;
++    enum Kind { FOUND, GAVE_UP, PRIMITIVE, RANGE, INTERRUPTED,
++                EC_RETRY,      // internal: an error check failed, restart
++                EC_FATAL       // persistent fault: no result for this s
++              } kind;
+     u64 d = 0;
+     std::string hex;           // for FOUND
+     u64 rlo = 0, rhi = 0;      // for RANGE
+     u64 degrees_scanned = 0;
+     double wall = 0;
++    int ec_restarts = 0;       // error-check restarts this s needed
+ };
+ 
+ // resolve a captured interval gcd g: least factor degree + numerically
+@@ -1068,33 +1668,144 @@
+ // ---------------------------------------------------------------------------
+ // the per-s scan
+ 
++// An h-table held in host RAM, with the fold taken on the device when it
++// was captured.  The fold is checked again whenever the copy is used, so a
++// bit flip in host RAM while it waits (possibly for hours) is caught.
++struct HSnap {
++    std::vector<u64> h;
++    EcFold f;
++    bool has_f = false;
++};
++
+ struct ResumeState {
+     bool valid = false;
+     CkptHdr H;
+     std::vector<u64> h, a;
++    EcFold fh;                 // fold of h, when it came from RAM (EC restart)
++    bool has_fh = false;
+ };
+ 
+-// one block: C from h, A *= C, advance h by m degrees
+-static void do_block(TsGPU &G, int verbose) {
+-    if (verbose >= 2) {
+-        double t0 = trin_now_s();
+-        G.horner_C();
+-        CUCHK(cudaDeviceSynchronize());
+-        double t1 = trin_now_s();
+-        G.mul_A_by_C();
+-        CUCHK(cudaDeviceSynchronize());
+-        double t2 = trin_now_s();
+-        for (int t = 0; t < G.m; t++) G.square_all_step();
++// Put a host h-table on the device.  With error checking the host copy is
++// compared with the fold recorded at capture (if any), the upload is
++// confirmed by a fold of the device table, and the h-table chain restarts
++// from it.  False (and logged) if the table cannot be trusted.
++static bool load_h(TsGPU &G, const std::vector<u64> &h, const EcFold *expect,
++                   const char *what) {
++    if (!G.ec_on) { G.h_from_host(h); return true; }
++    int rc = G.h_from_host_ec(h, expect);
++    if (rc == 1)
++        ec_event(ECC_SNAP, "s=%" PRIu64 ": %s no longer matches the fold "
++                 "recorded when it was captured (host RAM)", G.s, what);
++    else if (rc == 2)
++        ec_event(ECC_XFER, "s=%" PRIu64 ": upload of %s could not be "
++                 "confirmed in 3 attempts", G.s, what);
++    return rc == 0;
++}
++
++// D2H of the accumulator for a gcd.  With error checking it must match the
++// fold carried from its last product check.
++static bool fetch_A(TsGPU &G, std::vector<u64> &hostA) {
++    if (!G.ec_on) { G.A_to_host(hostA); return true; }
++    if (G.A_to_host_ec(hostA)) return true;
++    ec_event(ECC_XFER, "s=%" PRIu64 ": accumulator A does not match its "
++             "carried fold after 3 reads (changed on the device since its "
++             "last check, or corrupted in transfer)", G.s);
++    return false;
++}
++
++// Build the h-table at block start k.  With error checking it is verified
++// from first principles (gf2_ec.h, mechanism 2) and a failed build is
++// repeated; false if it keeps failing.
++static bool init_h_checked(TsGPU &G, u64 k) {
++    for (int tr = 0;; tr++) {
++        G.init_h_at(k);
++        if (!G.ec_on) return true;
++        if (!g_ec.init_check) { G.ec_chain_reset(); return true; }
++        if (G.ec_verify_table_at(k)) return true;
++        ec_event(ECC_INIT, "s=%" PRIu64 ": h-table built at degree %" PRIu64
++                 " fails (1+y_k)(1+S_k) = 1+y_(k+m)%s", G.s, k,
++                 tr < g_ec.max_retry ? " -- rebuilding" : "");
++        if (tr >= g_ec.max_retry) return false;
++    }
++}
++
++// one block: C from h, A *= C, advance h by m degrees.  With error
++// checking, returns nonzero if the block's fold checks failed (bit 0:
++// Horner build or FFT product, bit 1: reduction); the h-table chain is
++// checked separately, once per window (TsGPU::ec_window_check).
++static int do_block(TsGPU &G, int verbose) {
++    const bool tm = verbose >= 2;
++    double t0 = 0, t1 = 0, t2 = 0, t3 = 0;
++    if (G.ec_on) G.ec_block_pre();
++    if (tm) { CUCHK(cudaDeviceSynchronize()); t0 = trin_now_s(); }
++    G.horner_C();
++    if (ec_inject_now(ECI_C)) G.inject(G.dC, G.r, ECI_C);
++    if (tm) { CUCHK(cudaDeviceSynchronize()); t1 = trin_now_s(); }
++    G.mul_A_by_C();
++    if (tm) { CUCHK(cudaDeviceSynchronize()); t2 = trin_now_s(); }
++    for (int t = 0; t < G.m; t++) {
++        G.square_all_step();
++        if (t == G.m / 2 && ec_inject_now(ECI_HMID))
++            G.inject_h(G.dH[G.hcur], ECI_HMID);
++    }
++    if (ec_inject_now(ECI_H)) G.inject_h(G.dH[G.hcur], ECI_H);
++    if (tm) {
+         CUCHK(cudaDeviceSynchronize());
+-        double t3 = trin_now_s();
++        t3 = trin_now_s();
+         G.t_horner += t1 - t0;
+         G.t_mul += t2 - t1;
+         G.t_sq += t3 - t2;
+-    } else {
+-        G.horner_C();
+-        G.mul_A_by_C();
+-        for (int t = 0; t < G.m; t++) G.square_all_step();
+     }
++    int rc = 0;
++    if (G.ec_on) {
++        rc = G.ec_block_verify();
++        G.ec_w++;
++    }
++    return rc;
++}
++
++// One block plus the checks that go with it; kblk is the block's first
++// degree (for the log).  The h-table chain is checked every --ecw blocks
++// and whenever `close_window` is set (end of an interval: the table is
++// about to sit idle and A is about to leave the device).  False, already
++// logged, if any check tripped.
++static bool run_block(TsGPU &G, const SParams &P, u64 kblk,
++                      bool close_window) {
++    int rc = do_block(G, P.verbose);
++    if (!G.ec_on) return true;
++    if (rc & 1) {
++        ec_event(ECC_PRODUCT, "s=%" PRIu64 " block %" PRIu64 "..%" PRIu64
++                 ": phi(A*C) != phi(A)*phi(C)", G.s, kblk, kblk + G.m - 1);
++        return false;
++    }
++    if (rc & 2) {
++        ec_event(ECC_REDUCE, "s=%" PRIu64 " block %" PRIu64 "..%" PRIu64
++                 ": phi(A*C mod T) != phi(A*C) + phi(q)*phi(T)", G.s, kblk,
++                 kblk + G.m - 1);
++        return false;
++    }
++    if (G.ec_w >= g_ec.window || close_window) {
++        long nb = G.ec_w;
++        if (!G.ec_window_check()) {
++            ec_event(ECC_GERBICZ, "s=%" PRIu64 ": sigma(D)+D != S0+S1 over "
++                     "the %ld block(s) ending at degree %" PRIu64, G.s, nb,
++                     kblk + G.m - 1);
++            return false;
++        }
++    }
++    return true;
++}
++
++// Does the claimed factor divide T = x^r + x^s + 1?  A wrong gcd or a
++// wrong factorisation cannot pass this, so a reported factor is always a
++// factor.  (Without NTL only the selftest's kernel suites run.)
++static bool verify_factor(const std::vector<u64> &mask, u64 r, u64 s) {
++#ifdef HAVE_NTL
++    return trinomial_divisible_ntl(mask.data(), mask.size(), r, s);
++#else
++    (void)mask; (void)r; (void)s;
++    return true;
++#endif
+ }
+ 
+ // fineDDF-style localization: a factor is known to lie in
+@@ -1102,13 +1813,15 @@
+ // comfortably (deg >= canzass_max).  Rebuild h at ka and bisect,
+ // exactly like factor.cpp's fineDDF mode.  Returns the final captured
+ // gcd (all of whose factors lie in the final sub-interval), or sets
+-// range_only.
++// range_only.  `ec_trip` is set (with false returned) when an error
++// check failed: the caller then restarts from its last verified state.
+ static bool localize(TsGPU &G, GcdPool &pool, const SParams &P, u64 r,
+                      std::shared_ptr<const std::vector<u64>> T,
+                      u64 ka, long q, u64 &gseq,
+                      std::vector<u64> &g_out, u64 &gdeg_out,
+                      u64 &ka_out, u64 &kb_out,
+-                     const std::vector<u64> *h_at_ka) {
++                     const HSnap *h_at_ka, bool &ec_trip) {
++    ec_trip = false;
+     if (P.verbose) {
+         printf("Entering fine DDF mode: localize in %" PRIu64 "..%" PRIu64
+                "\n", ka, ka + (u64)q * G.m - 1);
+@@ -1125,7 +1838,10 @@
+             FH.skip == P.skip && FH.m == (u64)G.m && FH.nw == (u64)G.nw &&
+             FH.ka0 == ka && FH.q0 == (u64)q && FH.kcur >= ka &&
+             FH.kcur + FH.qcur * FH.m <= ka + (u64)q * G.m) {
+-            G.h_from_host(fh);
++            if (!load_h(G, fh, nullptr, "the fine-DDF checkpoint")) {
++                ec_trip = true;
++                return false;
++            }
+             kcur = FH.kcur;
+             qcur = (long)FH.qcur;
+             have_h = true;
+@@ -1138,8 +1854,12 @@
+         }
+     }
+     // (b) the snapshot the scan took when this interval began
+-    if (!have_h && h_at_ka && h_at_ka->size() == (size_t)G.m * G.nw) {
+-        G.h_from_host(*h_at_ka);
++    if (!have_h && h_at_ka && h_at_ka->h.size() == (size_t)G.m * G.nw) {
++        if (!load_h(G, h_at_ka->h, h_at_ka->has_f ? &h_at_ka->f : nullptr,
++                    "the interval-start h-table snapshot")) {
++            ec_trip = true;
++            return false;
++        }
+         have_h = true;
+         if (P.verbose) {
+             printf("Using the h-table saved at the interval start "
+@@ -1153,7 +1873,10 @@
+     //     resume with no fine checkpoint)
+     if (!have_h) {
+         double t0 = trin_now_s();
+-        G.init_h_at(ka);
++        if (!init_h_checked(G, ka)) {
++            ec_trip = true;
++            return false;
++        }
+         CUCHK(cudaDeviceSynchronize());
+         if (P.verbose) {
+             printf("Re-exponentiation took %f\n", trin_now_s() - t0);
+@@ -1162,9 +1885,20 @@
+     }
+     G.need_hold();
+     std::vector<u64> hostA, hsave;
++    EcFold hold_f;
++    ecf_zero(hold_f);
+     for (;;) {
+         long qfirst = (qcur == 1) ? 1 : qcur - qcur / 2;
++        // the table about to be held and saved must itself be verified
++        if (G.ec_on && !G.ec_window_check()) {
++            ec_event(ECC_IDLE, "s=%" PRIu64 ": h-table changed before the "
++                     "fine-DDF window at %" PRIu64, G.s, kcur);
++            ec_trip = true;
++            return false;
++        }
+         G.copy_h(G.dHold, G.dH[G.hcur]);
++        if (G.ec_on) G.ec_table_fold(G.dHold, hold_f);
++        if (ec_inject_now(ECI_HOLD)) G.inject_h(G.dHold, ECI_HOLD);
+         // mirror the window to disk before spending hours inside it
+         if (!P.ckpt_base.empty()) {
+             FineHdr FH;
+@@ -1173,7 +1907,18 @@
+             FH.m = (u64)G.m; FH.nw = (u64)G.nw;
+             FH.ka0 = ka; FH.q0 = (u64)q;
+             FH.kcur = kcur; FH.qcur = (u64)qcur;
+-            G.h_to_host(hsave);
++            if (G.ec_on) {
++                EcFold f;
++                if (!G.h_to_host_ec(hsave, f)) {
++                    ec_event(ECC_XFER, "s=%" PRIu64 ": h-table download for "
++                             "the fine-DDF checkpoint could not be confirmed",
++                             G.s);
++                    ec_trip = true;
++                    return false;
++                }
++            } else {
++                G.h_to_host(hsave);
++            }
+             save_fine(P.ckpt_base, FH, hsave, P.verbose);
+             if (P.die_in_fine >= 0 && --((SParams &)P).die_in_fine < 0)
+                 g_stop = 1;                      // test hook
+@@ -1188,13 +1933,26 @@
+             return false;                        // caller -> INTERRUPTED
+         }
+         G.reset_A();
+-        for (long b = 0; b < qfirst; b++) do_block(G, P.verbose);
++        for (long b = 0; b < qfirst; b++)
++            if (!run_block(G, P, kcur + (u64)b * G.m, b == qfirst - 1)) {
++                ec_trip = true;
++                return false;
++            }
+         CUCHK(cudaDeviceSynchronize());
+-        G.A_to_host(hostA);
++        if (!fetch_A(G, hostA)) {
++            ec_trip = true;
++            return false;
++        }
+         u64 id = gseq++;
+-        pool.submit(id, hostA, T);
++        pool.submit(id, hostA, T, G.ec_on ? &G.ecA : nullptr);
+         GcdRes R = pool.wait_get(id);
+         u64 kb = kcur + (u64)qfirst * G.m - 1;
++        if (R.ec_bad) {
++            ec_event(ECC_GCD, "s=%" PRIu64 " fineDDF gcd %" PRIu64 "..%"
++                     PRIu64 ": %s", G.s, kcur, kb, R.ec_why);
++            ec_trip = true;
++            return false;
++        }
+         if (P.verbose) {
+             printf("   fineDDF %" PRIu64 "..%" PRIu64 ": gcd took %f, "
+                    "deg %" PRIu64 "\n", kcur, kb, R.secs, R.gdeg);
+@@ -1218,12 +1976,37 @@
+                 return false;
+             }
+             G.copy_h(G.dH[G.hcur], G.dHold);   // back to state at kcur
++            g_hold_restores++;
++            if (G.ec_on) {              // the hold table sat idle in VRAM
++                EcFold f;
++                G.ec_table_fold(G.dH[G.hcur], f);
++                if (!ecf_eq(f, hold_f)) {
++                    ec_event(ECC_IDLE, "s=%" PRIu64 ": fine-DDF hold table "
++                             "for %" PRIu64 " changed while held in VRAM",
++                             G.s, kcur);
++                    ec_trip = true;
++                    return false;
++                }
++                G.ec_chain_reset();
++            }
+             qcur = qfirst;
+         } else {
+             if (qcur == 1) {
+-                fprintf(stderr, "ERROR: fineDDF lost the factor at %" PRIu64
+-                        "\n", kcur);
+-                fflush(stderr);
++                // The interval gcd saw a factor that no sub-interval shows:
++                // one of those gcds is wrong.
++                if (G.ec_on) {
++                    ec_event(ECC_GCD, "s=%" PRIu64 ": fine DDF lost the "
++                             "factor at %" PRIu64 " (gcds inconsistent)",
++                             G.s, kcur);
++                    remove_fine(P.ckpt_base);
++                    ec_trip = true;
++                    return false;
++                }
++                if (!g_ec_quiet) {
++                    fprintf(stderr, "ERROR: fineDDF lost the factor at %"
++                            PRIu64 "\n", kcur);
++                    fflush(stderr);
++                }
+                 ka_out = kcur;
+                 kb_out = kb;
+                 remove_fine(P.ckpt_base);
+@@ -1235,12 +2018,18 @@
+     }
+ }
+ 
+-static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
+-                          u64 r, u64 s, u64 &gseq, ResumeState *resume) {
++// One attempt at s.  Returns ScanOut::EC_RETRY when an error check failed:
++// *resume then holds the newest verified state to restart from (valid), or
++// is invalid if there is none in RAM.  scan_one_s (below) is the entry
++// point and runs the restarts.
++static ScanOut scan_one_s_once(TsGPU &G, GcdPool &pool, const SParams &P,
++                               u64 r, u64 s, u64 &gseq, ResumeState *resume) {
+     ScanOut out;
+     double s_t0 = trin_now_s();
+     G.set_s(s);
++    G.ec_setup(g_ec.on);
+     G.t_sq = G.t_horner = G.t_mul = 0;
++    const bool ec = G.ec_on;
+ 
+     auto T = std::make_shared<std::vector<u64>>(bits_to_words(r + 1), 0);
+     (*T)[0] |= 1;
+@@ -1269,15 +2058,37 @@
+     u64 k;                     // current interval start
+     long blk0 = 0;             // blocks of it already folded into A
+ 
++    // Error checking: the newest state known to be good, kept in RAM --
++    // where a failed check restarts from.  It holds exactly what a disk
++    // checkpoint would, so the restart reuses the resume path.  Captured
++    // only at moments when every degree below it has a clear verdict.
++    struct Rollback { bool valid = false; u64 k_iv = 0; long blk = 0, q = 0;
++                      std::shared_ptr<HSnap> h; std::vector<u64> a; } rb;
++
+     bool resumed = false;
+-    if (resume && resume->valid && resume->H.s == s) {
++    if (resume->valid && resume->H.s == s) {
+         const CkptHdr &H = resume->H;
+         k = H.k_iv;
+         Q.q = (long)H.q;
+         blk0 = (long)H.blk;
+-        G.h_from_host(resume->h);
++        if (!load_h(G, resume->h, resume->has_fh ? &resume->fh : nullptr,
++                    "the saved h-table")) {
++            resume->valid = false;         // unusable: restart without it
++            out.kind = ScanOut::EC_RETRY;
++            out.wall = trin_now_s() - s_t0;
++            return out;
++        }
+         if (H.has_A) G.A_from_host(resume->a);
+         else G.reset_A();
++        if (ec) {                          // this state is the rollback point
++            rb.valid = true;
++            rb.k_iv = k; rb.blk = blk0; rb.q = Q.q;
++            rb.h = std::make_shared<HSnap>();
++            rb.h->h = std::move(resume->h);
++            ecf_fold_host(rb.h->f, rb.h->h.data(), rb.h->h.size());
++            rb.h->has_f = true;
++            if (H.has_A) rb.a = std::move(resume->a);
++        }
+         resumed = true;
+         resume->valid = false;
+         if (P.verbose) {
+@@ -1286,9 +2097,14 @@
+             fflush(stdout);
+         }
+     } else {
++        resume->valid = false;
+         k = P.skip + 1;
+         double t0 = trin_now_s();
+-        G.init_h_at(k);
++        if (!init_h_checked(G, k)) {
++            out.kind = ScanOut::EC_RETRY;
++            out.wall = trin_now_s() - s_t0;
++            return out;
++        }
+         CUCHK(cudaDeviceSynchronize());
+         if (P.verbose) {
+             printf("Exponentiation took %f\n", trin_now_s() - t0);
+@@ -1300,14 +2116,14 @@
+     }
+ 
+     struct Pend { u64 seq, ka, kb; long q;
+-                  std::shared_ptr<std::vector<u64>> h0; };
++                  std::shared_ptr<HSnap> h0; };
+     std::deque<Pend> pending;
+     u64 vf = k;                // verified frontier: all degrees < vf clear
+ 
+     // checkpoint candidate: h at the start of an interval whose
+     // predecessors were all verified at snapshot time
+     struct Cand { bool valid = false; u64 k_iv = 0; long q = 0; double f0 = 1;
+-                  std::shared_ptr<std::vector<u64>> h; } cand;
++                  std::shared_ptr<HSnap> h; } cand;
+     // h-table snapshots kept so that a hit can be localized without
+     // rebuilding the table (see FineHdr).  One per interval with an
+     // outstanding gcd; bounded by --hsnap-mb.
+@@ -1316,27 +2132,67 @@
+     if (P.hsnap_mb > 0 && nsnap_max < 1) nsnap_max = 1;
+     double last_ckpt = trin_now_s();
+     long blocks_done_hook = 0;
++    bool ck_trip = false;      // write_ckpt: the state failed verification
+ 
+     std::vector<u64> hostA;
++    // the NEXT interval's start table, saved before a long gcd wait (below)
++    std::shared_ptr<HSnap> pre_h0;
+ 
++    // Nothing unverified is ever saved: the mid-interval flavor first
++    // closes the h-table chain window, and both the table and A are
++    // downloaded through the fold-checked paths.
+     auto write_ckpt = [&](bool exiting) -> void {
++        ck_trip = false;
+         if (P.ckpt_base.empty()) return;
+         CkptHdr H;
+         memset(&H, 0, sizeof(H));
+         H.magic = TS_CKPT_MAGIC; H.version = 1;
+         H.r = r; H.s = s; H.skip = P.skip; H.m = (u64)G.m; H.nw = (u64)G.nw;
+-        std::vector<u64> hh, aa;
++        std::vector<u64> aa;
+         if (vf == k) {           // current interval fully verified behind us
+             H.k_iv = k; H.blk = 0; H.q = (u64)Q.q; H.f0 = 0;
+             // mid-interval flavor if we are inside the interval
+             // (caller ensures we are between blocks)
+-            G.h_to_host(hh);
++            auto snap = std::make_shared<HSnap>();
+             long b = blocks_done_hook;
+-            if (b > 0) { H.blk = (u64)b; H.has_A = 1; G.A_to_host(aa); }
+-            save_ckpt(P.ckpt_base, H, hh, aa, P.verbose);
++            if (ec) {
++                long nb = G.ec_w;
++                if (!G.ec_window_check()) {
++                    ec_event(ECC_GERBICZ, "s=%" PRIu64 ": sigma(D)+D != S0+S1"
++                             " over the %ld block(s) before the checkpoint at"
++                             " degree %" PRIu64, s, nb, k + (u64)b * G.m);
++                    ck_trip = true;
++                } else if (!G.h_to_host_ec(snap->h, snap->f)) {
++                    ec_event(ECC_XFER, "s=%" PRIu64 ": h-table download for "
++                             "the checkpoint could not be confirmed", s);
++                    ck_trip = true;
++                } else {
++                    snap->has_f = true;
++                }
++            } else {
++                G.h_to_host(snap->h);
++            }
++            if (!ck_trip && b > 0) {
++                H.blk = (u64)b; H.has_A = 1;
++                if (!fetch_A(G, aa)) ck_trip = true;
++            }
++            if (ck_trip) {
++                if (exiting)
++                    fprintf(stderr, "  [state failed verification: NOT "
++                            "checkpointed; the previous checkpoint, if any, "
++                            "stands]\n");
++                return;
++            }
++            save_ckpt(P.ckpt_base, H, snap->h, aa, P.verbose);
++            if (ec) {
++                rb.valid = true;
++                rb.k_iv = k; rb.blk = b; rb.q = Q.q;
++                rb.h = snap;
++                rb.a = aa;
++            }
+         } else if (cand.valid && cand.h) {
+             H.k_iv = cand.k_iv; H.blk = 0; H.q = (u64)cand.q; H.f0 = 0;
+-            save_ckpt(P.ckpt_base, H, *cand.h, aa, P.verbose);
++            save_ckpt(P.ckpt_base, H, cand.h->h, aa, P.verbose);
+         } else if (exiting && P.verbose) {
+             fprintf(stderr, "  [no verified state to checkpoint; s=%" PRIu64
+                     " will restart from scratch on resume]\n", s);
+@@ -1345,7 +2201,8 @@
+     };
+ 
+     // resolve a localized hit into a result (shared by the verdict path
+-    // and by the fine-DDF resume path below)
++    // and by the fine-DDF resume path below).  Returns 1 when `out` is
++    // filled, 3 when an error check failed (caller restarts).
+     auto finish_hit = [&](bool have_g, std::vector<u64> &g, u64 gdeg,
+                           u64 rka, u64 rkb) -> int {
+         if (!have_g) {
+@@ -1376,18 +2233,54 @@
+                    trin_now_s() - t0, gdeg, d);
+             fflush(stdout);
+         }
+-        if (!(d >= rka && d <= rkb))
+-            fprintf(stderr, "WARNING: s=%" PRIu64 " least degree %" PRIu64
+-                    " outside hit interval [%" PRIu64 ",%" PRIu64
+-                    "] -- input not a genuine survivor?\n", s, d, rka, rkb);
++        if (ec) {
++            // A reported factor must divide T, and nothing a correct gcd of
++            // this interval contains can have its least degree above it.
++            double tv = trin_now_s();
++            bool divides = verify_factor(mask, r, s);
++            g_ecs.n_verify++;
++            g_ecs.t_verify += trin_now_s() - tv;
++            if (!divides) {
++                ec_event(ECC_FACTOR, "s=%" PRIu64 ": degree-%" PRIu64
++                         " factor from interval %" PRIu64 "..%" PRIu64
++                         " does NOT divide the trinomial (gcd or "
++                         "factorisation corrupted)", s, d, rka, rkb);
++                return 3;
++            }
++            if (d > rkb) {
++                ec_event(ECC_FACTOR, "s=%" PRIu64 ": least factor degree %"
++                         PRIu64 " lies above its interval %" PRIu64 "..%"
++                         PRIu64 " (gcd corrupted)", s, d, rka, rkb);
++                return 3;
++            }
++        }
++        if (!(d >= rka && d <= rkb)) {
++            if (!g_ec_quiet)
++                fprintf(stderr, "WARNING: s=%" PRIu64 " least degree %" PRIu64
++                        " outside hit interval [%" PRIu64 ",%" PRIu64
++                        "] -- input not a genuine survivor?\n", s, d, rka,
++                        rkb);
++            if (ec)
++                ec_event(-1, "s=%" PRIu64 ": least factor degree %" PRIu64
++                         " is BELOW its hit interval %" PRIu64 "..%" PRIu64
++                         ": either the input has a factor of degree <= "
++                         "--skip, or an earlier gcd missed it", s, d, rka,
++                         rkb);
++        }
+         out.kind = ScanOut::FOUND;
+         out.d = d;
+         out.hex = mask_hex(mask);
+         return 1;
+     };
+ 
+-    // returns 1 if factor resolved (out filled), 0 for clear verdicts
++    // returns 1 if factor resolved (out filled), 0 for clear verdicts,
++    // 3 if an error check failed (caller restarts from the rollback state)
+     auto consume_verdict = [&](const Pend &pv, GcdRes &R) -> int {
++        if (R.ec_bad) {
++            ec_event(ECC_GCD, "s=%" PRIu64 " gcd %" PRIu64 "..%" PRIu64
++                     ": %s", s, pv.ka, pv.kb, R.ec_why);
++            return 3;
++        }
+         if (P.verbose) {
+             printf("   gcd %" PRIu64 "..%" PRIu64 " took %f%s\n",
+                    pv.ka, pv.kb, R.secs, R.gdeg ? "  ** HIT **" : "");
+@@ -1407,11 +2300,19 @@
+             g = std::move(R.g);
+             have_g = true;
+         } else {
++            bool ltrip = false;
+             have_g = localize(G, pool, P, r, T, pv.ka, pv.q, gseq,
+-                              g, gdeg, rka, rkb, pv.h0.get());
++                              g, gdeg, rka, rkb, pv.h0.get(), ltrip);
++            if (ltrip) return 3;
+         }
+         return finish_hit(have_g, g, gdeg, rka, rkb);
+     };
++// consume one verdict inside the scan loops
++#define TS_CONSUME(pv, R) do {                 \
++        int cv_ = consume_verdict(pv, R);      \
++        if (cv_ == 3) goto ec_retry;           \
++        if (cv_) goto done;                    \
++    } while (0)
+ 
+     // A fine-DDF localization interrupted by a crash, reboot or SIGTERM
+     // resumes directly: every degree below the hit interval was verified
+@@ -1434,9 +2335,11 @@
+             std::vector<u64> g;
+             u64 gdeg = 0, rka = FH.ka0;
+             u64 rkb = FH.ka0 + FH.q0 * (u64)G.m - 1;
++            bool ltrip = false;
+             bool have_g = localize(G, pool, P, r, T, FH.ka0, (long)FH.q0,
+-                                   gseq, g, gdeg, rka, rkb, nullptr);
+-            finish_hit(have_g, g, gdeg, rka, rkb);
++                                   gseq, g, gdeg, rka, rkb, nullptr, ltrip);
++            if (ltrip) goto ec_retry;
++            if (finish_hit(have_g, g, gdeg, rka, rkb) == 3) goto ec_retry;
+             fine_resumed = true;
+         }
+     }
+@@ -1465,7 +2368,7 @@
+                 Pend pv = pending.front();
+                 pending.pop_front();
+                 GcdRes R = pool.wait_get(pv.seq);
+-                if (consume_verdict(pv, R)) goto done;
++                TS_CONSUME(pv, R);
+             }
+             out.kind = ScanOut::GAVE_UP;
+             if (P.verbose) {
+@@ -1478,22 +2381,60 @@
+             printf("Interval %" PRIu64 "..%" PRIu64 ":\n", k, k2);
+             fflush(stdout);
+         }
++        // The table has been idle since the chain was last closed (through
++        // the previous interval's gcd, under --pend-max 1): confirm it is
++        // unchanged BEFORE it is snapshotted and built upon.
++        if (ec && !G.ec_window_check()) {
++            ec_event(ECC_IDLE, "s=%" PRIu64 ": h-table changed while idle "
++                     "before interval %" PRIu64 "..%" PRIu64, s, k, k2);
++            // saved before the wait?  Then put it back: no work is lost.
++            if (!(pre_h0 && load_h(G, pre_h0->h, &pre_h0->f,
++                                   "the pre-wait h-table snapshot")))
++                goto ec_retry;
++            g_ecs.repairs++;
++            ec_event(-1, "s=%" PRIu64 ": h-table restored from the snapshot "
++                     "taken before the gcd wait; continuing", s);
++        }
+         // h at the interval start: the state fine DDF would otherwise have
+         // to rebuild, and (when everything behind us is verified) also the
+         // checkpoint candidate.  blk0 != 0 means we resumed INTO this
+         // interval, so the device h is past its start and must not be kept.
+-        std::shared_ptr<std::vector<u64>> h0;
++        std::shared_ptr<HSnap> h0;
+         bool need_cand = (!resumed && vf == k);
+         bool keep_h0 = (blk0 == 0 && nsnap_max > 0 &&
+                         (long)pending.size() + 1 <= nsnap_max);
+-        if (keep_h0 || need_cand) {
+-            h0 = std::make_shared<std::vector<u64>>();
+-            G.h_to_host(*h0);
++        if (pre_h0) {
++            h0 = pre_h0;                 // already downloaded and verified
++            pre_h0.reset();
++        } else if (keep_h0 || need_cand) {
++            h0 = std::make_shared<HSnap>();
++            if (ec) {
++                if (!G.h_to_host_ec(h0->h, h0->f)) {
++                    ec_event(ECC_XFER, "s=%" PRIu64 ": h-table download at "
++                             "the start of interval %" PRIu64 " could not "
++                             "be confirmed", s, k);
++                    goto ec_retry;
++                }
++                h0->has_f = true;
++            } else {
++                G.h_to_host(h0->h);
++            }
+         }
+         if (need_cand) {
+             cand.valid = true;
+             cand.k_iv = k; cand.q = q; cand.f0 = 0;
+             cand.h = h0;
++            if (ec) {                    // verified, and nothing pending
++                rb.valid = true;         // below it: a restart point
++                rb.k_iv = k; rb.blk = 0; rb.q = q;
++                rb.h = h0;
++                rb.a.clear();
++            }
++        }
++        if (h0 && ec_inject_now(ECI_SNAP)) {    // test hook: RAM rot
++            u64 bit = ec_inject_rnd((u64)h0->h.size() * 64);
++            h0->h[bit >> 6] ^= 1ULL << (bit & 63);
++            ec_inject_note(ECI_SNAP, bit);
+         }
+         double iv_t0 = trin_now_s(), iv_poll = 0;
+         for (long b = blk0; b < q; b++) {
+@@ -1505,7 +2446,7 @@
+                 if (!pool.try_get(pending.front().seq, R)) break;
+                 Pend pv = pending.front();
+                 pending.pop_front();
+-                if (consume_verdict(pv, R)) goto done;
++                TS_CONSUME(pv, R);
+             }
+             iv_poll += trin_now_s() - p0;
+             if (g_stop || (P.die_after_blocks >= 0 &&
+@@ -1519,8 +2460,10 @@
+                 trin_now_s() - last_ckpt > P.ckpt_secs) {
+                 CUCHK(cudaDeviceSynchronize());
+                 write_ckpt(false);
++                if (ck_trip) goto ec_retry;
+             }
+-            do_block(G, P.verbose);
++            if (!run_block(G, P, k + (u64)b * G.m, b == q - 1))
++                goto ec_retry;
+         }
+         blocks_done_hook = 0;
+         CUCHK(cudaDeviceSynchronize());
+@@ -1535,21 +2478,35 @@
+                        G.t_sq, G.t_horner, G.t_mul);
+             fflush(stdout);
+         }
+-        G.A_to_host(hostA);
++        if (!fetch_A(G, hostA)) goto ec_retry;
+         u64 id = gseq++;
+-        pool.submit(id, hostA, T);
++        pool.submit(id, hostA, T, ec ? &G.ecA : nullptr);
+         pending.push_back(Pend{id, k, k2, q,
+-                               keep_h0 ? h0
+-                                       : std::shared_ptr<std::vector<u64>>()});
++                               keep_h0 ? h0 : std::shared_ptr<HSnap>()});
+         G.reset_A();
+         resumed = false;
+         blk0 = 0;
+         k = k2 + 1;
++        // The table now sits idle through this interval's gcd, and a long
++        // interval is expensive to redo: save the next interval's start
++        // table first, so that an idle flip costs a reload, not a rescan.
++        if (ec && k <= rhigh && (int)pending.size() >= P.pend_max &&
++            iv_wall >= P.ec_presnap_secs) {
++            pre_h0 = std::make_shared<HSnap>();
++            if (!G.h_to_host_ec(pre_h0->h, pre_h0->f)) {
++                ec_event(ECC_XFER, "s=%" PRIu64 ": h-table download after "
++                         "interval %" PRIu64 "..%" PRIu64 " could not be "
++                         "confirmed", s, pending.back().ka, k2);
++                goto ec_retry;
++            }
++            pre_h0->has_f = true;
++        }
++        if (ec_inject_now(ECI_IDLE)) G.inject_h(G.dH[G.hcur], ECI_IDLE);
+         if ((int)pending.size() >= P.pend_max) {   // bound speculation
+             Pend pv = pending.front();
+             pending.pop_front();
+             GcdRes R = pool.wait_get(pv.seq);
+-            if (consume_verdict(pv, R)) goto done;
++            TS_CONSUME(pv, R);
+         }
+         Q.grow(k - 1);
+         if (P.Zq && Q.q > P.Zq) Q.q = P.Zq;
+@@ -1559,16 +2516,95 @@
+         Pend pv = pending.front();
+         pending.pop_front();
+         GcdRes R = pool.wait_get(pv.seq);
+-        if (consume_verdict(pv, R)) goto done;
++        TS_CONSUME(pv, R);
+     }
+     if (!fine_resumed)
+         out.kind = maxd_limited ? ScanOut::GAVE_UP : ScanOut::PRIMITIVE;
++    goto done;
++
++ec_retry:
++    // An error check failed.  Nothing computed since the rollback state is
++    // trusted: drop the in-flight gcds and hand that state back.
++    pool.forget_all_pending();
++    pending.clear();
++    resume->valid = false;
++    resume->has_fh = false;
++    if (rb.valid && rb.h) {
++        CkptHdr &H = resume->H;
++        memset(&H, 0, sizeof(H));
++        H.magic = TS_CKPT_MAGIC; H.version = 1;
++        H.r = r; H.s = s; H.skip = P.skip; H.m = (u64)G.m; H.nw = (u64)G.nw;
++        H.k_iv = rb.k_iv; H.blk = (u64)rb.blk; H.q = (u64)rb.q;
++        H.has_A = rb.blk > 0 ? 1 : 0;
++        resume->h = rb.h->h;
++        resume->fh = rb.h->f;
++        resume->has_fh = rb.h->has_f;
++        resume->a = rb.a;
++        resume->valid = true;
++    }
++    out.kind = ScanOut::EC_RETRY;
+ 
+ done:
+     if (out.kind != ScanOut::INTERRUPTED) pool.forget_all_pending();
+     out.wall = trin_now_s() - s_t0;
+     return out;
+ }
++#undef TS_CONSUME
++
++// The per-s entry point: scan s, restarting from the newest verified state
++// whenever an error check fails.  A restart point that fails more than
++// --ec-retries times in a row is a persistent fault, not a cosmic ray:
++// give up (ScanOut::EC_FATAL) rather than report anything for this s.
++static ScanOut scan_one_s(TsGPU &G, GcdPool &pool, const SParams &P,
++                          u64 r, u64 s, u64 &gseq, ResumeState *resume) {
++    ResumeState local;
++    ResumeState *RS = resume ? resume : &local;
++    double t0 = trin_now_s();
++    u64 degs = 0, last_k = (u64)-1, last_blk = (u64)-1;
++    int consec = 0, restarts = 0;
++    for (;;) {
++        ScanOut o = scan_one_s_once(G, pool, P, r, s, gseq, RS);
++        degs += o.degrees_scanned;
++        o.degrees_scanned = degs;
++        o.ec_restarts = restarts;
++        if (o.kind != ScanOut::EC_RETRY) {
++            o.wall = trin_now_s() - t0;
++            if (restarts && o.kind != ScanOut::INTERRUPTED)
++                ec_event(-1, "s=%" PRIu64 ": completed after %d restart(s)",
++                         s, restarts);
++            return o;
++        }
++        // no state in RAM: fall back to the newest checkpoint on disk
++        if (!RS->valid && !P.ckpt_base.empty()) {
++            RS->valid = load_ckpt(P.ckpt_base, RS->H, RS->h, RS->a) &&
++                        RS->H.r == r && RS->H.s == s &&
++                        RS->H.skip == P.skip && RS->H.m == (u64)G.m &&
++                        RS->H.nw == (u64)G.nw;
++            RS->has_fh = false;
++        }
++        u64 rk = RS->valid ? RS->H.k_iv : 0;
++        u64 rblk = RS->valid ? RS->H.blk : 0;
++        consec = (rk == last_k && rblk == last_blk) ? consec + 1 : 1;
++        last_k = rk;
++        last_blk = rblk;
++        if (consec > g_ec.max_retry) {
++            ec_event(-1, "s=%" PRIu64 ": %d consecutive failures restarting "
++                     "from the same point -- this is a persistent fault, "
++                     "giving up on this s", s, consec);
++            o.kind = ScanOut::EC_FATAL;
++            o.wall = trin_now_s() - t0;
++            return o;
++        }
++        restarts++;
++        g_ecs.restarts++;
++        if (RS->valid)
++            ec_event(-1, "s=%" PRIu64 ": restarting from the verified state "
++                     "at interval %" PRIu64 ", block %" PRIu64, s, rk, rblk);
++        else
++            ec_event(-1, "s=%" PRIu64 ": no verified state to restart from; "
++                     "starting this s again", s);
++    }
++}
+ 
+ // ---------------------------------------------------------------------------
+ // CPU oracle (per-degree naive scan) for the selftest
+@@ -1647,6 +2683,11 @@
+     int bad = 0;
+     printf("tsfactor selftest\n");
+     printf("GCD backend: %s\n", gcd_backend());
++    // error-checking counters at entry (the selftest may be repeated)
++    const u64 ec0_fail = g_ecs.total(), ec0_blocks = g_ecs.blocks.load(),
++              ec0_win = g_ecs.windows.load(),
++              ec0_rst = g_ecs.restarts.load();
++    (void)ec0_fail; (void)ec0_blocks; (void)ec0_win; (void)ec0_rst;
+ 
+     // (1) squaring: fused vs legacy vs host, many (r, s) incl. edges
+     {
+@@ -1826,12 +2867,151 @@
+         if (!okk) bad++;
+     }
+ 
++    // (3c) error-checking kernels and fold algebra against host
++    //      references.  NTL-free.  On a real GPU this is the suite that
++    //      validates the checking kernels under true concurrency.
++    {
++        bool ok_fold = true, ok_blk = true, ok_neg = true, ok_chain = true,
++             ok_init = true;
++        struct RS { u64 r, s; };
++        std::vector<RS> cases;
++        u64 rs[] = {607, 3217, 3907, 4423, 9689, 19937};
++        for (u64 rr : rs) {
++            u64 svals[] = {1, 2, 63, 64, 65, rr / 3, (rr - 1) / 2 - 1,
++                           (rr - 1) / 2};
++            for (u64 sv : svals)
++                if (sv >= 1 && 2 * sv < rr) cases.push_back({rr, sv});
++        }
++        const int ms[] = {2, 3, 8, 14, 33, 64};
++        const bool sv_quiet = g_ec_quiet;
++        g_ec_quiet = true;
++        size_t ci = 0;
++        for (auto &cs : cases) {
++            int m = ms[ci++ % 6];
++            TsGPU G;
++            G.init(cs.r);
++            G.set_m(m);
++            G.set_s(cs.s);
++            G.ec_setup(true);
++            int blocks, threads;
++            CudaFFT::launch_dims(G.nw, blocks, threads);
++            std::vector<u64> hh((size_t)m * G.nw);
++            for (int j = 0; j < m; j++) {
++                std::vector<u64> v = st_res(cs.r);
++                memcpy(&hh[(size_t)j * G.nw], v.data(), G.nw * 8);
++            }
++            std::vector<u64> a = st_res(cs.r);
++            auto load = [&] {
++                G.h_from_host(hh);
++                G.A_from_host(a);
++                k_set_zero<<<blocks, threads>>>(G.ecD, G.nw);
++            };
++            auto pull = [&](const u64 *d) {
++                std::vector<u64> v(G.nw);
++                CUCHK(cudaMemcpy(v.data(), d, G.nw * 8,
++                                 cudaMemcpyDeviceToHost));
++                return v;
++            };
++            // device folds == host folds (a whole table, one residue)
++            load();
++            {
++                EcFold fd, fh;
++                G.ec_table_fold(G.dH[G.hcur], fd);
++                ecf_fold_host(fh, hh.data(), hh.size());
++                if (!ecf_eq(fd, fh)) ok_fold = false;
++                G.ec_fold_dev(G.dA, G.nw, TsGPU::ECO_A);
++                G.ec_read(TsGPU::ECO_A, EC_NF, fd.w);
++                ecf_fold_host(fh, a.data(), a.size());
++                if (!ecf_eq(fd, fh)) ok_fold = false;
++            }
++            // one clean block: every prediction must match the real data
++            G.ec_block_pre();
++            G.horner_C();
++            G.mul_A_by_C();
++            if (G.ec_block_verify()) ok_blk = false;
++            {
++                std::vector<u64> dD = pull(G.ecD), dC = pull(G.dC),
++                                 dAn = pull(G.dA), xs(G.nw, 0);
++                for (int j = 0; j < m; j++)
++                    for (size_t w = 0; w < G.nw; w++)
++                        xs[w] ^= hh[(size_t)j * G.nw + w];
++                EcFold fh;
++                if (dD != xs) ok_blk = false;          // digest accumulate
++                ecf_fold_host(fh, dC.data(), dC.size());
++                if (!ecf_eq(fh, G.ecC)) ok_blk = false;  // Horner prediction
++                ecf_fold_host(fh, dAn.data(), dAn.size());
++                if (!ecf_eq(fh, G.ecA)) ok_blk = false;  // carried phi(A)
++            }
++            // one flipped bit at each stage must trip the matching check
++            for (int site : {ECI_C, ECI_T, ECI_RED, ECI_NONE}) {
++                load();
++                if (site != ECI_NONE) g_eci.arm(site, 1, 77 + ci);
++                G.ec_block_pre();
++                if (site == ECI_NONE)      // table changes after the EC pass
++                    G.inject_h(G.dH[G.hcur], ECI_H);
++                G.horner_C();
++                if (ec_inject_now(ECI_C)) G.inject(G.dC, G.r, ECI_C);
++                G.mul_A_by_C();
++                int rc = G.ec_block_verify();
++                g_eci.disarm();
++                int want = (site == ECI_RED) ? 2 : 1;
++                if (!(rc & want)) ok_neg = false;
++            }
++            // h-table chain over 3 blocks: clean, then with one flip
++            for (int flip = 0; flip < 2; flip++) {
++                load();
++                G.ec_chain_reset();
++                for (int b = 0; b < 3; b++) {
++                    G.ec_block_pre();
++                    for (int t = 0; t < m; t++) {
++                        G.square_all_step();
++                        if (flip && b == 1 && t == m / 2)
++                            G.inject_h(G.dH[G.hcur], ECI_HMID);
++                    }
++                    G.ec_w++;
++                }
++                if (G.ec_window_check() != (flip == 0)) ok_chain = false;
++                // idle table: unchanged passes, one flip fails
++                if (!G.ec_window_check()) ok_chain = false;
++                G.inject_h(G.dH[G.hcur], ECI_IDLE);
++                if (G.ec_window_check()) ok_chain = false;
++            }
++            // closed form of the table digest, on real tables
++            if (ci % 3 == 0) {
++                for (u64 kst : {(u64)0, (u64)1, (u64)9}) {
++                    G.init_h_at(kst);
++                    if (!G.ec_verify_table_at(kst)) ok_init = false;
++                    G.inject_h(G.dH[G.hcur], ECI_INIT);
++                    if (G.ec_verify_table_at(kst)) ok_init = false;
++                }
++            }
++            G.fini();
++        }
++        g_ec_quiet = sv_quiet;
++        printf("EC: device folds vs host (%zu cases)                 %s\n",
++               cases.size(), ok_fold ? "PASS" : "FAIL");
++        printf("EC: block predictions vs real C, A*C, A*C mod T    %s\n",
++               ok_blk ? "PASS" : "FAIL");
++        printf("EC: one flipped bit trips the matching check       %s\n",
++               ok_neg ? "PASS" : "FAIL");
++        printf("EC: h-table chain, clean / one flip / idle flip    %s\n",
++               ok_chain ? "PASS" : "FAIL");
++        printf("EC: closed-form table digest (init verification)   %s\n",
++               ok_init ? "PASS" : "FAIL");
++        if (!ok_fold) bad++;
++        if (!ok_blk) bad++;
++        if (!ok_neg) bad++;
++        if (!ok_chain) bad++;
++        if (!ok_init) bad++;
++    }
++
+     // (4) end-to-end vs oracle at r = 4423
+ #ifndef HAVE_NTL
+     printf("end-to-end vs oracle                               SKIPPED (NTL required)\n");
+     printf("fineDDF bisection path (forced)                    SKIPPED (NTL required)\n");
+     printf("-z gives up / -Z caps and continues                SKIPPED (NTL required)\n");
+     printf("checkpoint kill/resume equivalence                 SKIPPED (NTL required)\n");
++    printf("EC: fault-injection sweeps                         SKIPPED (NTL required)\n");
+     printf("NOTE: this binary cannot resolve factors from multi-factor\n"
+            "      interval gcds.  Ensure ntl_check.cpp is present next to\n"
+            "      the Makefile and libntl-dev is installed, then rebuild;\n"
+@@ -2203,6 +3383,508 @@
+                    mism ? "FAIL" : "PASS");
+             if (mism) bad++;
+         }
++        // (10) every scan above ran with error checking on: it must not
++        //      have raised a single alarm on correct hardware-free data
++        {
++            u64 nd = g_ecs.total() - ec0_fail,
++                nb = g_ecs.blocks.load() - ec0_blocks,
++                nwn = g_ecs.windows.load() - ec0_win;
++            bool okk = (nd == 0 && nb > 0 && nwn > 0 &&
++                        g_ecs.restarts.load() == ec0_rst);
++            printf("EC: no false alarms (%" PRIu64 " blocks, %" PRIu64
++                   " windows)        %s\n", nb, nwn, okk ? "PASS" : "FAIL");
++            if (!okk) bad++;
++        }
++
++        // (11) single-fault sweep.  One bit is flipped at the N-th
++        //      opportunity of each site.  With checking on the answer must
++        //      ALWAYS be right; the same fault with checking off shows
++        //      what it would have cost.
++        {
++            u64 deep_s = 0, deep_d = 0;
++            for (auto &kv : want)
++                if (kv.second.found && kv.second.mask_ok &&
++                    kv.second.d > 100 && kv.second.d > deep_d) {
++                    deep_s = kv.first; deep_d = kv.second.d;
++                }
++            const std::string deep_hex =
++                deep_s ? mask_hex(want[deep_s].mask) : std::string();
++            const EcCfg sv_cfg = g_ec;
++            const bool sv_quiet = g_ec_quiet;
++            g_ec_quiet = true;
++            // a second target whose hit goes through fine-DDF bisection
++            // (with canzass_max = 1) AND makes it step back to its hold
++            // table (an interval gcd holding more than one factor does)
++            u64 fine_s = 0, fine_d = 0;
++            std::string fine_hex;
++            for (auto &kv : want) {
++                if (!kv.second.found || !kv.second.mask_ok) continue;
++                const u64 hr0 = g_hold_restores.load();
++                TsGPU G;
++                G.init(rr);
++                G.set_m(5);
++                SParams P;
++                P.skip = skip; P.maxd = maxd; P.q0 = 2;
++                P.canzass_max = 1;
++                scan_one_s(G, pool, P, rr, kv.first, gseq, nullptr);
++                bool through = g_hold_restores.load() > hr0;
++                pool.drain();
++                G.fini();
++                if (through) {
++                    fine_s = kv.first; fine_d = kv.second.d;
++                    fine_hex = mask_hex(kv.second.mask);
++                    break;
++                }
++            }
++            struct Site { int site; bool fine, dup, must; int nmax; };
++            const Site sites[] = {
++                {ECI_H, false, false, true, 36},
++                {ECI_HMID, false, false, true, 36},
++                {ECI_A, false, false, true, 36},
++                {ECI_C, false, false, true, 36},
++                {ECI_T, false, false, true, 36},
++                {ECI_RED, false, false, true, 36},
++                {ECI_IDLE, false, false, false, 5},
++                {ECI_INIT, false, false, true, 7},
++                {ECI_XFER_H, false, false, true, 5},
++                {ECI_XFER_A, false, false, true, 5},
++                {ECI_SNAP, true, false, false, 5},
++                {ECI_HOLD, true, false, false, 5},
++                {ECI_JOB, false, false, true, 5},
++                {ECI_GCD, false, true, true, 5}};
++            u64 t_fired = 0, t_det = 0, t_on_wrong = 0, t_undet = 0,
++                t_off_fired = 0, t_off_wrong = 0;
++            bool okk = (deep_s != 0 && fine_s != 0);
++            for (const Site &S : sites) {
++                u64 fired = 0, det = 0, on_wrong = 0, undet = 0,
++                    off_fired = 0, off_wrong = 0;
++                const u64 tgt_s = S.fine ? fine_s : deep_s;
++                const u64 tgt_d = S.fine ? fine_d : deep_d;
++                const std::string &tgt_hex = S.fine ? fine_hex : deep_hex;
++                for (int N = 1; N <= S.nmax; N++) {
++                    for (int pass = 0; pass < 2; pass++) {
++                        g_ec = sv_cfg;
++                        g_ec.on = (pass == 0);
++                        g_ec.gcd_dup = S.dup && pass == 0;
++                        g_ec.log_path.clear();
++                        TsGPU G;
++                        G.init(rr);
++                        G.set_m(5);
++                        SParams P;
++                        P.skip = skip; P.maxd = maxd; P.q0 = 2;
++                        P.canzass_max = S.fine ? 1 : 540;
++                        P.verbose = 0;
++                        // serial verdicts: every fault lands in work that
++                        // counts, and the run is reproducible
++                        P.pend_max = 1;
++                        u64 e0 = g_ecs.total() + g_ecs.xfer_retries.load() +
++                                 g_ecs.gcd_reruns.load();
++                        g_eci.arm(S.site, N, 1000 * (u64)S.site + (u64)N);
++                        ScanOut res = scan_one_s(G, pool, P, rr, tgt_s,
++                                                 gseq, nullptr);
++                        bool did = g_eci.fired.load() > 0;
++                        g_eci.disarm();
++                        pool.drain();
++                        u64 e1 = g_ecs.total() + g_ecs.xfer_retries.load() +
++                                 g_ecs.gcd_reruns.load();
++                        bool right = res.kind == ScanOut::FOUND &&
++                                     res.d == tgt_d && res.hex == tgt_hex;
++                        if (pass == 0) {
++                            if (!right) on_wrong++;
++                            if (did) {
++                                fired++;
++                                if (e1 > e0) det++;
++                                else if (S.must) undet++;
++                            }
++                        } else if (did) {
++                            off_fired++;
++                            if (!right) off_wrong++;
++                        }
++                        G.fini();
++                    }
++                }
++                printf("  %-6s fired %2" PRIu64 "  detected %2" PRIu64
++                       "  wrong WITH checking %" PRIu64
++                       "  | wrong WITHOUT %2" PRIu64 " of %2" PRIu64 "\n",
++                       eci_name[S.site], fired, det, on_wrong, off_wrong,
++                       off_fired);
++                if (on_wrong || undet || !fired) okk = false;
++                if (S.fine && !det) okk = false;   // must be seen at least once
++                t_fired += fired; t_det += det; t_on_wrong += on_wrong;
++                t_undet += undet; t_off_fired += off_fired;
++                t_off_wrong += off_wrong;
++            }
++            g_ec = sv_cfg;
++            g_ec_quiet = sv_quiet;
++            printf("EC: single-fault sweep: %" PRIu64 " faults, %" PRIu64
++                   " detected, %" PRIu64 " wrong answers;\n"
++                   "    the same faults unchecked: %" PRIu64 " of %" PRIu64
++                   " wrong            %s\n", t_fired, t_det, t_on_wrong,
++                   t_off_wrong, t_off_fired, okk ? "PASS" : "FAIL");
++            if (!okk) bad++;
++
++            // (11b) the same block-level faults with speculation on (default
++            //       --pend-max): a fault may now land in work that a hit
++            //       verdict discards, so only the answer is asserted
++            {
++                g_ec_quiet = true;
++                u64 runs = 0, wrong = 0;
++                for (int site : {ECI_H, ECI_A, ECI_C, ECI_T, ECI_RED,
++                                 ECI_IDLE, ECI_JOB})
++                    for (int N = 1; N <= 34; N += 3) {
++                        TsGPU G;
++                        G.init(rr);
++                        G.set_m(5);
++                        SParams P;
++                        P.skip = skip; P.maxd = maxd; P.q0 = 2;
++                        P.canzass_max = 540;
++                        P.verbose = 0;
++                        g_eci.arm(site, N, 31 * (u64)site + (u64)N);
++                        ScanOut res = scan_one_s(G, pool, P, rr, deep_s,
++                                                 gseq, nullptr);
++                        g_eci.disarm();
++                        pool.drain();
++                        runs++;
++                        if (!(res.kind == ScanOut::FOUND && res.d == deep_d &&
++                              res.hex == deep_hex)) wrong++;
++                        G.fini();
++                    }
++                g_ec_quiet = sv_quiet;
++                printf("EC: faults under speculation (%" PRIu64 " runs, %"
++                       PRIu64 " wrong)          %s\n", runs, wrong,
++                       wrong ? "FAIL" : "PASS");
++                if (wrong) bad++;
++            }
++
++            // (12) recovery paths
++            {
++                const EcCfg sv2 = g_ec;
++                g_ec.log_path.clear();
++                g_ec_quiet = true;
++                bool ok_fatal, ok_mid, ok_rep;
++                SParams P;
++                P.skip = skip; P.maxd = maxd; P.q0 = 2;
++                P.canzass_max = 540;
++                P.verbose = 0;
++                auto right = [&](const ScanOut &o) {
++                    return o.kind == ScanOut::FOUND && o.d == deep_d &&
++                           o.hex == deep_hex;
++                };
++                {   // a fault at EVERY block is persistent: give up cleanly
++                    TsGPU G;
++                    G.init(rr);
++                    G.set_m(5);
++                    g_eci.arm(ECI_H, -1, 5);
++                    ScanOut o = scan_one_s(G, pool, P, rr, deep_s, gseq,
++                                           nullptr);
++                    g_eci.disarm();
++                    pool.drain();
++                    ok_fatal = (o.kind == ScanOut::EC_FATAL &&
++                                o.ec_restarts == g_ec.max_retry);
++                    G.fini();
++                }
++                {   // restart from a mid-interval state (checkpoint taken
++                    // before every block), not from the interval start
++                    const char *cb = "/tmp/tsfactor_ec.ckpt";
++                    auto wipe = [&] {
++                        remove(cb);
++                        remove((std::string(cb) + ".1").c_str());
++                        remove((std::string(cb) + ".2").c_str());
++                        remove_fine(cb);
++                    };
++                    wipe();
++                    TsGPU G;
++                    G.init(rr);
++                    G.set_m(5);
++                    SParams P2 = P;
++                    P2.ckpt_base = cb;
++                    P2.ckpt_secs = -1;
++                    u64 r0 = g_ecs.restarts.load();
++                    g_eci.arm(ECI_H, 9, 6);
++                    ScanOut o = scan_one_s(G, pool, P2, rr, deep_s, gseq,
++                                           nullptr);
++                    g_eci.disarm();
++                    pool.drain();
++                    ok_mid = right(o) && g_ecs.restarts.load() == r0 + 1;
++                    wipe();
++                    G.fini();
++                }
++                {   // idle flip during the gcd wait, table saved before the
++                    // wait: repaired in place, nothing rescanned
++                    TsGPU G;
++                    G.init(rr);
++                    G.set_m(5);
++                    SParams P3 = P;
++                    P3.ec_presnap_secs = 0;
++                    P3.pend_max = 1;
++                    u64 r0 = g_ecs.restarts.load(),
++                        p0 = g_ecs.repairs.load();
++                    g_eci.arm(ECI_IDLE, 1, 7);
++                    ScanOut o = scan_one_s(G, pool, P3, rr, deep_s, gseq,
++                                           nullptr);
++                    g_eci.disarm();
++                    pool.drain();
++                    ok_rep = right(o) && g_ecs.restarts.load() == r0 &&
++                             g_ecs.repairs.load() == p0 + 1;
++                    G.fini();
++                }
++                g_ec = sv2;
++                g_ec_quiet = sv_quiet;
++                printf("EC: persistent fault gives up cleanly              "
++                       "%s\n", ok_fatal ? "PASS" : "FAIL");
++                printf("EC: restart from a mid-interval verified state     "
++                       "%s\n", ok_mid ? "PASS" : "FAIL");
++                printf("EC: idle flip repaired from the pre-wait snapshot  "
++                       "%s\n", ok_rep ? "PASS" : "FAIL");
++                if (!ok_fatal) bad++;
++                if (!ok_mid) bad++;
++                if (!ok_rep) bad++;
++            }
++        }
++
++        // (13) certified gcd engine: agrees with NTL on the same battery as
++        //      suite (8), CPU-mult and GPU-hook paths, always certified;
++        //      then a fault at each verified step in turn must never yield
++        //      a certified wrong answer
++        {
++            bool ok_eq = true, ok_flt = true;
++            u64 sv_min = hyb_gpu_min_bits, sv_fin = hyb_ntl_finish_bits;
++            hyb_ntl_finish_bits = 64;    // force a long verified chain
++            hyb_gpu_min_bits = 2048;
++            hyb_cert_xgcd = false;
++            CantorBasis bb13;
++            bb13.build();
++            TsGpuMul gm13;
++            gm13.init(&bb13, 15);
++            u64 rs13 = 0xFACADEULL;
++            auto nl = [&]() { rs13 += 0x9E3779B97F4A7C15ULL; u64 z = rs13;
++                z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
++                z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
++                return z ^ (z >> 31); };
++            auto rvb = [&](u64 bits) {
++                std::vector<u64> v((size_t)((bits + 63) / 64));
++                for (auto &w : v) w = nl();
++                unsigned tb = (unsigned)((bits - 1) & 63);
++                v.back() &= (tb == 63) ? ~0ULL : ((1ULL << (tb + 1)) - 1);
++                v.back() |= 1ULL << tb;
++                return v;
++            };
++            u64 ncert = 0, nflt = 0, ndet = 0;
++            auto chk = [&](const std::vector<u64> &a,
++                           const std::vector<u64> &b) {
++                std::vector<u64> g1;
++                u64 d1 = poly_gcd_ntl(a.data(), a.size(), b.data(), b.size(),
++                                      &g1, ~0ULL);
++                EcFold fa, fb;
++                ecf_fold_host(fa, a.data(), a.size());
++                ecf_fold_host(fb, b.data(), b.size());
++                for (int hook = 0; hook < 3; hook++) {
++                    std::vector<u64> g2;
++                    int st = -1;
++                    hyb_fault_at = 0;
++                    hyb_cert_xgcd = (hook == 2);        // 2: the XGCD mode
++                    u64 d2 = poly_gcd_certified(a.data(), a.size(), b.data(),
++                                                b.size(), &g2, ~0ULL,
++                                                hook == 1 ? &gm13 : nullptr,
++                                                &fa, &fb, &st);
++                    hyb_cert_xgcd = false;
++                    if (st != GCD_CERT_OK || d2 != d1 || (d1 && g2 != g1))
++                        ok_eq = false;
++                    ncert++;
++                }
++                {   // the chain declines: the answer must still come back
++                    // certified (by the extended gcd), and be the same
++                    std::vector<u64> g2;
++                    int st = -1;
++                    hyb_force_fallback = true;
++                    u64 d2 = poly_gcd_certified(a.data(), a.size(), b.data(),
++                                                b.size(), &g2, ~0ULL, nullptr,
++                                                &fa, &fb, &st);
++                    hyb_force_fallback = false;
++                    if (st != GCD_CERT_OK || d2 != d1 || (d1 && g2 != g1))
++                        ok_eq = false;
++                    ncert++;
++                }
++                if (hyb_threads_ok()) {
++                    // the products of each matrix step on three threads
++                    std::vector<u64> g2;
++                    int st = -1;
++                    const int sv_t = hyb_threads;
++                    const u64 sv_mb = hyb_mt_min_bits;
++                    hyb_threads = 3;
++                    hyb_mt_min_bits = 600;
++                    u64 d2 = poly_gcd_certified(a.data(), a.size(), b.data(),
++                                                b.size(), &g2, ~0ULL, nullptr,
++                                                &fa, &fb, &st);
++                    hyb_threads = sv_t;
++                    hyb_mt_min_bits = sv_mb;
++                    if (st != GCD_CERT_OK || d2 != d1 || (d1 && g2 != g1))
++                        ok_eq = false;
++                    ncert++;
++                }
++                // one fault per run, at step 1, 2, 3, ...: the engine must
++                // answer "certificate failed" or the right gcd, never a
++                // certified wrong one
++                for (long N = 1; N <= 40; N++) {
++                    std::vector<u64> g2;
++                    int st = -1;
++                    hyb_fault_at = N;
++                    hyb_fault_reset();
++                    u64 d2 = poly_gcd_certified(a.data(), a.size(), b.data(),
++                                                b.size(), &g2, ~0ULL, nullptr,
++                                                &fa, &fb, &st);
++                    const bool fired = hyb_fault_count() >= N;
++                    hyb_fault_at = 0;
++                    nflt++;
++                    if (st == GCD_CERT_FAIL) ndet++;
++                    if (fired != (st == GCD_CERT_FAIL)) ok_flt = false;
++                    if (st != GCD_CERT_FAIL &&
++                        (st != GCD_CERT_OK || d2 != d1 || (d1 && g2 != g1)))
++                        ok_flt = false;
++                }
++                // a wrong input fold is refused outright
++                {
++                    EcFold bad = fa;
++                    bad.w[7] ^= 1;
++                    std::vector<u64> g2;
++                    int st = -1;
++                    poly_gcd_certified(a.data(), a.size(), b.data(), b.size(),
++                                       &g2, ~0ULL, nullptr, &bad, &fb, &st);
++                    if (st != GCD_CERT_INPUT) ok_flt = false;
++                }
++            };
++            for (u64 bits : std::vector<u64>{700, 5000, 40000}) {
++                chk(rvb(bits), rvb(bits - 1 - nl() % 30));
++                u64 gd = 20 + nl() % (bits / 3);
++                auto g = rvb(gd + 1);
++                auto u = rvb(bits - gd), w = rvb(bits - gd);
++                std::vector<u64> pa, pb;
++                gm13.mul(g.data(), g.size(), gd + 1, u.data(), u.size(),
++                         bits - gd, pa);
++                gm13.mul(g.data(), g.size(), gd + 1, w.data(), w.size(),
++                         bits - gd, pb);
++                chk(pa, pb);                       // planted common factor
++                { auto sa = rvb(bits); chk(sa, sa); }
++                chk(rvb(bits), rvb(9));
++                // trinomial vs dense: the production shape
++                {
++                    u64 rr2 = bits | 1, ss2 = rr2 / 3;
++                    std::vector<u64> T2(bits_to_words(rr2 + 1), 0);
++                    T2[0] |= 1;
++                    T2[ss2 >> 6] |= 1ULL << (ss2 & 63);
++                    T2[rr2 >> 6] |= 1ULL << (rr2 & 63);
++                    chk(rvb(rr2 - 1), T2);
++                }
++            }
++            hyb_gpu_min_bits = sv_min;
++            hyb_ntl_finish_bits = sv_fin;
++            hyb_cert_xgcd = false;
++            gm13.fini();
++            printf("EC: certified gcd == NTL (%" PRIu64 " gcds)                "
++                   "  %s\n", ncert, ok_eq ? "PASS" : "FAIL");
++            printf("EC: certified gcd under faults (%" PRIu64 " runs, %" PRIu64
++                   " caught) %s\n", nflt, ndet,
++                   (ok_flt && ndet) ? "PASS" : "FAIL");
++            if (!ok_eq) bad++;
++            if (!ok_flt || !ndet) bad++;
++        }
++
++        // (14) end-to-end with the gcd certified (thresholds shrunk so the
++        //      4423-bit gcds run a real chain), clean and with a fault
++        //      inside the gcd of every scan
++        {
++            const EcCfg sv_cfg = g_ec;
++            const bool sv_quiet = g_ec_quiet;
++            u64 sv_min = hyb_gpu_min_bits, sv_fin = hyb_ntl_finish_bits;
++            hyb_gpu_min_bits = 512;
++            hyb_ntl_finish_bits = 256;
++            g_ec.gcd_cert = true;
++            g_ec.log_path.clear();
++            CantorBasis bb14;
++            bb14.build();
++            TsGpuMul gm14;
++            gm14.init(&bb14, 12);
++            u64 mism = 0, runs = 0;
++            const u64 c0 = g_ecs.gcd_cert.load(), u0 = g_ecs.gcd_uncert.load(),
++                      d0 = g_ecs.total(), rr0 = g_ecs.gcd_reruns.load();
++            for (int hook = 0; hook < 3; hook++) {
++                g_gm = hook == 1 ? &gm14 : nullptr;
++                hyb_cert_xgcd = (hook == 2);        // 2: the XGCD mode
++                TsGPU G;
++                G.init(rr);
++                G.set_m(6);
++                SParams P;
++                P.skip = skip; P.maxd = maxd; P.q0 = 3;
++                P.canzass_max = 540;
++                P.verbose = 0;
++                for (size_t i = hook; i < surv.size(); i += 4) {
++                    u64 sv = surv[i];
++                    ScanOut res = scan_one_s(G, pool, P, rr, sv, gseq,
++                                             nullptr);
++                    const OracleOut &o = want[sv];
++                    bool okk = o.found ? (res.kind == ScanOut::FOUND &&
++                                          res.d == o.d)
++                                       : (res.kind == ScanOut::GAVE_UP);
++                    if (okk && o.found && o.mask_ok)
++                        okk = res.hex == mask_hex(o.mask);
++                    runs++;
++                    if (!okk) mism++;
++                }
++                pool.drain();
++                G.fini();
++            }
++            hyb_cert_xgcd = false;       // the fault runs below use the chain
++            const u64 ncert = g_ecs.gcd_cert.load() - c0;
++            bool ok_clean = (mism == 0 && ncert > 0 &&
++                             g_ecs.gcd_uncert.load() == u0 &&
++                             g_ecs.total() == d0);
++            // now with one fault inside the gcd engine per scan
++            g_ec_quiet = true;
++            g_gm = nullptr;
++            u64 fm = 0, fruns = 0;
++            {
++                TsGPU G;
++                G.init(rr);
++                G.set_m(6);
++                SParams P;
++                P.skip = skip; P.maxd = maxd; P.q0 = 3;
++                P.canzass_max = 540;
++                P.verbose = 0;
++                P.pend_max = 1;
++                for (size_t i = 0; i < surv.size(); i += 5) {
++                    u64 sv = surv[i];
++                    hyb_fault_at = 1 + (long)(i % 7);
++                    hyb_fault_reset();
++                    ScanOut res = scan_one_s(G, pool, P, rr, sv, gseq,
++                                             nullptr);
++                    hyb_fault_at = 0;
++                    const OracleOut &o = want[sv];
++                    bool okk = o.found ? (res.kind == ScanOut::FOUND &&
++                                          res.d == o.d)
++                                       : (res.kind == ScanOut::GAVE_UP);
++                    if (okk && o.found && o.mask_ok)
++                        okk = res.hex == mask_hex(o.mask);
++                    fruns++;
++                    if (!okk) fm++;
++                }
++                pool.drain();
++                G.fini();
++            }
++            const u64 nrr = g_ecs.gcd_reruns.load() - rr0;
++            g_gm = nullptr;
++            g_ec = sv_cfg;
++            g_ec_quiet = sv_quiet;
++            hyb_gpu_min_bits = sv_min;
++            hyb_ntl_finish_bits = sv_fin;
++            gm14.fini();
++            printf("EC: scans with certified gcd (%" PRIu64 " scans, %" PRIu64
++                   " gcds)    %s\n", runs, ncert, ok_clean ? "PASS" : "FAIL");
++            printf("EC: faults inside the gcd (%" PRIu64 " scans, %" PRIu64
++                   " re-runs)     %s\n", fruns, nrr,
++                   (fm == 0 && nrr > 0) ? "PASS" : "FAIL");
++            if (!ok_clean) bad++;
++            if (fm || !nrr) bad++;
++        }
+         pool.stop();
+     }
+ #endif // HAVE_NTL
+@@ -2267,12 +3949,30 @@
+             G.reduce_into(G.dTmp); });
+     }
+     double t_sq = t_fus < t_leg ? t_fus : t_leg;
+-    printf("per-degree projection (m*t_sq + (t_mul + t_horner(m))/m):\n");
++    // error-checking costs at full scale (m = 24 here; the h-table pass
++    // and the chain check scale with m, the product folds do not)
++    G.ec_setup(true);
++    G.ec_chain_reset();
++    printf("error checking (per block unless noted):\n");
++    double te_pre = timeit("EC h-table pass (m=24)", 10,
++                           [&] { G.ec_block_pre(); });
++    double te_fold = timeit("EC product + result folds", 10,
++                            [&] { G.ec_after_mul(); G.ec_after_reduce(); });
++    double te_ver = timeit("EC readback + host algebra", 10,
++                           [&] { G.ec_block_verify(); });
++    double te_win = timeit("EC chain check (per window)", 4,
++                           [&] { G.ec_w = 1; G.ec_window_check(); });
++    G.ec_on = false;
++    printf("per-degree projection (m*t_sq + (t_mul + t_horner(m))/m), and "
++           "the error-checking overhead at --ecw %ld:\n", g_ec.window);
+     int best_m = 8;
+     double best_c = 1e100;
+     for (int m : {8, 12, 16, 20, 24, 32, 40, 48, 56, 64}) {
+         double c = m * t_sq + (t_mul + t_hor * m / 24.0) / m;
+-        printf("  m=%-3d  %8.2f ms/degree\n", m, c * 1e3);
++        double ce = (te_pre * m / 24.0 + te_fold + te_ver +
++                     te_win * m / 24.0 / (double)g_ec.window) / m;
++        printf("  m=%-3d  %8.2f ms/degree   + EC %6.3f ms (%.2f%%)\n", m,
++               c * 1e3, ce * 1e3, 100.0 * ce / c);
+         if (c < best_c) { best_c = c; best_m = m; }
+     }
+     int mo = (int)(sqrt(t_mul / t_sq) + 0.5) & ~1;
+@@ -2421,7 +4121,6 @@
+         "  --maxd D        do not scan degrees > D (emit \"s u\")\n"
+         "  --m M           block size 2..64 (default: auto-benchmark)\n"
+         "  --q0 N          blocks in the first interval (default 600/m)\n"
+-        "  --f F           interval growth (0 const, 1 linear, >1 geometric)\n"
+         "  -z Q            emit \"s u\" when q would exceed Q (factor -z)\n"
+         "  -Z Q            cap q at Q but keep scanning\n"
+         "  --out PREFIX    results -> PREFIX.results.txt (default ts)\n"
+@@ -2432,10 +4131,17 @@
+         "  --canzass-max D fineDDF threshold (default 2*r^(2/3))\n"
+         "  --legacy-sq     use the 3-kernel squaring path\n"
+         "  --pend-max N    max speculative intervals in flight (default 4)\n"
+-        "  --gpu-gcd       hybrid HGCD gcd: big multiplications on the\n"
+-        "                  GPU, CPU load per gcd drops sharply (opt-in)\n"
++        "  --gpu-gcd       gcd engine with its big multiplications on the\n"
++        "                  GPU: CPU load per gcd drops sharply (opt-in)\n"
+         "  --gpu-gcd-min-bits N   offload mults with an operand >= N bits\n"
+-        "  --bench-gcd     with --bench: also time one full-size gcd\n"
++        "  --gcd-finish-bits N    gcd engine hands over to NTL below N bits\n"
++        "                  (default 4194304)\n"
++        "  --gcd-full-apply       gcd engine: apply each half-gcd matrix to\n"
++        "                  the full operands, as before round EC (A/B\n"
++        "                  timing; the default multiplies the low half only)\n"
++        "  --bench-gcd     with --bench: also time one full-size gcd with\n"
++        "                  NTL and with the certified engine (CPU mults, or\n"
++        "                  GPU mults under --gpu-gcd)\n"
+         "  --sched opt     Euler-optimal interval schedule from the\n"
+         "                  empirical survival law S(k)=(16/9)/k: fewer,\n"
+         "                  later GCDs (E[gcds]/survivor ~1.66 -> ~1.26;\n"
+@@ -2452,7 +4158,42 @@
+         "  --selftest-reps N   repeat --selftest N times (races in the\n"
+         "                  GPU/pool interaction are intermittent; a\n"
+         "                  single clean run proves less than a loop)\n"
+-        "  -v              verbose (repeat for more)\n");
++        "  -v              verbose (repeat for more)\n"
++        "Error checking (ON by default; detects hardware faults -- VRAM or\n"
++        "RAM bit flips, marginal overclocks, bad transfers -- and restarts\n"
++        "from the newest verified state; ~1%% overhead):\n"
++        "  --no-ec         turn it off (testing / A-B timing only)\n"
++        "  --ecw N         check the h-table chain every N blocks (default\n"
++        "                  8; it is always checked at the end of an\n"
++        "                  interval and before a checkpoint)\n"
++        "  The gcd is CERTIFIED by default: every step of the half-gcd\n"
++        "  reduction is verified by folds and the finish by a Bezout\n"
++        "  identity, which PROVES \"no factor in this interval\" instead of\n"
++        "  trusting a minute of unchecked CPU/RAM work.  The certified\n"
++        "  engine is also the faster one (measure: make gcdbench).\n"
++        "  --gcd-mt N      use N CPU threads inside each gcd (the products\n"
++        "                  of a matrix step run side by side; default 1).\n"
++        "                  Worth having when cores are idle during the gcd,\n"
++        "                  as under --pend-max 1.  Total gcd threads =\n"
++        "                  --gcd-threads x --gcd-mt.  CPU products only\n"
++        "  --gcd-ntl       plain NTL gcd instead: NOT checked (A/B timing)\n"
++        "  --ecg-xgcd      certify with one verified NTL extended gcd\n"
++        "                  instead of the chain (~1.4x NTL's gcd; reference)\n"
++        "  --ecg-dup       compute every gcd twice with NTL and compare,\n"
++        "                  instead of certifying.  Free in wall time with\n"
++        "                  --gcd-threads >= 2, else doubles the gcd time\n"
++        "  --ecg           accepted for symmetry with factor_ec; certifying\n"
++        "                  is already the default (with --ecg-dup: both)\n"
++        "  --ect           print an error-checking cost breakdown at exit\n"
++        "                  (adds device synchronisation: for measurement)\n"
++        "  --eci0          skip the verification of the h-table\n"
++        "                  initialisation (one modmul + k+m squarings per\n"
++        "                  s: a fraction of a second)\n"
++        "  --ec-retries N  give up on an s after N failed restarts from\n"
++        "                  the same point (default 3; exit status 3)\n"
++        "  --ec-fault SITE:N   TEST: flip one bit at the N-th opportunity\n"
++        "                  of SITE (h hmid a c t red idle init xferh xfera\n"
++        "                  snap hold job gcd) to watch the checker work\n");
+     exit(1);
+ }
+ 
+@@ -2468,6 +4209,31 @@
+          bench_gcd = false;
+     u64 gcd_min_bits_opt = 0;
+     int selftest_reps = 1;
++    bool ecg_explicit = false, ecg_xgcd = false, gcd_ntl = false;
++    int gcd_mt = 1;
++
++    // Extra options from the environment (TSFACTOR_ARGS="--ecg,--ect";
++    // commas or spaces separate): lets a wrapper script's configuration add
++    // options without the script itself changing.  They are parsed after
++    // the command line.
++    std::vector<std::string> argstore(argv, argv + argc);
++    if (const char *ex = getenv("TSFACTOR_ARGS")) {
++        std::string w;
++        for (const char *c = ex;; c++) {
++            if (*c && *c != ',' && !isspace((unsigned char)*c)) {
++                w.push_back(*c);
++                continue;
++            }
++            if (!w.empty()) { argstore.push_back(w); w.clear(); }
++            if (!*c) break;
++        }
++        if ((int)argstore.size() > argc)
++            fprintf(stderr, "TSFACTOR_ARGS adds: %s\n", ex);
++    }
++    std::vector<char *> argvx;
++    for (auto &t : argstore) argvx.push_back(&t[0]);
++    argc = (int)argvx.size();
++    argv = argvx.data();
+ 
+     std::vector<std::string> pos;
+     for (int i = 1; i < argc; i++) {
+@@ -2512,10 +4278,51 @@
+         else if (a == "--gpu-gcd-min-bits")
+             gcd_min_bits_opt = strtoull(need("--gpu-gcd-min-bits"), 0, 10);
+         else if (a == "--bench-gcd") bench_gcd = true;
++#ifdef HAVE_NTL
++        else if (a == "--gcd-finish-bits")     // tuning/testing knob
++            hyb_ntl_finish_bits = strtoull(need("--gcd-finish-bits"), 0, 10);
++        else if (a == "--gcd-full-apply")      // A/B: the pre-EC engine
++            hyb_split_apply = false;
++#endif
+         else if (a == "--pend-max") P.pend_max = atoi(need("--pend-max"));
+         else if (a == "--hsnap-mb") P.hsnap_mb = atol(need("--hsnap-mb"));
+         else if (a == "--die-after-blocks")
+             P.die_after_blocks = atol(need("--die-after-blocks"));
++        else if (a == "--no-ec") g_ec.on = false;
++        else if (a == "--ecw") {
++            g_ec.window = atol(need("--ecw"));
++            if (g_ec.window < 1) { fprintf(stderr, "--ecw must be >= 1\n");
++                                   exit(1); }
++        }
++        else if (a == "--ecg") ecg_explicit = true;
++        else if (a == "--ecg-xgcd") { ecg_explicit = true; ecg_xgcd = true; }
++        else if (a == "--ecg-dup") g_ec.gcd_dup = true;
++        else if (a == "--gcd-ntl") gcd_ntl = true;
++        else if (a == "--gcd-mt") gcd_mt = atoi(need("--gcd-mt"));
++        else if (a == "--ect") g_ec.timing = true;
++        else if (a == "--eci0") g_ec.init_check = false;
++        else if (a == "--ec-retries") {
++            g_ec.max_retry = atoi(need("--ec-retries"));
++            if (g_ec.max_retry < 0) g_ec.max_retry = 0;
++        }
++        else if (a == "--ec-fault") {
++            std::string v = need("--ec-fault");
++            size_t c = v.find(':');
++            std::string nm = v.substr(0, c);
++            long n = (c == std::string::npos) ? 1 : atol(v.c_str() + c + 1);
++            int site = ECI_NONE;
++            for (int i = 1; i < ECI_N; i++)
++                if (nm == eci_name[i]) site = i;
++            if (site == ECI_NONE || n == 0) {
++                fprintf(stderr, "bad --ec-fault %s (SITE:N; sites:",
++                        v.c_str());
++                for (int i = 1; i < ECI_N; i++)
++                    fprintf(stderr, " %s", eci_name[i]);
++                fprintf(stderr, ")\n");
++                exit(1);
++            }
++            g_eci.arm(site, n, 0x5EEDULL);
++        }
+         else if (a == "-v") P.verbose++;
+         else if (a == "-vv") P.verbose += 2;
+         else if (a.size() && a[0] == '-' && !isdigit(a[1])) {
+@@ -2529,6 +4336,16 @@
+         gcd_threads = hc > 2 ? (int)std::min(3u, hc - 1) : 1;
+     }
+ 
++#ifdef HAVE_NTL
++    if (gcd_mt > 1 && !hyb_threads_ok()) {
++        fprintf(stderr, "WARNING: --gcd-mt ignored: this NTL was built "
++                        "without NTL_THREADS\n");
++        gcd_mt = 1;
++    }
++    hyb_threads = gcd_mt < 1 ? 1 : gcd_mt > 64 ? 64 : gcd_mt;
++#else
++    (void)gcd_mt;
++#endif
+     if (do_selftest) {
+         if (device >= 0) cudaSetDevice(device);
+         int rc = 0;
+@@ -2582,19 +4399,61 @@
+                 hyb_reset_stats();
+             }
+             g_keep_bits = r + 1;
++            // the reference: NTL's own gcd (what --gcd-ntl / --no-ec run)
+             double t0 = trin_now_s();
+             std::vector<u64> gg;
+-            u64 gd = ts_gcd(A.data(), A.size(), T.data(), T.size(), &gg);
++            u64 gd = poly_gcd_ntl(A.data(), A.size(), T.data(), T.size(), &gg,
++                                  g_keep_bits);
+             double dt = trin_now_s() - t0;
+-            printf("gcd bench (random A vs T, %s): %.2f s (gdeg %" PRIu64
+-                   ")\n", g_use_hybrid ? "hybrid" : "NTL", dt, gd);
+-            if (g_use_hybrid) {
++            printf("gcd bench (random A vs T, NTL): %.2f s (gdeg %" PRIu64
++                   ")\n", dt, gd);
++            fflush(stdout);
++            if (g_use_hybrid) {          // the engine, uncertified (--no-ec)
++                double th = trin_now_s();
++                std::vector<u64> gh;
++                u64 gdh = ts_gcd(A.data(), A.size(), T.data(), T.size(), &gh);
++                double dth = trin_now_s() - th;
+                 u64 ng, nc, nf;
+                 hyb_get_stats(ng, nc, nf);
++                printf("gcd bench (random A vs T, hybrid): %.2f s (gdeg %"
++                       PRIu64 ", %+.1f%% vs NTL)\n", dth, gdh,
++                       100.0 * (dth - dt) / dt);
+                 printf("  hybrid mults: gpu %" PRIu64 " cpu %" PRIu64
+                        " fallbacks %" PRIu64 "\n", ng, nc, nf);
+-                g_ts_gm.fini();
++                if (gdh != gd) printf("  *** MISMATCH vs NTL ***\n");
++                fflush(stdout);
++            }
++            if (g_ec.on && !gcd_ntl) {
++                // the same gcd, certified (what a production run computes)
++                hyb_cert_xgcd = ecg_xgcd;
++                EcFold fa, ft;
++                ecf_fold_host(fa, A.data(), A.size());
++                ecf_fold_host(ft, T.data(), T.size());
++                std::vector<u64> g2;
++                int st = -1;
++                hyb_reset_stats();
++                double t1 = trin_now_s();
++                u64 gd2 = ts_gcd_cert(A.data(), A.size(), T.data(), T.size(),
++                                      &g2, &fa, &ft, &st);
++                double dt2 = trin_now_s() - t1;
++                u64 ng, nc, nf;
++                hyb_get_stats(ng, nc, nf);
++                printf("gcd bench, CERTIFIED (%s): %.2f s (gdeg %"
++                       PRIu64 ", status %s, %+.1f%% vs NTL)\n",
++                       ecg_xgcd ? "NTL XGCD" : g_gm ? "chain, GPU mults"
++                                                    : "chain, CPU mults",
++                       dt2, gd2,
++                       st == 0 ? "certified" : st == 3 ? "NOT certified"
++                       : "CERTIFICATE FAILED",
++                       100.0 * (dt2 - dt) / dt);
++                printf("  mults: gpu %" PRIu64 " cpu %" PRIu64 " fallbacks %"
++                       PRIu64 "\n", ng, nc, nf);
++                if (hyb_threads > 1 && !g_gm && !ecg_xgcd)
++                    printf("  (with --gcd-mt %d: %d threads inside the gcd)\n",
++                           hyb_threads, hyb_threads);
++                if (gd2 != gd) printf("  *** MISMATCH vs NTL ***\n");
+             }
++            if (g_use_hybrid) g_ts_gm.fini();
+         }
+ #endif
+         return brc;
+@@ -2619,7 +4478,23 @@
+     }
+ #ifdef HAVE_NTL
+     if (gpu_gcd) g_use_hybrid = true;    // reflected in the banner
++    if ((gcd_ntl && (ecg_explicit || gpu_gcd)) || (ecg_xgcd && gpu_gcd)) {
++        fprintf(stderr, "ERROR: --gcd-ntl contradicts --ecg / --ecg-xgcd / "
++                        "--gpu-gcd, and --ecg-xgcd contradicts --gpu-gcd\n");
++        exit(1);
++    }
++    // With checking on, the gcd is CERTIFIED unless the plain NTL gcd is
++    // asked for (--gcd-ntl; --ecg-dup alone means "NTL, twice").  The
++    // certified chain is also the faster engine on CPU multiplications.
++    if (!g_ec.on) g_ec.gcd_cert = g_ec.gcd_dup = false;
++    else g_ec.gcd_cert = ecg_explicit || gpu_gcd ||
++                         !(gcd_ntl || g_ec.gcd_dup);
++    hyb_cert_xgcd = ecg_xgcd;
+ #else
++    g_ec.gcd_cert = false;
++    (void)ecg_explicit; (void)ecg_xgcd; (void)gcd_ntl;
++#endif
++#ifndef HAVE_NTL
+     if (gpu_gcd) {
+         fprintf(stderr, "ERROR: --gpu-gcd needs an NTL build (the hybrid "
+                         "engine uses NTL for CPU-side mults and the "
+@@ -2628,6 +4503,43 @@
+     }
+ #endif
+     fprintf(stderr, "GCD backend: %s\n", gcd_backend());
++#ifdef HAVE_NTL
++    if (hyb_threads > 1)
++        fprintf(stderr, "gcd: %d threads inside each gcd (--gcd-mt)%s\n",
++                hyb_threads, (g_ec.on && g_ec.gcd_cert && !hyb_cert_xgcd &&
++                              !gpu_gcd)
++                    ? "" : " -- NOTE: only the certified chain on CPU "
++                           "products uses them");
++#endif
++    g_ec.log_path = out_prefix + ".ec.log";
++    if (g_ec.on) {
++        fprintf(stderr, "error checking: ON -- h-table chain every %ld "
++                "block(s), product/reduction/Horner folds every block, "
++                "init %s, transfers and snapshots verified, reported "
++                "factors verified; gcd %s\n", g_ec.window,
++                g_ec.init_check ? "verified" : "NOT verified (--eci0)",
++                g_ec.gcd_cert ? (g_ec.gcd_dup ? "certified and computed "
++                                                "twice" : "certified")
++                              : g_ec.gcd_dup ? "computed twice (--ecg-dup)"
++                                             : "NOT checked");
++        if (!g_ec.gcd_cert && !g_ec.gcd_dup)
++            fprintf(stderr, "NOTE: the gcd itself (CPU, ordinary RAM) is not "
++                    "checked in this configuration (--gcd-ntl, or a build "
++                    "without NTL).  A fault there could still turn a hit "
++                    "into a miss.\n");
++        if (g_ec.gcd_dup && gcd_threads < 2)
++            fprintf(stderr, "hint: --ecg-dup with --gcd-threads 1 runs the "
++                    "two gcds one after the other (double the gcd time); "
++                    "--gcd-threads 2 runs them side by side\n");
++        fprintf(stderr, "error checking: detections are logged to %s\n",
++                g_ec.log_path.c_str());
++    } else {
++        fprintf(stderr, "error checking: OFF (--no-ec) -- a hardware fault "
++                "will silently produce a wrong result\n");
++    }
++    if (g_eci.site != ECI_NONE)
++        fprintf(stderr, "TEST MODE: will flip one bit (%s) at opportunity "
++                "%ld\n", eci_desc[g_eci.site], g_eci.at);
+     if (gcd_threads == 1 && P.pend_max == 1)
+         fprintf(stderr, "hint: with --gcd-threads 1, --pend-max 2 lets the "
+                 "scan run one interval\nahead of the single GCD worker at "
+@@ -2739,9 +4651,10 @@
+         double htab = 2.0 * G.m * G.nw * 8 * mb;
+         double fft = (2.0 * G.F.n + G.F.n) * 8 * mb;   // dFA+dFB+twiddles
+         double scr = (4.0 * G.nw + 2.0 * G.nw2 + G.nw) * 8 * mb;
++        double ecm = g_ec.on ? 5.0 * G.nw * 8 * mb : 0;
+         fprintf(stderr, "GPU memory (fixed at startup, independent of "
+-                "q/depth): h-tables %.0f MB, FFT %.0f MB, scratch %.0f MB"
+-                "%s\n", htab, fft, scr,
++                "q/depth): h-tables %.0f MB, FFT %.0f MB, scratch %.0f MB, "
++                "error checking %.0f MB%s\n", htab, fft, scr, ecm,
+                 gpu_gcd ? ", +gcd hook ~610 MB" : "");
+         double snap = (double)G.m * G.nw * 8 * mb;
+         long nsn = (P.hsnap_mb <= 0) ? 0 : (long)(P.hsnap_mb / snap);
+@@ -2782,7 +4695,8 @@
+         else std::rotate(svs.begin(), it, it + 1);
+     }
+ 
+-    bool interrupted = false;
++    bool interrupted = false, ec_fatal = false;
++    u64 ec_fatal_s = 0;
+     for (u64 sv : svs) {
+         if (done_s.count(sv)) continue;
+         if (g_stop) { interrupted = true; break; }
+@@ -2790,6 +4704,8 @@
+         ScanOut o = scan_one_s(G, pool, P, r, sv, gseq,
+                                RS.valid && RS.H.s == sv ? &RS : nullptr);
+         if (o.kind == ScanOut::INTERRUPTED) { interrupted = true; break; }
++        if (o.kind == ScanOut::EC_FATAL) { ec_fatal = true; ec_fatal_s = sv;
++                                           break; }
+         char buf[256];
+         switch (o.kind) {
+         case ScanOut::FOUND:
+@@ -2826,6 +4742,62 @@
+     }
+ 
+     fclose(rf);
++    if (g_ec.on) {
++        u64 nd = g_ecs.total();
++        fprintf(stderr, "error checking: %" PRIu64 " blocks and %" PRIu64
++                " h-table chain windows verified; %" PRIu64 " detection(s)"
++                ", %" PRIu64 " restart(s), %" PRIu64 " in-place repair(s), %"
++                PRIu64 " transfer re-read(s), %" PRIu64 " gcd re-run(s)\n",
++                g_ecs.blocks.load(), g_ecs.windows.load(), nd,
++                g_ecs.restarts.load(), g_ecs.repairs.load(),
++                g_ecs.xfer_retries.load(), g_ecs.gcd_reruns.load());
++        if (g_ec.gcd_cert)
++            fprintf(stderr, "error checking: %" PRIu64 " gcd(s) certified, %"
++                    PRIu64 " not certified\n",
++                    g_ecs.gcd_cert.load(), g_ecs.gcd_uncert.load());
++        for (int c = 0; c < ECC_N; c++)
++            if (g_ecs.fails[c].load())
++                fprintf(stderr, "    %-26s %" PRIu64 "\n", ecc_name[c],
++                        g_ecs.fails[c].load());
++        if (nd || g_ecs.xfer_retries.load())
++            fprintf(stderr, "  NOTE: detections mean this machine made "
++                    "errors.  Results are still correct (every one was "
++                    "caught and redone), but check cooling, clocks and "
++                    "power; details in %s\n", g_ec.log_path.c_str());
++        if (g_ec.timing) {
++            double tot = g_ecs.t_block + g_ecs.t_host + g_ecs.t_window +
++                         g_ecs.t_init + g_ecs.t_xfer + g_ecs.t_verify;
++            u64 nb = g_ecs.blocks.load(), nwn = g_ecs.windows.load();
++            fprintf(stderr, "error-checking cost breakdown (--ect)\n"
++                    "  %-34s %10s %11s %10s\n", "category", "count",
++                    "seconds", "ms each");
++            auto row = [](const char *nm, u64 n, double t) {
++                fprintf(stderr, "  %-34s %10" PRIu64 " %11.3f %10.3f\n", nm,
++                        n, t, n ? 1e3 * t / (double)n : 0.0);
++            };
++            row("per block: device folds + readback", nb, g_ecs.t_block);
++            row("per block: host fold algebra", nb, g_ecs.t_host);
++            row("h-table chain check", nwn, g_ecs.t_window);
++            row("h-table init verification", g_ecs.n_init, g_ecs.t_init);
++            row("verified transfers", g_ecs.n_xfer, g_ecs.t_xfer);
++            row("factor verification", g_ecs.n_verify, g_ecs.t_verify);
++            fprintf(stderr, "  %-34s %10s %11.3f\n", "TOTAL", "", tot);
++        }
++    }
++    if (ec_fatal) {
++        fprintf(stderr,
++            "\n*** ERROR CHECKING: PERSISTENT FAULT -- STOPPING ***\n"
++            "s=%" PRIu64 " failed its checks %d times in a row from the "
++            "same verified state.\nThat is not a cosmic ray; the GPU, its "
++            "driver, RAM or power is unreliable right now.\nNo result was "
++            "written for this s (it will be redone on the next run).\n"
++            "Check temperatures and any overclock/undervolt, run "
++            "`tsfactor --selftest`,\nand see %s.\n", ec_fatal_s,
++            g_ec.max_retry + 1, g_ec.log_path.c_str());
++        fflush(nullptr);
++        pool.stop_nowait();
++        std::_Exit(3);
++    }
+     if (interrupted) {
+         fprintf(stderr, "interrupted: %" PRIu64 " found, %" PRIu64
+                 " u; exiting (in-flight GCDs abandoned)\n", n_found, n_u);
+--- /dev/null	2026-11-13 18:14:33.470472561 -0500
++++ tsfactor/gf2_ec.h	2026-11-16 02:56:54.712814853 -0500
+@@ -0,0 +1,323 @@
++// gf2_ec.h
++// Error-checking layer for tsfactor: detects hardware faults (VRAM / RAM
++// bit flips, marginal overclocks, transfer corruption) in the blocked
++// distinct-degree scan, cheaply enough to leave on by default.
++//
++// Theory, derivations and the measured behaviour are in
++// errorcheck_handoff.md; the tsfactor-specific design is in
++// tsfactor_handoff.md (round 7).  In brief, four independent mechanisms:
++//
++//  1. h-table (the squarings, ~all of the state that persists):
++//     with S = XOR_j h[j] and sigma = Frobenius^m, the block update
++//     h[j] <- h[j]^(2^m) gives sigma(S_z) = S_{z+1}, because Frobenius is
++//     ADDITIVE in characteristic 2.  Summed over a window of blocks,
++//         sigma(D) + D = S_first + S_last,   D = XOR of the S_z,
++//     which is checked at full width (no compression): any single fault
++//     in any squaring, or any bit flip in the idle table, is detected
++//     with certainty.  Cost: one streaming pass per block plus m
++//     squarings per window.
++//
++//  2. the table's absolute value: S has a closed form,
++//         1 + S_k = (1 + x)^(2^k (2^m - 1))   mod T,
++//     so  (1 + y_k)(1 + S_k) = 1 + y_{k+m}  with y_t = x^(2^t).  One
++//     single-slot Frobenius chain and one modmul verify the whole h-table
++//     initialisation from first principles (no duplicate init).
++//
++//  3. products A <- A*C mod T and the Horner build of C: a cyclic fold
++//         phi : GF(2)[x] -> GF(2)[x] / (x^n + 1)
++//     is a ring homomorphism, so phi(t) = phi(A) phi(C) for the UNREDUCED
++//     product t, and the reduction satisfies phi(t mod T) = phi(t) +
++//     phi(q) phi(T) with the quotient known in closed form when 2s < r
++//     (which tsfactor enforces).  phi(A) is carried on the host from one
++//     block to the next and phi(C) is predicted from an independent pass
++//     over the h-table, so idle corruption of A or C is caught as well.
++//
++//  4. transfers and snapshots: the same fold computed on both sides.
++//
++// The fold length is EC_NF = 61 words (n = 3904 bits), deliberately NOT a
++// power of two: with n = 2^12 an error that repeats with a power-of-two
++// period (a stuck bus lane; a constant pattern across a power-of-two FFT
++// sub-block) folds onto itself an even number of times and cancels.  61
++// is prime, so such patterns spread over all 61 words instead.
++//
++// Everything here is header-only and has no dependency beyond
++// gf2_cantor_core.h, so the fold algebra can be unit-tested on the host.
++
++#ifndef GF2_EC_H
++#define GF2_EC_H
++
++#include "gf2_cantor_core.h"
++#include <stddef.h>
++#include <string.h>
++
++#define EC_NF 61                          // fold words (prime, see above)
++#define EC_NBITS ((u64)EC_NF * 64)        // n = 3904
++#ifndef EC_NBLK_MAX
++#define EC_NBLK_MAX 512                   // blocks of EC_NF threads per fold
++#endif
++
++// ===========================================================================
++// host side: arithmetic in the fold ring GF(2)[x] / (x^n + 1)
++
++struct EcFold { u64 w[EC_NF]; };
++
++static inline void ecf_zero(EcFold &f) { memset(f.w, 0, sizeof f.w); }
++static inline void ecf_one(EcFold &f) { ecf_zero(f); f.w[0] = 1; }
++static inline bool ecf_eq(const EcFold &a, const EcFold &b) {
++    return memcmp(a.w, b.w, sizeof a.w) == 0;
++}
++static inline bool ecf_is_zero(const EcFold &a) {
++    for (int j = 0; j < EC_NF; j++) if (a.w[j]) return false;
++    return true;
++}
++static inline void ecf_xor(EcFold &d, const EcFold &a) {
++    for (int j = 0; j < EC_NF; j++) d.w[j] ^= a.w[j];
++}
++// toggle the coefficient of x^pos (pos taken mod n)
++static inline void ecf_flip(EcFold &f, u64 pos) {
++    pos %= EC_NBITS;
++    f.w[pos >> 6] ^= 1ULL << (pos & 63);
++}
++// d = a * x^k (k any integer mod n): a rotation.  d must not alias a.
++static inline void ecf_rot(EcFold &d, const EcFold &a, u64 k) {
++    k %= EC_NBITS;
++    unsigned kw = (unsigned)(k >> 6), kb = (unsigned)(k & 63);
++    for (unsigned j = 0; j < EC_NF; j++) {
++        u64 lo = a.w[(j + EC_NF - kw) % EC_NF];
++        u64 hi = a.w[(j + 2 * EC_NF - kw - 1) % EC_NF];
++        d.w[j] = kb ? ((lo << kb) | (hi >> (64 - kb))) : lo;
++    }
++}
++// d = a * x^(-k)
++static inline void ecf_rot_neg(EcFold &d, const EcFold &a, u64 k) {
++    ecf_rot(d, a, EC_NBITS - (k % EC_NBITS));
++}
++
++static inline cl128 ecf_cl64(u64 a, u64 b) {
++#if !defined(__CUDA_ARCH__) && defined(__x86_64__) && \
++    defined(__PCLMUL__) && defined(__SSE4_1__)
++    return cl64_x86(a, b);
++#else
++    return cl64(a, b);
++#endif
++}
++// d = a * b in the fold ring (schoolbook: 3721 carry-less word products,
++// ~10 us with PCLMUL, ~0.1 ms without -- once per block either way)
++static inline void ecf_mul(EcFold &d, const EcFold &a, const EcFold &b) {
++    u64 acc[2 * EC_NF];
++    memset(acc, 0, sizeof acc);
++    for (int i = 0; i < EC_NF; i++) {
++        if (!a.w[i]) continue;
++        for (int j = 0; j < EC_NF; j++) {
++            cl128 p = ecf_cl64(a.w[i], b.w[j]);
++            acc[i + j] ^= p.lo;
++            acc[i + j + 1] ^= p.hi;
++        }
++    }
++    for (int j = 0; j < EC_NF; j++) d.w[j] = acc[j] ^ acc[j + EC_NF];
++}
++// d = a * phi(x^r + x^s + 1): three rotations, no general product
++static inline void ecf_mul_trinomial(EcFold &d, const EcFold &a, u64 r,
++                                     u64 s) {
++    EcFold t;
++    ecf_rot(d, a, r);
++    ecf_rot(t, a, s);
++    ecf_xor(d, t);
++    ecf_xor(d, a);
++}
++// fold of a host buffer
++static inline void ecf_fold_host(EcFold &f, const u64 *src, size_t nw) {
++    ecf_zero(f);
++    size_t w = 0;
++    for (; w + EC_NF <= nw; w += EC_NF)
++        for (int j = 0; j < EC_NF; j++) f.w[j] ^= src[w + j];
++    for (int j = 0; w < nw; w++, j++) f.w[j] ^= src[w];
++}
++
++// ---------------------------------------------------------------------------
++// predictions used by the per-block checks (pure functions of folds)
++
++// Fold of the block polynomial C as left in dC by k_horner_fused +
++// k_horner_tail, given the fold of the UNREDUCED Horner sum
++//     Cu = XOR_j (h[j] << (m-1-j))                     (r+m-1 bits)
++// and the mask `fired` of the top bits the tail kernel folded down
++// (bit e set <=> x^(r+e) was present and x^e * T was added):
++//     C = Cu + x^m + XOR_{e in fired} x^e (x^r + x^s + 1).
++static inline void ecf_horner_predict(EcFold &fC, const EcFold &fCu,
++                                      u64 fired, int m, u64 r, u64 s) {
++    fC = fCu;
++    for (int e = 0; e < 64; e++)
++        if ((fired >> e) & 1) {
++            ecf_flip(fC, r + (u64)e);
++            ecf_flip(fC, s + (u64)e);
++            ecf_flip(fC, (u64)e);
++        }
++    ecf_flip(fC, (u64)m);
++}
++
++// From the three segment folds of the unreduced product t (deg <= 2r-2),
++//     seg[0] = bits [0, r)   seg[1] = bits [r, 2r-s)   seg[2] = bits >= 2r-s
++// (each at its original position), produce phi(t) and the predicted
++// phi(t mod T).  Valid for 2s < r, where t mod T = t + q*T with
++//     q = t_H + u_H,   t_H = t >> r,   u_H = t >> (2r - s)
++// (the two fold passes of reduce_into).  For 2s > r the quotient has
++// more terms and this prediction is WRONG; tsfactor's set_s rejects it.
++static inline void ecf_reduce_predict(EcFold &ft, EcFold &fred,
++                                      const EcFold seg[3], u64 r, u64 s) {
++    EcFold hi, q, uh, qT;
++    ft = seg[0];
++    ecf_xor(ft, seg[1]);
++    ecf_xor(ft, seg[2]);
++    hi = seg[1];
++    ecf_xor(hi, seg[2]);                  // phi(x^r * t_H)
++    ecf_rot_neg(q, hi, r);                // phi(t_H)
++    ecf_rot_neg(uh, seg[2], 2 * r - s);   // phi(u_H)
++    ecf_xor(q, uh);
++    ecf_mul_trinomial(qT, q, r, s);
++    fred = ft;
++    ecf_xor(fred, qT);
++}
++
++// Translation units that only need the host-side fold algebra (the gcd
++// engine) define GF2_EC_HOST_ONLY before including this header.
++#ifndef GF2_EC_HOST_ONLY
++
++// ===========================================================================
++// device side.  Fold kernels are launched <<<nblk, EC_NF>>>: thread t of
++// block b owns fold slot t and visits words (b + i*nblk)*EC_NF + t, so
++// every partial result has exactly one writer (no atomics, exact under
++// the sequential emulation) and each block reads EC_NF consecutive words.
++
++static inline unsigned ec_nblk_for(size_t nw) {
++    size_t b = (nw + EC_NF - 1) / EC_NF;
++    if (b < 1) b = 1;
++    if (b > EC_NBLK_MAX) b = EC_NBLK_MAX;
++    return (unsigned)b;
++}
++
++// mask of the bits of the word covering [wbit, wbit+64) that lie in [lo, hi)
++GF2C_HD u64 ec_mask_range(u64 wbit, u64 lo, u64 hi) {
++    u64 a = lo > wbit ? lo - wbit : 0;
++    u64 b = hi > wbit ? hi - wbit : 0;
++    if (a >= 64 || b == 0) return 0;
++    if (b > 64) b = 64;
++    if (a >= b) return 0;
++    u64 m = (b >= 64) ? ~0ULL : ((1ULL << b) - 1);
++    if (a) m &= ~((1ULL << a) - 1);
++    return m;
++}
++
++// part[b*EC_NF + t] = XOR of src[w], w = (b + i*nblk)*EC_NF + t < nw
++__global__ void k_ec_fold_part(const u64 *src, size_t nw, u64 *part) {
++    const size_t t = threadIdx.x;
++    const size_t step = (size_t)gridDim.x * EC_NF;
++    u64 acc = 0;
++    for (size_t w = (size_t)blockIdx.x * EC_NF + t; w < nw; w += step)
++        acc ^= src[w];
++    part[(size_t)blockIdx.x * EC_NF + t] = acc;
++}
++
++// three folds in one pass: bits [0,c1), [c1,c2), [c2,inf) of src, each
++// folded at its original position.  part holds 3 * nblk * EC_NF words.
++__global__ void k_ec_fold3_part(const u64 *src, size_t nw, u64 c1, u64 c2,
++                                u64 *part) {
++    const size_t t = threadIdx.x;
++    const size_t step = (size_t)gridDim.x * EC_NF;
++    u64 a0 = 0, a1 = 0, a2 = 0;
++    for (size_t w = (size_t)blockIdx.x * EC_NF + t; w < nw; w += step) {
++        u64 v = src[w];
++        u64 wb = (u64)w << 6;
++        u64 m0 = ec_mask_range(wb, 0, c1);
++        u64 m1 = ec_mask_range(wb, c1, c2);
++        a0 ^= v & m0;
++        a1 ^= v & m1;
++        a2 ^= v & ~(m0 | m1);
++    }
++    const size_t o = (size_t)blockIdx.x * EC_NF + t;
++    const size_t seg = (size_t)gridDim.x * EC_NF;
++    part[o] = a0;
++    part[seg + o] = a1;
++    part[2 * seg + o] = a2;
++}
++
++// out[g*EC_NF + t] = XOR_b part[(g*nblk + b)*EC_NF + t], g < nseg.
++// Launch <<<1, EC_NF>>>.
++__global__ void k_ec_combine(const u64 *part, unsigned nblk, unsigned nseg,
++                             u64 *out) {
++    if (blockIdx.x != 0) return;
++    const size_t t = threadIdx.x;
++    for (unsigned g = 0; g < nseg; g++) {
++        u64 acc = 0;
++        for (unsigned b = 0; b < nblk; b++)
++            acc ^= part[((size_t)g * nblk + b) * EC_NF + t];
++        out[(size_t)g * EC_NF + t] = acc;
++    }
++}
++
++// The one extra pass over the h-table per block.  For every word w < nwc:
++//   x  = XOR_j h[j][w]                      -> D[w] ^= x   (window digest)
++//   cu = XOR_j (h[j] << (m-1-j))[w]         -> folded into part
++// The second quantity is the unreduced Horner sum, recomputed here
++// independently of k_horner_fused (different kernel, different
++// thread-to-word mapping), so a fault in either is exposed when the
++// product check compares phi(A*C) with phi(A) * phi(C predicted).
++__global__ void k_ec_block_pass(const u64 *hbase, size_t nw, int m, u64 *D,
++                                size_t nwc, u64 *part) {
++    const size_t t = threadIdx.x;
++    const size_t step = (size_t)gridDim.x * EC_NF;
++    u64 acc = 0;
++    for (size_t w = (size_t)blockIdx.x * EC_NF + t; w < nwc; w += step) {
++        u64 x = 0, cu = 0;
++        for (int j = 0; j < m; j++) {
++            const u64 *h = hbase + (size_t)j * nw;
++            unsigned sh = (unsigned)(m - 1 - j);
++            u64 a = (w < nw) ? h[w] : 0;
++            u64 b = (w >= 1 && w - 1 < nw) ? h[w - 1] : 0;
++            x ^= a;
++            cu ^= sh ? ((a << sh) | (b >> (64 - sh))) : a;
++        }
++        if (w < nw) D[w] ^= x;
++        acc ^= cu;
++    }
++    part[(size_t)blockIdx.x * EC_NF + t] = acc;
++}
++
++// out[w] = XOR_j h[j][w]   (the digest S, full width)
++__global__ void k_ec_digest(const u64 *hbase, size_t nw, int m, u64 *out) {
++    size_t w = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
++    size_t stride = (size_t)gridDim.x * blockDim.x;
++    for (; w < nw; w += stride) {
++        u64 x = 0;
++        for (int j = 0; j < m; j++) x ^= hbase[(size_t)j * nw + w];
++        out[w] = x;
++    }
++}
++
++// *flag = 1 if (a ^ b ^ c ^ d) is nonzero anywhere.  Every writer stores
++// the same value, so the race between writers is benign.
++__global__ void k_ec_or4(const u64 *a, const u64 *b, const u64 *c,
++                         const u64 *d, size_t nw, u64 *flag) {
++    size_t w = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
++    size_t stride = (size_t)gridDim.x * blockDim.x;
++    u64 bad = 0;
++    for (; w < nw; w += stride) bad |= a[w] ^ b[w] ^ c[w] ^ d[w];
++    if (bad) *flag = 1;
++}
++__global__ void k_ec_neq(const u64 *a, const u64 *b, size_t nw, u64 *flag) {
++    size_t w = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
++    size_t stride = (size_t)gridDim.x * blockDim.x;
++    u64 bad = 0;
++    for (; w < nw; w += stride) bad |= a[w] ^ b[w];
++    if (bad) *flag = 1;
++}
++// single-thread helpers
++__global__ void k_ec_set_word(u64 *p, u64 v) {
++    if (blockIdx.x == 0 && threadIdx.x == 0) *p = v;
++}
++__global__ void k_ec_flip_bit(u64 *p, u64 bit) {
++    if (blockIdx.x == 0 && threadIdx.x == 0) p[bit >> 6] ^= 1ULL << (bit & 63);
++}
++
++#endif // GF2_EC_HOST_ONLY
++
++#endif // GF2_EC_H
+--- /dev/null	2026-11-13 18:14:33.470472561 -0500
++++ tsfactor/gcdbench.cpp	2026-11-16 02:56:54.726016707 -0500
+@@ -0,0 +1,151 @@
++// gcdbench.cpp -- time the CPU gcd paths on one input, no GPU needed:
++//     NTL GCD             tsfactor --gcd-ntl (and --no-ec): not checked
++//     CERTIFIED, XGCD     tsfactor --ecg-xgcd: one NTL extended gcd whose
++//                         Bezout identity is fold-verified
++//     hybrid HGCD         tsfactor's own engine on CPU multiplications
++//                         (with the old full and the new split application)
++//     CERTIFIED, chain    tsfactor's DEFAULT: that engine with every step
++//                         fold-verified and a verified finish
++// The input is a random residue against the trinomial x^r + x^s + 1, the
++// production shape.  The point is the RATIO "CERTIFIED, chain" / "NTL GCD"
++// on your CPU with your gf2x build: below 1, the certified gcd is also the
++// faster one; above 1, --gcd-ntl buys speed at the price of an unchecked gcd.
++//
++//   make gcdbench        (or: g++ -O2 -march=native -DHAVE_NTL -o gcdbench
++//                         gcdbench.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp
++//                         -pthread)
++//   ./gcdbench 136279841 588          (about six gcds' worth of time)
++//   ./gcdbench 8000001                (a quick look at a smaller size)
++//
++// Optional third argument: the NTL-finish threshold in bits (default 2^22).
++// Optional fourth argument "quick": skip the two slow reference rows (NTL
++// XGCD and the old full-apply engine); anything else: all rows.
++// Optional fifth argument N: also time the certified chain with the
++// products of each matrix operation on N threads (tsfactor --gcd-mt N).
++
++#include "gf2_gcd.h"
++#define GF2_EC_HOST_ONLY
++#include "gf2_ec.h"
++#include <chrono>
++#include <cstdlib>
++
++static double now_s() {
++    using namespace std::chrono;
++    return duration<double>(steady_clock::now().time_since_epoch()).count();
++}
++
++int main(int argc, char **argv) {
++    u64 r = argc > 1 ? strtoull(argv[1], 0, 10) : 8000001;
++    u64 s = argc > 2 ? strtoull(argv[2], 0, 10) : r / 3;
++    if (argc > 3) hyb_ntl_finish_bits = strtoull(argv[3], 0, 10);
++    const bool quick = argc > 4 && argv[4][0] == 'q';
++    const int mt = argc > 5 ? atoi(argv[5]) : 0;
++    if (r < 100 || !(s >= 1 && s < r)) {
++        fprintf(stderr, "usage: gcdbench r [s] [finish_bits] [quick|full] "
++                        "[threads]\n");
++        return 1;
++    }
++    printf("gcd of a random residue with x^%llu + x^%llu + 1; NTL %s gf2x; "
++           "NTL finish below %llu bits\n", (unsigned long long)r,
++           (unsigned long long)s, ntl_gf2x_backed() ? "WITH" : "WITHOUT",
++           (unsigned long long)hyb_ntl_finish_bits);
++    fflush(stdout);
++    size_t nwt = (size_t)((r + 1 + 63) >> 6), nwa = (size_t)((r + 63) >> 6);
++    std::vector<u64> T(nwt, 0), A(nwa, 0);
++    T[0] |= 1;
++    T[s >> 6] |= 1ULL << (s & 63);
++    T[r >> 6] |= 1ULL << (r & 63);
++    u64 st = 0x1234abcd;
++    for (auto &w : A) {
++        st += 0x9E3779B97F4A7C15ULL;
++        u64 z = st;
++        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
++        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
++        w = z ^ (z >> 31);
++    }
++    if (r & 63) A.back() &= (1ULL << (r & 63)) - 1;
++
++    std::vector<u64> g1, g2, g3;
++    double t0 = now_s();
++    u64 d1 = poly_gcd_ntl(A.data(), A.size(), T.data(), T.size(), &g1, ~0ULL);
++    double t_ntl = now_s() - t0;
++    printf("  NTL GCD                      %9.2f s   (gcd degree %llu)\n",
++           t_ntl, (unsigned long long)d1);
++    fflush(stdout);
++
++    auto what = [](int st) {
++        return st == GCD_CERT_OK ? "certified"
++             : st == GCD_CERT_NONE ? "NOT certified: engine fell back"
++                                   : "CERTIFICATE FAILED";
++    };
++    EcFold fa, ft;
++    std::vector<u64> g4 = g1, g5 = g1;
++    int st_x = GCD_CERT_OK, st_c = -1;
++    u64 d4 = d1, d5 = d1;
++    ecf_fold_host(fa, A.data(), A.size());
++    ecf_fold_host(ft, T.data(), T.size());
++    if (!quick) {
++        g4.clear();
++        g5.clear();
++        hyb_cert_xgcd = true;
++        t0 = now_s();
++        d4 = poly_gcd_certified(A.data(), A.size(), T.data(), T.size(), &g4,
++                                ~0ULL, nullptr, &fa, &ft, &st_x);
++        double t_x = now_s() - t0;
++        hyb_cert_xgcd = false;
++        printf("  CERTIFIED, NTL XGCD (--ecg-xgcd) %5.2f s   %+6.1f%% vs NTL   "
++               "[%s]\n", t_x, 100.0 * (t_x - t_ntl) / t_ntl, what(st_x));
++        fflush(stdout);
++
++        // the engine as it was before round EC (every matrix applied to
++        // the full operands), for comparison with the split application
++        hyb_split_apply = false;
++        t0 = now_s();
++        d5 = poly_gcd_hybrid(A.data(), A.size(), T.data(), T.size(), &g5,
++                             ~0ULL, nullptr);
++        double t_full = now_s() - t0;
++        printf("  hybrid HGCD, full apply (old) %8.2f s   %+6.1f%% vs NTL\n",
++               t_full, 100.0 * (t_full - t_ntl) / t_ntl);
++        fflush(stdout);
++        hyb_split_apply = true;
++    }
++
++    hyb_reset_stats();
++    t0 = now_s();
++    u64 d2 = poly_gcd_hybrid(A.data(), A.size(), T.data(), T.size(), &g2,
++                             ~0ULL, nullptr);
++    double t_hyb = now_s() - t0;
++    printf("  hybrid HGCD, split apply     %9.2f s   %+6.1f%% vs NTL\n",
++           t_hyb, 100.0 * (t_hyb - t_ntl) / t_ntl);
++    fflush(stdout);
++
++    t0 = now_s();
++    u64 d3 = poly_gcd_certified(A.data(), A.size(), T.data(), T.size(), &g3,
++                                ~0ULL, nullptr, &fa, &ft, &st_c);
++    double t_cert = now_s() - t0;
++    printf("  CERTIFIED, chain (the default) %7.2f s   %+6.1f%% vs NTL, %+.1f%% "
++           "vs hybrid   [%s]\n", t_cert, 100.0 * (t_cert - t_ntl) / t_ntl,
++           100.0 * (t_cert - t_hyb) / t_hyb, what(st_c));
++    bool same = d1 == d2 && d1 == d3 && d1 == d4 && d1 == d5 &&
++                (d1 == 0 || (g1 == g2 && g1 == g3 && g1 == g4 && g1 == g5));
++    fflush(stdout);
++    if (mt > 1 && !hyb_threads_ok()) {
++        printf("  (NTL was built without NTL_THREADS: no threaded row)\n");
++    } else if (mt > 1) {
++        std::vector<u64> g6;
++        int st_m = -1;
++        hyb_threads = mt;
++        t0 = now_s();
++        u64 d6 = poly_gcd_certified(A.data(), A.size(), T.data(), T.size(),
++                                    &g6, ~0ULL, nullptr, &fa, &ft, &st_m);
++        double t_mt = now_s() - t0;
++        hyb_threads = 1;
++        printf("  CERTIFIED, chain, --gcd-mt %-2d  %7.2f s   %+6.1f%% vs NTL, "
++               "%.2fx as fast as 1 thread   [%s]\n", mt, t_mt,
++               100.0 * (t_mt - t_ntl) / t_ntl, t_cert / t_mt, what(st_m));
++        same = same && d6 == d1 && st_m == GCD_CERT_OK &&
++               (d1 == 0 || g6 == g1);
++    }
++    printf("  all agree: %s\n", same ? "yes" : "*** NO ***");
++    return same && st_x == GCD_CERT_OK && st_c == GCD_CERT_OK ? 0 : 1;
++}
+--- /dev/null	2026-11-13 18:14:33.470472561 -0500
++++ tsfactor/gcdstress.cpp	2026-11-16 02:56:54.727840167 -0500
+@@ -0,0 +1,244 @@
++// gcdstress.cpp -- randomized cross-check of every CPU gcd path in
++// gf2_gcd_ntl.cpp against NTL's GCD.  No GPU needed.
++//
++//     hybrid HGCD, split apply     (the engine, uncertified)
++//     hybrid HGCD, full apply      (the engine before round EC)
++//     CERTIFIED, NTL XGCD          (--ecg-xgcd)
++//     CERTIFIED, chain             (tsfactor's default gcd)
++//
++// Each must return the same gcd (degree AND polynomial) as NTL on every
++// input, and the certified ones must report GCD_CERT_OK.  The inputs are
++// chosen to reach the engine's corner cases: quotients of every degree
++// (built from a prescribed quotient sequence, including long runs of
++// degree-1 quotients and occasional huge ones that straddle the half-gcd
++// split point), planted common factors from tiny to almost everything,
++// b | a, a == b, zero operands, and the production shape (a residue against
++// a trinomial).  The NTL-finish threshold is varied from 64 bits up so the
++// engine, not NTL, does the work; a third of the cases run the products of
++// each matrix operation on three threads (tsfactor --gcd-mt).
++//
++//   make gcdstress && ./gcdstress            (400 cases up to 120000 bits:
++//                                             about a minute)
++//   ./gcdstress 1500 200000 7                (cases, max bits, seed)
++//
++// Exit status 0 iff every case agrees.
++
++#include "gf2_gcd.h"
++#define GF2_EC_HOST_ONLY
++#include "gf2_ec.h"
++#include <NTL/GF2X.h>
++#include <cstdlib>
++
++using NTL::GF2X;
++
++static u64 rng_state = 1;
++static u64 rnd() {
++    rng_state += 0x9E3779B97F4A7C15ULL;
++    u64 z = rng_state;
++    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
++    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
++    return z ^ (z >> 31);
++}
++static u64 rnd_below(u64 n) { return n ? rnd() % n : 0; }
++
++// random polynomial of EXACT degree d (d < 0: zero)
++static GF2X rpoly(long d) {
++    GF2X f;
++    if (d < 0) return f;
++    size_t nw = (size_t)d / 64 + 1;
++    std::vector<u64> w(nw);
++    for (auto &x : w) x = rnd();
++    unsigned top = (unsigned)(d & 63);
++    if (top != 63) w[nw - 1] &= (1ULL << (top + 1)) - 1;
++    w[nw - 1] |= 1ULL << top;
++    NTL::GF2XFromBytes(f, (const unsigned char *)w.data(), (long)(nw * 8));
++    return f;
++}
++static std::vector<u64> words(const GF2X &f) {
++    long nb = NTL::NumBytes(f);
++    std::vector<u64> out(nb <= 0 ? 1 : ((size_t)nb + 7) / 8, 0);
++    if (nb > 0) NTL::BytesFromGF2X((unsigned char *)out.data(), f, nb);
++    return out;
++}
++static void trim(std::vector<u64> &v) {
++    while (!v.empty() && v.back() == 0) v.pop_back();
++}
++
++// (a, b) with a prescribed quotient sequence on top of gcd g
++static void from_quotients(GF2X &a, GF2X &b, const GF2X &g, long target_bits,
++                           int flavour) {
++    a = g;
++    clear(b);
++    while (deg(a) < target_bits) {
++        long qd;
++        switch (flavour) {
++        case 0: qd = 1; break;                           // all degree 1
++        case 1: qd = 1 + (long)rnd_below(3); break;      // typical
++        case 2: qd = rnd_below(40) ? 1 + (long)rnd_below(2)
++                                   : 50 + (long)rnd_below(3000); break;
++        default: qd = rnd_below(6) ? 1
++                    : 1 + (long)rnd_below((u64)target_bits / 3 + 1); break;
++        }
++        GF2X q = rpoly(qd), t;
++        mul(t, q, a);
++        add(t, t, b);
++        b = a;
++        a = t;
++    }
++}
++
++int main(int argc, char **argv) {
++    long cases = argc > 1 ? atol(argv[1]) : 400;
++    long maxbits = argc > 2 ? atol(argv[2]) : 120000;
++    rng_state = argc > 3 ? strtoull(argv[3], 0, 10) : 20261116;
++    if (cases < 1 || maxbits < 256) {
++        fprintf(stderr, "usage: gcdstress [cases [maxbits [seed]]]\n");
++        return 2;
++    }
++    const u64 finish_choices[] = {64, 300, 4096, 20000, 65536};
++    long bad = 0, nontrivial = 0, certs = 0, declined = 0, threaded = 0;
++    u64 fb_before = 0, g0, c0;
++    hyb_reset_stats();
++    hyb_get_stats(g0, c0, fb_before);
++    for (long it = 0; it < cases; it++) {
++        long n = 200 + (long)rnd_below((u64)maxbits - 199);
++        int kind = (int)rnd_below(12);
++        GF2X a, b, g;
++        set(g);                                  // g = 1
++        if (rnd_below(3) == 0) {                 // plant a common factor
++            long gd = rnd_below(4) ? 1 + (long)rnd_below(200)
++                                   : 1 + (long)rnd_below((u64)n);
++            g = rpoly(gd);
++        }
++        switch (kind) {
++        case 0: case 1: case 2: {                // two random multiples of g
++            GF2X u = rpoly(n), v = rpoly((long)rnd_below((u64)n + 1));
++            mul(a, u, g);
++            mul(b, v, g);
++            break;
++        }
++        case 3: from_quotients(a, b, g, n, 0); break;
++        case 4: from_quotients(a, b, g, n, 1); break;
++        case 5: case 6: from_quotients(a, b, g, n, 2); break;
++        case 7: from_quotients(a, b, g, n, 3); break;
++        case 8: {                                // b divides a
++            b = rpoly(n / 2 + 1);
++            mul(a, b, rpoly(n / 2));
++            break;
++        }
++        case 9: {                                // equal, or one zero
++            a = rpoly(n);
++            if (rnd_below(2)) b = a;
++            break;
++        }
++        default: {                               // production shape
++            long r = n | 1, s = 1 + (long)rnd_below((u64)(r / 2));
++            GF2X T;
++            SetCoeff(T, r); SetCoeff(T, s); SetCoeff(T, 0);
++            // a residue sharing a factor with T now and then
++            GF2X res = rpoly(r - 1);
++            if (rnd_below(2)) {
++                // multiply the residue by (x^(2^j) + x) mod T for a small j:
++                // that picks up every factor of T of degree dividing j
++                GF2X p;
++                SetX(p);
++                long j = 1 + (long)rnd_below(12);
++                for (long t = 0; t < j; t++) SqrMod(p, p, T);
++                GF2X xx; SetX(xx);
++                add(p, p, xx);
++                MulMod(res, res, p, T);
++            }
++            a = res;
++            b = T;
++            break;
++        }
++        }
++        if (rnd_below(2)) swap(a, b);            // either order
++        std::vector<u64> A = words(a), B = words(b);
++        // pad with zero words now and then: callers pass fixed-width arrays
++        if (rnd_below(3) == 0) A.resize(A.size() + 1 + rnd_below(3), 0);
++        if (rnd_below(3) == 0) B.resize(B.size() + 1 + rnd_below(3), 0);
++
++        hyb_ntl_finish_bits = finish_choices[rnd_below(5)];
++        // a third of the cases with the products of each matrix operation
++        // on three threads (threshold lowered so that it happens here)
++        hyb_threads = (hyb_threads_ok() && rnd_below(3) == 0) ? 3 : 1;
++        hyb_mt_min_bits = 600;
++        if (hyb_threads > 1) threaded++;
++        std::vector<u64> gref, gs, gf, gx, gc;
++        u64 dref = poly_gcd_ntl(A.data(), A.size(), B.data(), B.size(), &gref,
++                                ~0ULL);
++        hyb_split_apply = true;
++        u64 ds = poly_gcd_hybrid(A.data(), A.size(), B.data(), B.size(), &gs,
++                                 ~0ULL, nullptr);
++        hyb_split_apply = false;
++        u64 df = poly_gcd_hybrid(A.data(), A.size(), B.data(), B.size(), &gf,
++                                 ~0ULL, nullptr);
++        hyb_split_apply = true;
++        int stx = -1, stc = -1;
++        hyb_cert_xgcd = true;
++        u64 dx = poly_gcd_certified(A.data(), A.size(), B.data(), B.size(),
++                                    &gx, ~0ULL, nullptr, nullptr, nullptr,
++                                    &stx);
++        hyb_cert_xgcd = false;
++        u64 dc = poly_gcd_certified(A.data(), A.size(), B.data(), B.size(),
++                                    &gc, ~0ULL, nullptr, nullptr, nullptr,
++                                    &stc);
++        // every 7th case: make the chain decline; the answer must then come
++        // certified from the extended gcd, and be the same
++        if (it % 7 == 3) {
++            std::vector<u64> gd;
++            int std_ = -1;
++            u64 x0, x1, f0, f1;
++            hyb_get_stats(x0, x1, f0);
++            hyb_force_fallback = true;
++            u64 dd = poly_gcd_certified(A.data(), A.size(), B.data(),
++                                        B.size(), &gd, ~0ULL, nullptr,
++                                        nullptr, nullptr, &std_);
++            hyb_force_fallback = false;
++            hyb_get_stats(x0, x1, f1);
++            declined += (long)(f1 - f0);     // 0 if the pair was already small
++            trim(gd);
++            std::vector<u64> gr = gref;
++            trim(gr);
++            if (dd != dref || std_ != GCD_CERT_OK || (dref > 0 && gd != gr)) {
++                bad++;
++                printf("MISMATCH case %ld: declined chain gave %llu [st %d], "
++                       "NTL %llu\n", it, (unsigned long long)dd, std_,
++                       (unsigned long long)dref);
++            }
++        }
++        trim(gref); trim(gs); trim(gf); trim(gx); trim(gc);
++        bool ok = ds == dref && df == dref && dx == dref && dc == dref &&
++                  stx == GCD_CERT_OK && stc == GCD_CERT_OK;
++        if (ok && dref > 0)
++            ok = gs == gref && gf == gref && gx == gref && gc == gref;
++        if (stc == GCD_CERT_OK) certs++;
++        if (dref > 0) nontrivial++;
++        if (!ok) {
++            bad++;
++            if (bad <= 10)
++                printf("MISMATCH case %ld kind %d: deg a %ld, deg b %ld, "
++                       "finish %llu: NTL %llu, split %llu, full %llu, "
++                       "xgcd %llu [st %d], chain %llu [st %d]\n",
++                       it, kind, deg(a), deg(b),
++                       (unsigned long long)hyb_ntl_finish_bits,
++                       (unsigned long long)dref, (unsigned long long)ds,
++                       (unsigned long long)df, (unsigned long long)dx, stx,
++                       (unsigned long long)dc, stc);
++        }
++    }
++    u64 g1, c1, fb_after;
++    hyb_get_stats(g1, c1, fb_after);
++    printf("gcdstress: %ld cases up to %ld bits (%ld with a nontrivial gcd), "
++           "4 engines each vs NTL\n", cases, maxbits, nontrivial);
++    printf("  chain certified in %ld of %ld; chain declined on its own %lld "
++           "time(s); %ld forced declines re-certified by XGCD\n", certs,
++           cases, (long long)(fb_after - fb_before) - (long long)declined,
++           declined);
++    printf("  %ld of the cases ran each gcd's products on 3 threads%s\n",
++           threaded, hyb_threads_ok() ? "" : " (NTL built without "
++           "NTL_THREADS: threading not tested)");
++    printf("  mismatches: %ld   %s\n", bad, bad ? "*** FAIL ***" : "PASS");
++    return bad ? 1 : 0;
++}

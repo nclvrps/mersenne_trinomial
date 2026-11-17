@@ -1,0 +1,3 @@
+2026-11-16 22:34:40  idle h-table             s=12337659: h-table changed while idle before interval 1493..4522
+2026-11-16 22:34:41  note                     s=12337659: restarting from the verified state at interval 263, block 0
+2026-11-16 22:39:45  note                     s=12337659: completed after 1 restart(s)

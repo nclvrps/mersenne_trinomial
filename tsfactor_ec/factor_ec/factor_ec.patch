@@ -1,0 +1,634 @@
+--- factor.cpp
++++ factor_ec.cpp
+@@ -43,6 +43,213 @@
+ 
+ NTL_CLIENT
+ 
++/* ==================================================================== *
++ *  ERROR CHECKING  (see errorcheck_handoff.md)
++ *
++ *  Three independent mechanisms:
++ *    (1) a Frobenius-linear Gerbicz check on the h-table evolution,
++ *    (2) cyclic-fold (phi_n) checks on the products and on the Horner
++ *        construction of C[z], plus an independent re-reduction,
++ *    (3) optional repeated GCD.
++ *  On any failure the current interval is recomputed from a checkpoint.
++ * ==================================================================== */
++
++static int ec_enabled   = 0;    /* -ec              */
++static int ec_window    = 1;    /* -ecw w           */
++static int ec_gcdrep    = 0;    /* -ecg             */
++static long ec_maxretry = 5;
++static volatile int ec_fail = 0;      /* set by any failing check */
++static long ec_detections = 0;
++static int  ec_timing   = 0;    /* -ect: per-category cost accounting  */
++static int  ec_initchk  = 1;    /* -eci0 to disable init_h duplication */
++
++/* ---- fault injection, for validating the checker itself (-ecfault N).
++   Flips one coefficient at the N-th injection opportunity.  Fires once, so a
++   rollback retry re-does the work cleanly and the run should still produce
++   the correct answer -- which is the property we actually want to prove. ---- */
++static long ec_fault_at = 0, ec_fault_ctr = 0, ec_fault_done = 0;
++
++static void ec_maybe_inject (NTL::GF2X& a, const char *site)
++{
++  if (!ec_fault_at || ec_fault_done) return;
++  if (++ec_fault_ctr != ec_fault_at) return;
++  long d = deg (a);
++  if (d < 1) return;
++  long pos = d / 2;
++  SetCoeff (a, pos, !(rep (coeff (a, pos))));
++  ec_fault_done = 1;
++  fprintf (stderr, "EC INJECT: flipped bit %ld of a polynomial at site '%s'"
++           " (opportunity %ld)\n", pos, site, ec_fault_ctr);
++  fflush (stderr);
++}
++
++/* ---- cost accounting.  Round 1 shipped with none of this, which is why a
++   pathological check could burn 45 minutes without saying anything. ---- */
++
++enum { ECT_MULFOLD, ECT_DIVIS, ECT_COPY, ECT_HORNER, ECT_DIGEST,
++       ECT_SIGMA, ECT_INIT, ECT_GCD, ECT_N };
++static const char *ec_tname[ECT_N] = {
++  "fold check on product", "reduction divisibility", "copy t for check",
++  "horner fold shadow", "gerbicz digest xor", "gerbicz sigma(D)",
++  "init_h duplicate", "gcd repeat" };
++static double ec_tsec[ECT_N];
++static long   ec_tcnt[ECT_N];
++
++static inline double ec_now (void)
++{
++  struct timeval tv; gettimeofday (&tv, NULL);
++  return (double) tv.tv_sec + (double) tv.tv_usec * 1e-6;
++}
++#define EC_TIC(slot) double _ectic = ec_timing ? ec_now () : 0.0
++#define EC_TOC(slot) do { if (ec_timing) {                       \
++      ec_tsec[slot] += ec_now () - _ectic; ec_tcnt[slot]++; } } while (0)
++
++/* Every check reports the instant it trips, with a category and a location.
++   Silence is the one failure mode we cannot afford twice. */
++#define EC_FAIL(what, ...)                                              \
++  do {                                                                  \
++    ec_fail = 1;                                                        \
++    fprintf (stderr, "EC FAIL [%s] " what "\n", __func__, ##__VA_ARGS__); \
++    fflush (stderr);                                                    \
++  } while (0)
++
++/* ---- cyclic fold checksum  phi_n : GF(2)[x] -> GF(2)[x]/(x^n + 1) ----
++   n = ECFOLDW * NTL_BITS_PER_LONG bits, so the fold is a pure word XOR.  */
++
++#include "ec_words.h"                   /* fold / reverse / divisibility */
++
++#if NTL_BITS_PER_LONG != 64
++#error "The EC layer assumes 64-bit words (ecword == _ntl_ulong)."
++#endif
++
++/* 61 words = 3904 bits.  Deliberately NOT a power of two (it was 64 until
++   round 4): with n = 2^12 an error that repeats with a power-of-two period
++   -- a stuck bus lane, a constant pattern across a power-of-two FFT
++   sub-block -- folds onto itself an even number of times and cancels.
++   61 is prime, so such patterns spread over all 61 words instead. */
++#define ECFOLDW 61
++
++typedef struct { _ntl_ulong w[ECFOLDW]; } ecfold;
++
++static void ec_fold (ecfold *f, const GF2X& a)
++{
++  memset (f->w, 0, sizeof f->w);
++  long n = a.xrep.length ();
++  const _ntl_ulong *p = a.xrep.elts ();
++  long i = 0, j;
++  for (; i + ECFOLDW <= n; i += ECFOLDW)
++    for (j = 0; j < ECFOLDW; j++)
++      f->w[j] ^= p[i + j];
++  for (j = 0; i + j < n; j++)
++    f->w[j] ^= p[i + j];
++}
++
++static int ec_fold_eq (const ecfold *a, const ecfold *b)
++{
++  return memcmp (a->w, b->w, sizeof a->w) == 0;
++}
++
++static void ec_fold_add (ecfold *c, const ecfold *a, const ecfold *b)
++{
++  for (long j = 0; j < ECFOLDW; j++) c->w[j] = a->w[j] ^ b->w[j];
++}
++
++/* c = x * a  in GF(2)[x]/(x^n + 1) : a rotate by one bit */
++static void ec_fold_shl1 (ecfold *c, const ecfold *a)
++{
++  const int TOP = NTL_BITS_PER_LONG - 1;
++  _ntl_ulong carry = a->w[ECFOLDW - 1] >> TOP;
++  for (long j = ECFOLDW - 1; j > 0; j--)
++    c->w[j] = (a->w[j] << 1) | (a->w[j - 1] >> TOP);
++  c->w[0] = (a->w[0] << 1) | carry;
++}
++
++static void ec_fold_to_gf2x (GF2X& g, const ecfold *f)
++{
++  unsigned char buf[ECFOLDW * (NTL_BITS_PER_LONG / 8)];
++  for (long j = 0; j < ECFOLDW; j++)
++    for (long b = 0; b < NTL_BITS_PER_LONG / 8; b++)
++      buf[j * (NTL_BITS_PER_LONG / 8) + b] =
++        (unsigned char) ((f->w[j] >> (8 * b)) & 0xff);
++  GF2XFromBytes (g, buf, (long) sizeof buf);
++}
++
++/* c = a * b  in GF(2)[x]/(x^n + 1).  Tiny (4096-bit) -- cost is noise. */
++static void ec_fold_mul (ecfold *c, const ecfold *a, const ecfold *b)
++{
++  GF2X ga, gb, gc;
++  ec_fold_to_gf2x (ga, a);
++  ec_fold_to_gf2x (gb, b);
++  mul (gc, ga, gb);
++  ec_fold (c, gc);
++}
++
++/* ================= reduction check: divisibility by T =================
++ *
++ * ROUND 1 BUG, and why this file no longer contains a second reduction.
++ *
++ * The old ec_reduce_ref reduced by repeated block folding:
++ *     w = w_H x^r + w_L  ->  w_L + w_H x^s + w_H
++ * whose degree drops by (r - s) per pass.  That is 2 passes when 2s <= r,
++ * and r/(r-s) passes otherwise.  factor *deliberately* flips to s > r/2 to
++ * enable fastsqr, so the production case r=136279841, s=136279253 needed
++ * 231769 passes -- about 54 minutes for a single fastmulmod.  gecsim never
++ * saw it because r=1279, s=345 is the 2-pass regime.
++ *
++ * The replacement does not re-reduce at all.  It tests divisibility:
++ *     c == t mod T   <=>   T | (t + c)   and   deg c < r.
++ * When s > r/2 the test is moved to the reciprocal, where the exponent is
++ * small again:
++ *     T | w   <=>   T* | rev_D(w),     T* = x^r + x^(r-s) + 1,
++ * exact in both directions because rev is graded-multiplicative and
++ * rev_r(T*) = T.  Reversal is one linear pass; the reduction mod T* is then
++ * always 2 passes.  Measured 37 ms at r=136279841 (see ecbench).
++ *
++ * This is also *stronger* than the old check.  An error e in c is missed
++ * only if T | e, and deg e < r = deg T forces e = 0.  So every error in the
++ * reduction step is caught, deterministically -- not just single bit flips.
++ */
++
++/* thread_local: accumulate() has an OpenMP pragma over the product tree, so
++   with -t > 1 several threads are inside fastmulmod at once and would
++   otherwise share these scratch buffers. */
++static thread_local ecword *ec_wbuf = 0, *ec_wsc = 0, *ec_wsc2 = 0;
++static thread_local long    ec_nw2  = 0;
++
++static void ec_alloc (long r)
++{
++  long need = (2 * r + ECW_BITS - 1) / ECW_BITS + 1;
++  if (ec_nw2 >= need) return;
++  free (ec_wbuf); free (ec_wsc); free (ec_wsc2);
++  ec_nw2  = need;
++  ec_wbuf = (ecword *) malloc ((size_t) need * sizeof (ecword));
++  ec_wsc  = (ecword *) malloc ((size_t) need * sizeof (ecword));
++  ec_wsc2 = (ecword *) malloc ((size_t) need * sizeof (ecword));
++  if (!ec_wbuf || !ec_wsc || !ec_wsc2)
++    { fprintf (stderr, "EC: out of memory\n"); exit (1); }
++}
++
++/* dst = a, zero-padded to nw words */
++static void ec_to_words (ecword *dst, long nw, const GF2X& a)
++{
++  long n = a.xrep.length ();
++  if (n > nw) n = nw;
++  /* memcpy the body and zero only the tail.  Doing memset(nw) first and then
++     copying writes the whole buffer twice; t is nearly full length here, so
++     that doubled the cost of this step. */
++  if (n > 0) memcpy (dst, a.xrep.elts (), (size_t) n * sizeof (ecword));
++  if (n < nw) memset (dst + n, 0, (size_t) (nw - n) * sizeof (ecword));
++}
++
++/* dst ^= a */
++static void ec_xor_words (ecword *dst, long nw, const GF2X& a)
++{
++  long n = a.xrep.length ();
++  if (n > nw) n = nw;
++  const _ntl_ulong *p = a.xrep.elts ();
++  for (long j = 0; j < n; j++) dst[j] ^= (ecword) p[j];
++}
++
+ double
+ WctTime (void)
+ {
+@@ -732,6 +939,27 @@
+    GF2X t;
+    mul_gen(t, a, b);
+ 
++   /* --- EC: phi is a ring hom on GF(2)[x], and t is the *unreduced*
++      product, so phi(t) == phi(a)*phi(b) exactly.  Catches any error
++      confined to fewer than n consecutive bit positions.            --- */
++   if (ec_enabled)
++     {
++       { EC_TIC (ECT_MULFOLD);
++         ecfold fa, fb, ft, fp;
++         ec_fold (&fa, a); ec_fold (&fb, b); ec_fold (&ft, t);
++         ec_fold_mul (&fp, &fa, &fb);
++         if (!ec_fold_eq (&ft, &fp))
++           EC_FAIL ("phi(t) != phi(a)*phi(b), multiply corrupted");
++         EC_TOC (ECT_MULFOLD); }
++
++       /* stash the unreduced product in our own word buffer: fastrem
++          destroys t, and this avoids a GF2X allocation as well */
++       { EC_TIC (ECT_COPY);
++         ec_alloc ((long) r);
++         ec_to_words (ec_wbuf, ec_nw2, t);
++         EC_TOC (ECT_COPY); }
++     }
++
+    if ((r&s&1) && (s > BITS_PER_LONG2) && ((r-s) > BITS_PER_LONG2))
+      {
+        fastrem(t, r, s);
+@@ -739,6 +967,25 @@
+      }
+    else
+      rem(c, t, F);        // This is slow if s > r/2
++
++   /* --- EC: c == t mod T  <=>  T | (t + c) and deg c < r.  No second
++      reduction: see the note above ec_alloc for why that was fatal.  --- */
++   ec_maybe_inject (c, "fastmulmod result");
++
++   if (ec_enabled)
++     {
++       EC_TIC (ECT_DIVIS);
++       if (deg (c) >= (long) r)
++         EC_FAIL ("deg(c) = %ld >= r = %lu after reduction", deg (c), r);
++       else
++         {
++           ec_xor_words (ec_wbuf, ec_nw2, c);          /* w = t + c */
++           if (!ec_divides_trinomial (ec_wbuf, ec_nw2, (long) r, (long) s,
++                                      ec_wsc, ec_wsc2))
++             EC_FAIL ("T does not divide t + c, reduction corrupted");
++         }
++       EC_TOC (ECT_DIVIS);
++     }
+ }
+ 
+ void fastmulbyxmod (GF2X& c, const GF2X& a, _ntl_ulong r, _ntl_ulong s)
+@@ -861,6 +1108,14 @@
+   fprintf (stderr, "   -s0 s0  - start with x^r + x^s0 + 1, default 1\n");
+   fprintf (stderr, "   -s1 s1  - ends with x^r + x^(s1-1) + 1, default floor(r/2)+1\n");
+   fprintf (stderr, "   -mt n   - use n threads (default 1)\n");
++  fprintf (stderr, "   -ec     - enable hardware error checking (Gerbicz on the\n");
++  fprintf (stderr, "             h-table + cyclic-fold checks on the products)\n");
++  fprintf (stderr, "   -ecw w  - run the Gerbicz check every w blocks (default 1);\n");
++  fprintf (stderr, "             larger w is cheaper but rolls back further\n");
++  fprintf (stderr, "   -ecg    - also recompute each gcd and compare\n");
++  fprintf (stderr, "   -ect    - report per-category error-checking cost at exit\n");
++  fprintf (stderr, "   -eci0   - skip the duplicate init_h (saves one\n");
++  fprintf (stderr, "             exponentiation per s value)\n");
+   exit (1);
+ }
+ 
+@@ -903,6 +1158,7 @@
+ 
+   fprintf (stderr, "This is factor version %1.2f\n", GF2X_FACTOR_VERSION);
+   fprintf (stderr, "based on NTL version %s\n", NTL_VERSION);
++  /* deferred: ec status is printed after option parsing, below */
+ 
+   while (argc > 1 && argv[1][0] == '-')
+     {
+@@ -989,6 +1245,47 @@
+           argv += 2;
+           argc -= 2;
+         }
++      else if (strcmp (argv[1], "-ec") == 0)
++        {
++          ec_enabled = 1;
++          argc --;
++          argv ++;
++        }
++      else if (strcmp (argv[1], "-ecg") == 0)
++        {
++          ec_gcdrep = 1;
++          argc --;
++          argv ++;
++        }
++      else if (argc > 2 && strcmp (argv[1], "-ecfault") == 0)
++        {
++          ec_fault_at = atol (argv[2]);
++          argv += 2;
++          argc -= 2;
++        }
++      else if (strcmp (argv[1], "-ect") == 0)
++        {
++          ec_timing = 1;
++          argc --;
++          argv ++;
++        }
++      else if (strcmp (argv[1], "-eci0") == 0)
++        {
++          ec_initchk = 0;
++          argc --;
++          argv ++;
++        }
++      else if (argc > 2 && strcmp (argv[1], "-ecw") == 0)
++        {
++          ec_window = atoi (argv[2]);
++          if (ec_window < 1)
++            {
++              fprintf (stderr, "Error, -ecw must be >= 1\n");
++              exit (1);
++            }
++          argv += 2;
++          argc -= 2;
++        }
+       else
+         {
+           fprintf (stderr, "Error, invalid option: %s\n", argv[1]);
+@@ -999,6 +1296,15 @@
+   if (argc != 2)
+     usage ();
+ 
++  if (ec_enabled)
++    fprintf (stderr, "Error checking ENABLED: Gerbicz window %d block(s), "
++	     "fold modulus x^%d+1%s%s%s\n", ec_window,
++	     ECFOLDW * NTL_BITS_PER_LONG, ec_gcdrep ? ", repeated gcd" : "",
++	     ec_initchk ? "" : ", init_h check off",
++	     ec_timing  ? ", timing on" : "");
++  else
++    fprintf (stderr, "Error checking disabled (use -ec to enable)\n");
++
+   r = atoi (argv[1]);
+ 
+   if (r < 2)
+@@ -1220,6 +1526,11 @@
+               }
+ 
+ 	    choose_m = 0;			// Only try once
++	    /* EC: the calibration below times fastmulmod in a loop.  Leaving
++	       the checks on would inflate the measured M and make choose_m
++	       pick the wrong block size, so suspend EC for the duration. */
++	    int ec_save = ec_enabled;
++	    ec_enabled = 0;
+ 	    SetCoeff (htemp, 0, 1);
+ 	    SetCoeff (htemp, 1, 1);
+ 	    if (usefastsqr)
+@@ -1256,6 +1567,7 @@
+ 	    mopt = 2*(long)((double)0.5*sqrt(timem/times) + (double)0.5);
+ 	    fprintf (stderr, "M %f msec, S %f msec, M/S %f, sqrt(M/S) %f\n",
+ 	      1000.0* timem, 1000.0*times, timem/times, sqrt(timem/times));
++	    ec_enabled = ec_save;		// EC back on after calibration
+ 	    fprintf (stderr, "Estimate of best m %ld\n", mopt);
+  	    if ((mopt > 1) && (mopt <= 100))
+  	      {
+@@ -1333,6 +1645,26 @@
+ 		    {
+ 		      st = GetTime ();
+ 		      init_h (h, k, m, F, r, s, usefastsqr);
++		      /* --- EC: the Gerbicz check certifies how the table
++			 *evolves*, not where it starts.  init_h is a one-time
++			 O(m*k0) cost, so just do it twice.               --- */
++		      if (ec_enabled && ec_initchk)
++			{
++			  EC_TIC (ECT_INIT);
++			  vec_GF2X h2 (INIT_SIZE, m);
++			  init_h (h2, k, m, F, r, s, usefastsqr);
++			  for (long jj = 0; jj < m; jj++)
++			    if (h2[jj] != h[jj])
++			      {
++				fprintf (stderr, "EC: init_h disagreed with "
++					 "itself (component %ld) for s=%ld\n",
++					 jj, input_s);
++				ec_detections++;
++				init_h (h, k, m, F, r, s, usefastsqr);
++				break;
++			      }
++			  EC_TOC (ECT_INIT);
++			}
+ 		      if (verbose)
+ 			printf ("Exponentiation took %f\n", GetTime () - st);
+ 		    }
+@@ -1387,6 +1719,32 @@
+ 		    st = GetTime ();
+ 		    double wct = WctTime ();
+ 		    long i;
++
++		    /* --- EC: checkpoint the state this interval starts from,
++		       so that a failed check can simply redo the interval. --- */
++		    vec_GF2X hchk;
++		    GF2X achk, ec_S, ec_D, ec_S0, ec_Sn, ec_sD, ec_rhs;
++		    long ec_attempt;
++		    if (ec_enabled)
++		      {
++			hchk.SetLength (m);
++			copy_h (hchk, h, m);
++			achk = a;
++		      }
++
++		  for (ec_attempt = 0; ; ec_attempt++)
++		   {
++		    ec_fail = 0;
++		    if (ec_enabled)
++		      {
++			/* S_0 = XOR_j h[j], the block digest at interval start */
++			clear (ec_S0);
++			for (j = 0; j < m; j++) add (ec_S0, ec_S0, h[j]);
++			ec_S = ec_S0;
++			clear (ec_D);
++		      }
++		    long ec_w = 0;
++
+ 		    /* we can't easily parallelize this loop since the h[j]
+ 		       are updated at each loop on i */
+ 		    GF2XVec C;
+@@ -1404,17 +1762,54 @@
+                         else
+ 			  {
+ 			    C[z] = 1; /* s_{0,m} = 1 */
++			    ecfold fC, fT, fh, ftmp;
++			    if (ec_enabled)
++			      {
++				GF2X one; set (one);
++				ec_fold (&fC, one);
++				ec_fold (&fT, p);
++			      }
+ 			    /* first compute the polynomial p_m(X,x) from head of
+ 			       page 51 in "A multi-level blocking distinct-degree
+ 			       factorization algorithm" */
+ 			    for (j = 0; j < m; j++)
+ 			      {
++				/* EC: C*x mod T == (C<<1) + wrap*T exactly, so
++				   phi(C*x mod T) = x*phi(C) + wrap*phi(T).
++				   NOTE the correction is phi(T), *not*
++				   phi(x^s+1) -- getting that wrong makes the
++				   checker fire on correct data. */
++				int ec_wrap = ec_enabled &&
++				              (rep (coeff (C[z], r - 1)) != 0);
+ 				fastmulbyxmod (C[z], C[z], r, s);
+ 				add (C[z], C[z], h[j]);
++				if (ec_enabled)
++				  {
++				    ec_fold_shl1 (&ftmp, &fC);
++				    if (ec_wrap) ec_fold_add (&ftmp, &ftmp, &fT);
++				    ec_fold (&fh, h[j]);
++				    ec_fold_add (&fC, &ftmp, &fh);
++				  }
++			      }
++			    if (ec_enabled)
++			      {
++				EC_TIC (ECT_HORNER);
++				ec_fold (&ftmp, C[z]);
++				if (!ec_fold_eq (&fC, &ftmp))
++				  EC_FAIL ("horner fold mismatch at z=%ld", z);
++				EC_TOC (ECT_HORNER);
+ 			      }
+ 			  }
+ 
++			/* EC: accumulate the telescoping window digest
++			   D <- D + S_z  *before* the table advances. */
++			if (ec_enabled)
++			  { EC_TIC (ECT_DIGEST); add (ec_D, ec_D, ec_S);
++			    EC_TOC (ECT_DIGEST); }
++
+ 			/* update the h[j] values */
++			if (ec_enabled)
++			  clear (ec_Sn);
+ 			for (j = 0; j < m; j++)
+ 			  {
+ 			    if (usefastsqr)
+@@ -1433,6 +1828,58 @@
+ 			    else		// Have to use SqrMod here
+ 			      for (l = 0; l < m; l++)
+ 			        SqrMod (h[j], h[j], F);
++			    /* EC: S_{z+1} = XOR_j h[j]^(z+1).  In a GPU port
++			       this XOR fuses into the store of the last
++			       squaring and costs essentially nothing. */
++			    ec_maybe_inject (h[j], "h-table entry");
++			    if (ec_enabled)
++			      { EC_TIC (ECT_DIGEST); add (ec_Sn, ec_Sn, h[j]);
++			        EC_TOC (ECT_DIGEST); }
++			  }
++
++			/* ---- EC: Frobenius-linear Gerbicz check -------------
++			   sigma = Frob^m is additive in characteristic 2, so
++			      sigma(S_z) = S_{z+1}
++			   and, telescoped over a window of w blocks,
++			      sigma(D) + D = S_{z0} + S_{z1}.
++			   Cost: one sigma (m squarings) per w blocks, i.e.
++			   1/(w*m) of the squaring work.  Detects any single
++			   fault in the table update -- deterministically, not
++			   probabilistically.                              --- */
++			if (ec_enabled)
++			  {
++			    ec_w++;
++			    if (ec_w >= ec_window || i + m + m - 1 > k2)
++			      {
++				EC_TIC (ECT_SIGMA);
++				ec_sD = ec_D;
++				if (usefastsqr)
++				  {
++				    for (l = 0; l < m/2; l++)
++				      {
++					fastsqr (htemp, ec_sD, r, s);
++					fastsqr (ec_sD, htemp, r, s);
++				      }
++				    if (m&1)
++				      {
++					fastsqr (htemp, ec_sD, r, s);
++					ec_sD = htemp;
++				      }
++				  }
++				else
++				  for (l = 0; l < m; l++)
++				    SqrMod (ec_sD, ec_sD, F);
++				add (ec_sD, ec_sD, ec_D);      /* sigma(D)+D */
++				add (ec_rhs, ec_S0, ec_Sn);    /* S_z0 + S_z1 */
++				if (ec_sD != ec_rhs)
++				  EC_FAIL ("gerbicz: sigma(D)+D != S_z0+S_z1, "
++				           "h-table corrupted in the last %d block(s)", ec_window);
++				EC_TOC (ECT_SIGMA);
++				clear (ec_D);
++				ec_S0 = ec_Sn;
++				ec_w = 0;
++			      }
++			    ec_S = ec_Sn;
+ 			  }
+ 		      }
+ 
+@@ -1450,6 +1897,26 @@
+ 
+ 		    /* accumulate the C[z] values */
+ 		    accumulate (a, C, F, r, s);
++
++		    /* --- EC: everything checked out?  Leave the retry loop. --- */
++		    if (!ec_enabled || !ec_fail)
++		      break;
++		    ec_detections++;
++		    fprintf (stderr,
++			     "EC: check FAILED for s=%ld interval %ld..%ld "
++			     "(attempt %ld) -- recomputing\n",
++			     input_s, k, k2, ec_attempt + 1);
++		    fflush (stderr);
++		    if (ec_attempt + 1 >= ec_maxretry)
++		      {
++			fprintf (stderr, "EC: %ld consecutive failures at the "
++				 "same point -- this is not a cosmic ray. "
++				 "Aborting.\n", ec_maxretry);
++			exit (1);
++		      }
++		    copy_h (h, hchk, m);        /* roll back the h-table */
++		    a = achk;                   /* and the accumulator    */
++		   }
+                     st = GetTime () - st;
+ 
+ 		    if (verbose)
+@@ -1475,7 +1942,27 @@
+ 			if (m == 1 && q == 1 && f == 0.0 && skipd == r-1)
+ 			  /* mimic irred */
+ 			  certificate = get_certificate (a);
++			/* --- EC: the cheap stopgap.  The proper check is a
++			   Bezout certificate u*a + v*T = g, verified with four
++			   folds -- it *proves* gcd(a,T)=1 rather than merely
++			   agreeing with itself -- but that needs cofactors out
++			   of HalfGCD2(..., extended=1).  See handoff §6.  --- */
++			GF2X ec_agcd;
++			if (ec_enabled && ec_gcdrep)
++			  ec_agcd = a;
+                         FastGCD(a, a, p);
++			if (ec_enabled && ec_gcdrep)
++			  {
++			    GF2X ec_g2;
++			    FastGCD (ec_g2, ec_agcd, p);
++			    if (ec_g2 != a)
++			      {
++				fprintf (stderr, "EC: gcd disagreed with itself "
++					 "for s=%ld at degree %ld\n", input_s, k);
++				ec_detections++;
++				FastGCD (a, ec_agcd, p);   /* third opinion */
++			      }
++			  }
+                         if (verbose)
+                           {
+                             printf ("   gcd took %f\n", GetTime () - st);
+@@ -1571,6 +2058,27 @@
+ 
+   free (todo);
+ 
++  if (ec_enabled)
++    fprintf (stderr, "Error checking: %ld detection(s) / recovery(ies)\n",
++	     ec_detections);
++
++  if (ec_enabled && ec_timing)
++    {
++      double tot = 0;
++      for (int i = 0; i < ECT_N; i++) tot += ec_tsec[i];
++      fprintf (stderr, "\nError-checking cost breakdown\n");
++      fprintf (stderr, "  %-26s %10s %12s %10s\n",
++	       "category", "calls", "seconds", "ms/call");
++      for (int i = 0; i < ECT_N; i++)
++	if (ec_tcnt[i])
++	  fprintf (stderr, "  %-26s %10ld %12.3f %10.3f\n",
++		   ec_tname[i], ec_tcnt[i], ec_tsec[i],
++		   1e3 * ec_tsec[i] / (double) ec_tcnt[i]);
++      fprintf (stderr, "  %-26s %10s %12.3f\n", "TOTAL", "", tot);
++      fprintf (stderr, "\nIf any ms/call above looks absurd, that check is the\n"
++	       "problem -- compare against ecbench for the same r and s.\n");
++    }
++
+   return 0;
+ }
+ 

@@ -1,0 +1,65 @@
+================================================================
+ Round 3 -- production measurement reconciled; tsfactor EC layer
+================================================================
+
+--- 1. reconciling Gord's -ect output with the wall clock ------
+
+  exponentiation         5.65 ->   11.09  (+5.44 s)
+  squares/products     127.10 ->  131.60  (+4.50 s)
+  gcd                  110.89 ->  110.20  (-0.69 s, noise)
+
+  observed EC cost (exp + sq/pr) :   9.94 s
+  reported by -ect               :   7.95 s
+  UNACCOUNTED                    :   1.99 s  <- DEFECT 1
+  predicted untimed digest XOR   :   1.67 s  (45 blocks x m=14 x 2.65 ms)
+
+  EC on intervals only : 4.50/127.1 = 3.5% of squares/products
+                       : 4.50/243.6 = 1.8% of total
+  incl. init_h         : 9.94/243.6 = 4.1% of total
+
+  DEFECT 1: the per-h[j] digest XOR sat outside any timer.  Now timed.
+  DEFECT 2: ec_to_words did memset(32.5 MB) + a word loop, writing the
+            buffer twice.  Gord measured 7.9 ms/call against ecbench's
+            2.9 ms memcpy.  Now memcpy body + zero tail.
+
+--- 2. factor_ec regression after both fixes -------------------
+
+  r=1279  window=1     300 trinomials  OK, 0 false alarms
+  r=1279  window=4     300 trinomials  OK, 0 false alarms
+  r=1279  window=16    300 trinomials  OK, 0 false alarms
+  r=3217  window=1     300 trinomials  OK, 0 false alarms
+  r=3217  window=4     300 trinomials  OK, 0 false alarms
+  r=3217  window=16    300 trinomials  OK, 0 false alarms
+  r=4423  window=1     300 trinomials  OK, 0 false alarms
+  r=4423  window=4     300 trinomials  OK, 0 false alarms
+  r=4423  window=16    300 trinomials  OK, 0 false alarms
+  ---- all regressions identical to unchecked output ----
+  injection opportunities probed: 150   (never reached: 42)
+
+  checking OFF : 60 WRONG, 48 benign
+  checking ON  : 0 wrong, 108 correct
+
+  distribution of wrong answers:
+          2 640 145 p24d0d320d340119f7b3029c3b787ecdefec3d
+          2 640 302 p797f364f0aa553ed5304bd75e06a0d074d6320c32eaa9ff95d9cdcb5d92277ae04c50e4b9b27
+         56 640 irreducible
+
+--- 3. tsfactor: fold identities (ectest_gpu) ------------------
+
+1. phi(f*x^k) == rot(phi(f),k)                : PASS (0 bad)
+2. phi(q*T) == 3 rotations of phi(q)          : PASS (0 bad)
+3. horner fused+tail fold shadow              : PASS (0 bad)
+4. reduce shadow, 2s < r (tsfactor regime)    : PASS (0 bad)
+5. same formula at 2s > r is WRONG, as it must: PASS (50/50 differ)
+6. one flipped bit in c breaks the shadow     : PASS (0 missed)
+
+all tests PASS -- 1400 checks, 0 failures
+
+--- 4. tsfactor: CUDA kernels under cuda_emul.h ----------------
+
+1. k_ec_fold_part + combine == ec_fold_w     : PASS (0 bad)
+2. k_ec_fold_shift_part == fold(src >> k)    : PASS (0 bad)
+3. ec_h_rot / ec_h_mul == ec_words.h         : PASS (0 bad)
+4. modmul fold check, and a flipped bit      : PASS (0 bad, 0 missed)
+
+all tests PASS -- 570 checks, 0 failures

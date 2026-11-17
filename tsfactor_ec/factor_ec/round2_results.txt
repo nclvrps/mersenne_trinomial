@@ -1,0 +1,88 @@
+================================================================
+ Round 2 results -- error checking for GF(2)[x] trinomial search
+================================================================
+
+--- 1. root cause of the round-1 hang -------------------------
+
+factor flips s -> r-s when r is odd and s is even, so that fastsqr can be
+used.  For -s0 588 at r=136279841 the *working* trinomial is therefore
+x^r + x^136279253 + 1, i.e. s > r/2 with r-s = 588.
+
+The round-1 ec_reduce_ref reduced by repeated block folding, whose degree
+drops by (r-s) per pass.  Pass count = (r-1)/(r-s) + 1:
+   r=136279841, s=       345  ->         2 passes
+   r=136279841, s=       588  ->         2 passes
+   r=136279841, s= 136279253  ->    231769 passes
+
+   gecsim used r=1279, s=345 -> 2 passes, which is why it was clean.
+
+--- 2. cost of the replacement (ecbench, no NTL) ---------------
+
+r = 136279841, s = 136279253  (r-s = 588; s > r/2: YES -> reciprocal path)
+m = 14, Gerbicz window = 8 block(s)
+residue 16.2 MB (2129373 words), product 32.5 MB (4258747 words)
+
+primitive costs
+  fold phi(.), 2r bits                      3.82 ms
+  fold phi(.),  r bits                      1.32 ms
+  copy t before fastrem (2r bits)           6.87 ms
+  xor, 2r bits                              9.10 ms
+  xor-accumulate, r bits                    3.29 ms
+  bit-reverse, 2r bits                      9.77 ms
+  ec_divides_trinomial (reverse+reduce)    37.52 ms   [multiple accepted]
+  same, one bit flipped                                [rejected, correct]
+
+aggregate
+  per fastmulmod    59.9 ms   (fold t,a,b + copy + xor + divisibility)
+  per block         46.0 ms   (14 digest xor-accumulates)
+
+projection for -s0 588 -m 14 -q 15, interval 38..247
+  measured unchecked: 41.9 s squares/products, 56.1 s gcd
+  EC on ~15 fastmulmod calls     0.90 s
+  EC digest, 15 blocks           0.69 s
+  EC sigma, 15/8  windows        0.19 s
+  -------------------------------------
+  total                          1.78 s  = 4.2% of squares/products
+                                        = 1.8% of interval wall clock
+
+round-1 comparison
+  old ec_reduce_ref took 231769 reduction passes per fastmulmod
+  at ~14 ms per pass that is ~54 minutes for ONE call
+  (and NTL's RightShift/LeftShift reallocate each pass, so the
+   real figure was worse than this word-array estimate)
+
+--- 3. word-primitive correctness (ectest2) --------------------
+
+1. reversal (involution + matches naive)      : PASS (0 bad)
+2. reduce_lowdiff vs naive (2s<=r, <=2 passes): PASS (0 bad, max 2 passes)
+3. divides_trinomial vs naive, both regimes   : PASS (0 bad)
+4. single-bit corruption of a multiple caught : PASS (0 missed)
+
+all tests PASS -- 54400 checks, 0 failures
+
+--- 4. compiled and RUN: regression vs unchecked ---------------
+
+  r=1279  window=1     300 trinomials  OK, 0 false alarms
+  r=1279  window=4     300 trinomials  OK, 0 false alarms
+  r=1279  window=16    300 trinomials  OK, 0 false alarms
+  r=3217  window=1     300 trinomials  OK, 0 false alarms
+  r=3217  window=4     300 trinomials  OK, 0 false alarms
+  r=3217  window=16    300 trinomials  OK, 0 false alarms
+  r=4423  window=1     300 trinomials  OK, 0 false alarms
+  r=4423  window=4     300 trinomials  OK, 0 false alarms
+  r=4423  window=16    300 trinomials  OK, 0 false alarms
+  ---- all regressions identical to unchecked output ----
+
+--- 5. compiled and RUN: single-fault sweep --------------------
+
+exhaustive single-fault sweep: r=3217, s=640 (flips to working s with r-s=640), m=8, q=4
+  truth: 640 119 pa2e1bd9b0527ac56d78cc48309fe61
+  injection opportunities probed: 150   (never reached: 42)
+
+  checking OFF : 60 WRONG, 48 benign
+  checking ON  : 0 wrong, 108 correct
+
+  distribution of wrong answers:
+          2 640 145 p24d0d320d340119f7b3029c3b787ecdefec3d
+          2 640 302 p797f364f0aa553ed5304bd75e06a0d074d6320c32eaa9ff95d9cdcb5d92277ae04c50e4b9b27
+         56 640 irreducible

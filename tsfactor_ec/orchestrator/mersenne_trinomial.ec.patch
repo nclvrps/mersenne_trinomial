@@ -1,0 +1,16 @@
+--- mersenne_trinomial.py.orig	2026-11-16 01:45:24.772275742 -0500
++++ mersenne_trinomial.py	2026-11-16 01:45:31.913282300 -0500
+@@ -555,6 +555,13 @@
+                     proc.stdin.write(f"{s}\n")
+                 proc.stdin.close()
+                 proc.wait()
++                # tsfactor exits with status 3 when its error checking sees the
++                # same verified state fail repeatedly: a persistent hardware
++                # fault.  Relaunching would only repeat it, so stop here.
++                if proc.returncode == 3:
++                    print("Error: tsfactor reported a PERSISTENT hardware fault "
++                          "(exit status 3); see remnants.ec.log. Stopping.", file=sys.stderr)
++                    sys.exit(3)
+             except FileNotFoundError:
+                 print("Error: './tsfactor' executable not found during execution.", file=sys.stderr)
+                 sys.exit(1)

@@ -1,0 +1,15 @@
+* Step 0 (compilation) Some very minor compiler warnings (unused variables) when compiling tsfactor.cu with g++ version = (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+* Step 1: a minor point, but just in case it's significant: only 15 of the PASS lines begin with EC, whereas TESTPLAN_EC.md said there would be 16 of them.
+* Steps 5,6,7: the results files are identical
+
+$ sha256sum *.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  ec.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  ec_with_ckpt.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  ect.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  f1.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  f2.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  f3.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  f4.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  noec.results.txt
+
+* Step 7: a pre-existing issue with the old and new versions of tsfactor: the 500MB+ sized checkpoint file ec_with_ckpt.ckpt remains in the directory even after the results file has been successfully written (when the program either terminates or goes to the next s-value). This is harmless to the program's operation because a checkpoint file for one particular s-value will be ignored when working on other s-values, but it does take up disk space (as do the .ckpt.1 and .ckpt.2 files, if applicable)

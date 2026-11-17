@@ -1,0 +1,5 @@
+gcd of a random residue with x^136279841 + x^588 + 1; NTL WITH gf2x; NTL finish below 4194304 bits
+  NTL GCD                         972.00 s   (gcd degree 0)
+  hybrid HGCD, split apply        605.76 s    -37.7% vs NTL
+  CERTIFIED, chain (the default)  657.71 s    -32.3% vs NTL, +8.6% vs hybrid   [certified]
+  all three agree: yes

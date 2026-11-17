@@ -1,0 +1,4 @@
+gcdstress: 400 cases up to 120000 bits (196 with a nontrivial gcd), 4 engines each vs NTL
+  chain certified in 400 of 400; chain declined on its own 0 time(s); 42 forced declines re-certified by XGCD
+  127 of the cases ran each gcd's products on 3 threads
+  mismatches: 0   PASS

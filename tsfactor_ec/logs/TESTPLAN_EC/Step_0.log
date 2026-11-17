@@ -1,0 +1,28 @@
+$ make tsfactor
+== NTL: OK (-lntl -lgf2x -lgmp) ==
+nvcc -O3 -arch=native -Xcompiler -march=native -I. -Icommon -DHAVE_NTL -o tsfactor tsfactor.cu gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -Xcompiler -pthread
+tsfactor.cu(4012): warning #550-D: variable "sv_f" was set but never used
+          bool sv_f = gf2c_use_fused;
+               ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+tsfactor.cu(4013): warning #550-D: variable "sv_t" was set but never used
+          int sv_t = gf2c_taylor_lv, sv_b = gf2c_bfly_lv;
+              ^
+
+tsfactor.cu(4013): warning #550-D: variable "sv_b" was set but never used
+          int sv_t = gf2c_taylor_lv, sv_b = gf2c_bfly_lv;
+                                     ^
+
+tsfactor.cu(4014): warning #550-D: variable "sv_c" was set but never used
+          u64 sv_c = gf2c_fuse_max_ch;
+              ^
+
+tsfactor.cu(4208): warning #550-D: variable "allow_no_ntl" was set but never used
+           no_ckpt = false, allow_no_ntl = false, gpu_gcd = false,
+                            ^
+
+$ make gcdbench gcdstress
+g++ -O2 -march=native -Wall -Wextra -I. -Icommon -DHAVE_NTL -o gcdbench gcdbench.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -pthread
+g++ -O2 -march=native -Wall -Wextra -I. -Icommon -DHAVE_NTL -o gcdstress gcdstress.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -pthread

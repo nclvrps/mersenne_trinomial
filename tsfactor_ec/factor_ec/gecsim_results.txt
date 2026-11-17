@@ -1,0 +1,49 @@
+=== 1. Is  sigma(sum_j h_j^(z)) == sum_j h_j^(z+1)  an identity? ===
+   m=2, 10 consecutive blocks: HOLDS
+   m=3, 10 consecutive blocks: HOLDS
+   m=4, 10 consecutive blocks: HOLDS
+   m=6, 10 consecutive blocks: HOLDS
+   m=8, 10 consecutive blocks: HOLDS
+
+=== 2. Fault-free baseline ===
+   x^1279 + x^345 + 1 : reference smallest factor degree = 36
+   blocked-DDF answer = 36, spurious detections = 0
+   work: 144 modular squarings, 9 modular multiplications
+   checker: 36 extra squarings (25.0% of squaring work), 75 folds
+
+=== 3. Exhaustive single-fault sweep: one bit flip per run, every
+       operation of each class targeted in turn ===
+   squaring (h-table)       faults injected = 144
+      unchecked: 128 SILENT wrong (factor missed), 0 self-evident, 16 harmless
+      checked  : 144 detected+recovered, 0 not flagged (answer right anyway), 0 wrong
+   modular multiply         faults injected = 18
+      unchecked: 6 SILENT wrong (factor missed), 0 self-evident, 12 harmless
+      checked  : 18 detected+recovered, 0 not flagged (answer right anyway), 0 wrong
+   Horner (build C[z])      faults injected = 72
+      unchecked: 8 SILENT wrong (factor missed), 0 self-evident, 64 harmless
+      checked  : 72 detected+recovered, 0 not flagged (answer right anyway), 0 wrong
+   gcd result               faults injected = 3
+      unchecked: 2 SILENT wrong (factor missed), 0 self-evident, 1 harmless
+      checked  : 3 detected+recovered, 0 not flagged (answer right anyway), 0 wrong
+   idle h-table memory      faults injected = 36
+      unchecked: 32 SILENT wrong (factor missed), 0 self-evident, 4 harmless
+      checked  : 36 detected+recovered, 0 not flagged (answer right anyway), 0 wrong
+
+=== 4. Telescoping window w (Gerbicz check every w blocks) vs
+       detection of squaring faults ===
+   w=1   faults=144  detected=144  wrong=0   checker sigma cost ~= 25.00% of squaring work
+   w=2   faults=144  detected=144  wrong=0   checker sigma cost ~= 12.50% of squaring work
+   w=3   faults=144  detected=144  wrong=0   checker sigma cost ~= 8.33% of squaring work
+   w=9   faults=144  detected=144  wrong=0   checker sigma cost ~= 2.78% of squaring work
+
+=== 5. Cyclic fold checksum: can a bit flip survive the fold? ===
+   n=64    single-bit errors surviving: 0/100000 ; single-word bursts surviving: 0/100000
+   n=256   single-bit errors surviving: 0/100000 ; single-word bursts surviving: 0/100000
+   n=1024  single-bit errors surviving: 0/100000 ; single-word bursts surviving: 0/100000
+   n=4096  single-bit errors surviving: 0/100000 ; single-word bursts surviving: 0/100000
+
+=== 6. Random-rate model: faults in every substep, checks off vs on ===
+   p=0.001  faulty runs 62/300:  unchecked wrong = 44,  checked wrong = 0  (79 detections, 0 aborted)
+   p=0.003  faulty runs 151/300:  unchecked wrong = 104,  checked wrong = 0  (247 detections, 0 aborted)
+   p=0.01   faulty runs 271/300:  unchecked wrong = 238,  checked wrong = 0  (1073 detections, 0 aborted)
+

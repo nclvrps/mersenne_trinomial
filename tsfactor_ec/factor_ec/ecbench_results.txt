@@ -1,0 +1,32 @@
+r = 136279841, s = 136279253  (r-s = 588; s > r/2: YES -> reciprocal path)
+m = 14, Gerbicz window = 8 block(s)
+residue 16.2 MB (2129373 words), product 32.5 MB (4258747 words)
+
+primitive costs
+  fold phi(.), 2r bits                      3.82 ms
+  fold phi(.),  r bits                      1.32 ms
+  copy t before fastrem (2r bits)           6.87 ms
+  xor, 2r bits                              9.10 ms
+  xor-accumulate, r bits                    3.29 ms
+  bit-reverse, 2r bits                      9.77 ms
+  ec_divides_trinomial (reverse+reduce)    37.52 ms   [multiple accepted]
+  same, one bit flipped                                [rejected, correct]
+
+aggregate
+  per fastmulmod    59.9 ms   (fold t,a,b + copy + xor + divisibility)
+  per block         46.0 ms   (14 digest xor-accumulates)
+
+projection for -s0 588 -m 14 -q 15, interval 38..247
+  measured unchecked: 41.9 s squares/products, 56.1 s gcd
+  EC on ~15 fastmulmod calls     0.90 s
+  EC digest, 15 blocks           0.69 s
+  EC sigma, 15/8  windows        0.19 s
+  -------------------------------------
+  total                          1.78 s  = 4.2% of squares/products
+                                        = 1.8% of interval wall clock
+
+round-1 comparison
+  old ec_reduce_ref took 231769 reduction passes per fastmulmod
+  at ~14 ms per pass that is ~54 minutes for ONE call
+  (and NTL's RightShift/LeftShift reallocate each pass, so the
+   real figure was worse than this word-array estimate)
