@@ -20,7 +20,7 @@ r_val = 136279841
 k_val = None
 config_params = {
     'm': 14,
-    'q': 15,
+    'q': 16,
     'batchsize': 10,
     'instances': 1,
     'sched_g_global': None,
