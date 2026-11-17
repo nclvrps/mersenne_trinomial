@@ -1,0 +1,71 @@
+When running Linux under WSL2, it is not enough to do sudo ncu because this fails with permissions error ERR_NVGPUCTRPERM. To enable it:
+* Run the NVIDIA Control Panel in Windows as administrator
+* Turn on "Enable Developer Settings" in the Desktop menu
+* Click on Manage GPU Performance Counters in the (newly appearing) Developer section of the left sidebar
+* Select "Allow access to the GPU performance counters to all users" and click the Apply button
+* Choose to keep the new setting before the automatic revert timer expires
+* Now you can run ncu in Linux under WSL (and no sudo is needed)
+* When finished, restore the default "Restrict access to the GPU performance counters to admin users only" setting
+
+The Section 5 commands for Round 7 were:
+
+$       COARSE_FILL=0 COARSE_PIPE=0 COARSE_TEST_STOP_AFTER_CHUNKS=124 ncu --set full -k regex:k_logs_batch \
+          --launch-skip 123 --launch-count 1 -o d44_fill0 ./coarse_sieve 136279841 44 prof \
+          --load-survivors out43.survivors.txt --no-checkpoint --no-tune
+      COARSE_PIPE=0 COARSE_TEST_STOP_AFTER_CHUNKS=124 ncu --set full -k regex:k_logs_batch \
+          --launch-skip 123 --launch-count 1 -o d44_fill3 ./coarse_sieve 136279841 44 prof \
+          --load-survivors out43.survivors.txt --no-checkpoint --no-tune
+      COARSE_METHOD=rr COARSE_PIPE=0 COARSE_TEST_STOP_AFTER_CHUNKS=322 ncu --set full -k regex:k_logs_batch \
+          --launch-skip 321 --launch-count 1 -o d47_rr ./coarse_sieve 136279841 47 prof \
+          --load-survivors out46.survivors.txt --no-checkpoint --no-tune
+
+After configuring the NVIDIA Control Panel as described in the first paragraph, there were problems running the above ncu commands for the first time, see below.
+
+The above command created .ncu-rep files, which were converted to readable text form by the below commands (which were quick and had no problems):
+
+$ ncu --import d44_fill0.ncu-rep --page details > d44_fill0.txt
+$ ncu --import d44_fill3.ncu-rep --page details > d44_fill3.txt
+$ ncu --import d47_rr.ncu-rep --page details > d47_rr.txt
+
+
+When running the (first set of three) ncu commands for the first time there were warnings in d44_fill0.txt and d47_rr.txt:
+
+WRN   A buffer overflow occurred, resulting in potentially inaccurate sampling data. It is recommended to increase
+          the warp sampling buffer size using `--warp-sampling-buffer-size` option to address this issue. A buffer of
+          size 536870912 bytes was used.
+ 
+and an error when trying to run d44_fill3:
+
+==ERROR== An error was reported by the counter measurement library:
+==ERROR== For more information, see /tmp/nsight-compute-7310-65ee.log
+==ERROR== LaunchFailed
+==ERROR== For more information, see /tmp/nsight-compute-7310-65ee.log
+==PROF== Trying to shutdown target application
+==ERROR== The application returned an error code (9).
+==PROF== Report: /home/aspen/brent/mersenne_trinomial/src/d44_fill3.ncu-rep
+
+The file /tmp/nsight-compute-7310-65ee.log didn't really provide any more useful information.
+
+The above problems went away after doing the following:
+1) editing the .wslconfig file in /mnt/c/Users/<my username> to increase the RAM of the WSL virtual machine from 8GB back to the default 16GB (half of 32GB total RAM),
+then doing wsl --shutdown from a PowerShell window, then restarting a Linux terminal
+2) using --warp-sampling-buffer-size 2500000000 when running ncu for d=44
+3) using --warp-sampling-buffer-size 4000000000 when running ncu for d=47
+
+
+After successfully finishing the ncu profiling as described above,
+initially I didn't restore the default "admin users only" setting for GPU performance counters in the NVIDIA Control Panel.
+Then whan I tried to do a full ordinary run of coarse_sieve with d=51 (not under ncu), I got hanging behavior:
+
+The video card fans went silent and there was no further output, but "top" showed CPU utilization at 100%.
+There was a .ckpt.lock file which was exactly 15 minutes older than the .ckpt file (the default checkpoint interval).
+Deleting the lock file manually didn't end the hanging even after waiting more than 15 minutes. Termination was required with two Ctrl-C.
+However, if I recall correctly, running with --no-checkpoint still produced the hanging behavior.
+Hanging typically happened after one or two "dots".
+Resuming from the checkpoint (after manually deleting the .ckpt.lock file) worked, but there would soon be another hang.
+
+The hanging behavior went away after I restored the default "admin users only" for GPU performance counters in the NVIDIA Control Panel and updated the NVIDIA driver and rebooted Windows
+(the last two were just in case, I don't know if they actually contributed to the fix).
+
+(Note: in the previous round I got hanging behavior when running coarse_sieve with d=47 under ncu. That run used --launch-skip 20 and therefore ran for much longer than the above run with d=47.
+I do believe that hanging was real, because the hanging recurred in this round as described above.)
