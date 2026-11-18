@@ -1,0 +1,14 @@
+bin2cert
+cantor_cuda
+cantor_ref
+cert2bin
+check_ref
+coarse_sieve
+coarse_sieve_wide
+gf2_dlog_selftest
+randread
+sieve_ref
+t_cubic
+trinomial_scan
+trinomial_stage2
+tsfactor
