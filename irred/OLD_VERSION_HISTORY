@@ -1,0 +1,384 @@
+/*
+
+Comments on different versions:
+
+   Version 3.15 has
+   
+   1) Extra 4 words allocated before arrays p and q in main
+      and a0 in main/fastmem to avoid (probably harmless) valgrind 
+      diagnostics - thanks to Julian Seward and Andrew Tridgell for 
+      pointing out the problem.
+
+   Version 3.14 has
+   
+   1) UNROLL flag to permit 4-way unrolled version of reducer
+      (good on Sparc Ultra-80).
+
+   Version 3.13 has
+   
+   1) ULTRA flag to permit another version of reducer
+      (good on Sparc Ultra-80 and MIPS R12000).
+
+   Version 3.12 has
+   
+   1) Argument of prime(n) is type int instead of ULONG
+      to avoid diagnostic on 64-bit (e.g. SGI) machines.
+
+   Version 3.11 has
+   
+   1) Better documentation, no significant changes to the code.
+
+   Version 3.10 has
+
+   1) Explicit reference to the GNU General Public License (previously
+      this information was communicated separately). 
+
+   2) Test for primality of r (a warning is printed if r is composite).
+      The irreducibility test assumes that r is prime, and is incomplete
+      if r is composite (see comments above). Earlier versions assumed that
+      r was prime without any check.
+
+   Version 3.07 has
+   
+   1) More accurate output (only claims irreducible rather than primitive).
+      The earlier versions assume r is a Mersenne exponent (so 2^r-1 prime),
+      this version only assumes that r is prime and tests if the trinomial
+      is irreducible. In general, if 2^r-1 is composite, further tests 
+      depending on the factors of 2^r-1 are necessary to check primitivity.
+      If 2^r-1 is prime, no further checks are necessary.
+      
+   Version 3.06 has
+   
+   1) Skip list handling fixed so can skip a single item 
+   (previously low and high bounds equal terminated list processing).
+
+   Versions 3.04 and 3.05 have
+
+   1) New CPU info for booth (1-35, 51-55) and tosca.
+
+   Version 3.03 has
+
+   1) Option to modify load tolerances using command-line arguments.
+
+   Version 3.02 has
+
+   1) Improved version of sysload, no longer limited to range [0, 2.55].
+
+   2) SLEEPTIME becomes two different constants SLEEPU, SLEEPL as the load
+      is likely to change more often than the number of users.
+
+   3) Option -2 for MAXUSERS (checks both userkt and sysload).
+
+   Version 3.01 has
+
+   1) More efficient versions of userkt and sysload, avoiding use
+      of a temporary file.
+
+   Version 3.00 has
+
+   1) uptime instead of who|wc to count interactive users (this can
+      give different results if one user has several sessions).
+
+   2) Counters for clock and system calls.
+
+   3) Better error handling for system calls (e.g. will not bomb if
+      the file /tmp/irred.tmp is not writeable).
+
+   4) Better error handling for command-line arguments, e.g.  skip file
+      (so can use 0 or /dev/null if don't desire skip file (4th argument)
+      but need 5th argument). All sscanf calls are now checked to see
+      if the expected number of fields was found.
+
+   5) Name changed: irredg -> irred (as it used to be).
+
+   Version 2.93 has
+
+   1) Flag BOOTH as shortcut for options on boothxx machines.
+
+   2) option to sleep while load average is high (set MAXUSERS = -1).
+      
+   Versions 2.92 and 2.91 are experimental variants on the "sleeping" theme.   
+
+   Version 2.90 has 
+   
+   1) option to go to sleep while the number of interactive users exceeds
+      a tolerance (set MAXUSERS to a nonnegative value).
+
+   Version 2.82 has
+   
+   1) Changed format of log file - hex numbers now have
+      leading zeros instead of blanks. For example, 
+      "x   12345" -> "x00012345".
+      
+      Old log files can be checked and converted to the
+      format used by version 2.82 with the separate program "fixlog".
+
+   Version 2.81 has
+   
+   1) Changed format of log file - if sodd = r-s > r/2 use
+      r s yabcdefgh instead of r sodd xabcdefgh
+
+   Version 2.80 has
+   
+   1) Dynamic choice of sieving cutoff, only use NEXTRA for upper bound.
+      This should improve overall efficiency because the cutoff can 
+      adapt to different machines/compilers and also to exceptional
+      (r, s) values, e.g. if s is small or close to r/2.
+   
+   2) Printing of skip list commented out (as may be too long).
+
+   Version 2.76 has
+
+   1) Constant NEXTRA reduced from 4 to 3 in some cases, including
+      (ASM AND IBMPC). This should save about 3% on average for time 
+      per trinomial on IBM P-III such as booth, at the expense of a 
+      small inconsistency in the log files produced on different machines.
+
+   2) Introduction of LINUX flag to distinguish between Linux and Solaris
+      (only use FASTTRY > 1 under Linux).
+
+   Version 2.75 has
+
+   1) Optional empirical choice of a "good" memory location for data arrays
+      by timing of some dummy iterations. Perhaps surprisingly, this helps
+      on Portland (P-II) when r is large. May depend on the operating system
+      (seems less effective under Solaris than Linux).
+      See FASTTRY and fastmem below.
+
+   Version 2.72 has
+
+   1) Memory allocation on stack instead of heap (this turned out to be
+      no faster, so reverted to heap in later versions).
+
+   Version 2.71 has
+   
+   1) Option CLEAR to clear space allocated by malloc before use
+      (may also have effect of clearing L1 and L2 caches).
+
+   2) Rounding up of size of data arrays to multiple of cache line
+      size (32 bytes) for IBM PC (this did not help, so omitted in
+      later versions).
+
+   Version 2.70 has
+   
+   1) New MMX routine reducemx, similar to reducemr but making
+      different alignment assumptions.
+      
+   2) Interface routine reduceml to call reducemr/reducemx as
+      appropriate, ensuring the correct data alignment.
+      
+   3) prefetch instructions removed in reducer to speed small cases
+      on P-II machines.  [Restored but commented out in version 2.76]
+
+   Version 2.65 has
+
+   1) MMX routine reducemr used instead of reducer in some case.
+
+   Version 2.61 has
+   
+   1) Call to reducer if shift zero but (IBMPC AND ASM)
+      (saves about 5% in the special case of shift zero,
+       which should occur about 1 in 32 cases).
+
+   Version 2.60 has 
+   
+   1) interlvr restored as versions without it were 
+      sometimes slower than versions with it (at least this is
+      true for r = 3021377 on booth, where 3r/16 bytes is very 
+      close to the cache size - see comments re version 2.40 below).
+
+   2) Space requirement decreased to 7r/16 bytes and
+      working set after sieving decreased to 3r/16 bytes.
+
+   Versions 2.51-2.54 have minor variations in interlvf MMX code.
+
+   Version 2.50 has
+
+   1) interlvr abolished, instead we use a cycle of length three
+      involving interlvr to get better cache performance in reducer.
+
+   2) Space requirement increased to r/2 bytes (formerly 7r/16 bytes),
+      working set after sieving increased to r/4 bytes (formerly 3r/16 bytes).
+
+      Version 2.50 seems about 10% slower than version 2.40 on booth, 
+      for r = 3021377.  Slightly faster for r = 6972593 so may revert 
+      to version 2.50 in the future.
+
+   Version 2.40 has
+
+   1) Call to MMX routine reducemr removed as non-MMX reducer is faster.
+      [This may depend on data alignment. The problem is that we can't ensure 
+       that data is aligned on 8-byte boundaries in calls to reducemr.]
+
+   Version 2.34 has
+
+   1) Improved reducer loop in irred.s (non-MMX code).
+
+   2) Call to reducer instead of reducemr.
+
+   Version 2.33 has
+
+   1) Unrolled reducer restored from version 2.00 because faster
+      on SPARC (no change in MMX version).
+
+   Version 2.32 has
+
+   1) Reordered loops in MMX code (version 2.31 is slightly different)
+
+   Version 2.30 has
+
+   1) Combined align and interleave, alternating forward and back.
+      This gives improved performance on IBM PC, not much difference
+      on other machines.
+
+   2) Space requirement increased to 7r/16 bytes (formerly 3r/8 bytes)
+      but working set after sieving is the same, 3r/16 bytes.
+
+   3) Options FORWARD, MMX, TABLE, UNROLL eliminated as now redundant.
+
+   Version 2.20 has
+   
+   1) FORWARD parameter for optional forward loop in alignmr[f] (MMX version)
+      and aligner (C non-unrolled version).
+      This improves cache performance in some cases.
+
+   Version 2.12 has
+   
+   1) Faster (at least on Portland PC) interlvm with shorter inner loop
+      (may be slower on booth)
+	
+   Version 2.11 has
+   
+   1) Replacement of some shifts and ors by adds in interlvm
+
+   Version 2.10 has
+   
+   1) Option to use ASM without MMX, and new non-MMX IBM assembler
+      routines interlv2, interlv3
+
+   Version 2.01 has
+
+   1) Improved comments.
+
+   2) Improved loop control in reducemr, alignmr (now OK to call with
+      kt negative).
+
+   Version 2.00 has
+   
+   1) Improved algorithm with reduced memory references (C only so far).
+      This algorithm is faster overall than the one used in earlier versions
+      although sieving is slightly slower.
+      
+   2) Restriction that min(s, r-s) can not be too small (previously
+      only r-s was restricted) and that r is odd. Use version 1.35 or 
+      earlier if necessary to circumvent these restrictions.
+      
+   3) Because even s is replaced by r-s, log files produced by version 2.00
+      are slightly different from those produced by version 1.35 and earlier.
+      
+   4) PRELOAD and TABLEZ flags abolished.   
+   
+   Version 1.50
+     
+   1) Optionally uses odd s (useful for checking version 2.00 and later),
+      otherwise the same as version 1.35.
+
+   Version 1.35 has
+      
+   1) Better detection of illegal parameters (if ASM AND IBMPC)
+         
+   Version 1.34 has
+   
+   1) More informative output re CPU type (if IBM PC).
+
+   Version 1.33 has
+   
+   1) Faster code in case that r-s is divisible by 32 and IBM PC assembler
+      is available (previously this case did not call assembler).
+
+   2) ASM flag reinstated to replace MMX and MMX2 flags.
+
+   Version 1.32 has
+   
+   1) More informative output - times for last sieve iteration
+      and fraction of time spent sieving.
+
+   2) Bug in versions 1.30 & 1.31 (which gave wrong "n" for log on stdout
+      if printed in phase 2) fixed.
+      
+   3) Storage allocation bug (which caused segmentation fault if only one
+      command-line argument on some machines) fixed.
+        
+   Version 1.31 has
+   
+   1) Unrolled option in reducer (may help on Sun etc).
+
+   Version 1.30 has 
+   
+   1) Faster relprime calling reducer for inner loop
+      (with assembler version for IBM PC).
+   2) Introduction of NEXTRA and abolition of RATIO.
+   3) Storage requirement reduced to 3r/8 + O(1) bytes.
+
+   Version 1.25 has
+   
+   1) More CPU information in case of IBM PC.
+   2) Two assembler versions - 
+      one (irrednas.s) uses prefetching (works on PIII and above)
+      the other (irredasm.s) without prefetching.
+      (Note: later irredasm.s was abolished and irrednas.s renamed irred.s)
+
+   Version 1.24 has
+   
+   1) MMX2 option to allow reduce2.s in case q1 and q1-q2 both odd.
+
+   Version 1.23 has
+   
+   1) Alignment of most 8-byte accesses on 8-byte boundaries.
+   2) Abolition of PORTLAND, ASM, OLDGCC, OLDR options.
+   3) Merging of MMXR and MMXS options to MMX.
+
+   Version 1.22 has
+   
+   1) Larvala's new MMX routines (renamed squarem and reducem)
+
+   Version 1.21 has
+   
+   1) Alternative version of MMX (reduce2.s) modified RPB  
+
+   Version 1.20 has
+
+   1) MMXR and MMXS options for use of Multi Media extension (mmx) 
+      instructions on Pentium etc (written by Samuli Larvala).
+
+   Version 1.12 has
+   
+   1) Slightly faster reducea (though still some room for improvement ?)
+      Set OLDR to use the old version of reducea (may be faster on machines
+      other than IBM PC).
+      
+   2) Comments and output improved (2^p is never prime for p > 1 !).   
+
+   Version 1.11 has
+       
+   1) ASM flag added and square.s implemented (IBM PC version only)
+   2) comments improved 
+
+   Compared to the previous versions 1.0 and earlier (unnumbered),
+   version 1.1 has
+
+   1) a fix to avoid timer overflow for large r.
+   2) memory requirements for sieving reduced by about 46%.
+   3) addition of a "skip file" as optional 4th command-line argument.
+   4) various small enhancements and improvements in the comments.
+
+Compilation flags:
+
+   Set following flags to optimise performance depending on machine type
+   and compiler.
+   
+   On an IBM PC which can execute MMX instructions it is best 
+   to set ASM = TRUE and use the assembler routines in irred.s
+   (version 3.10 or higher). 
+   
+*/
