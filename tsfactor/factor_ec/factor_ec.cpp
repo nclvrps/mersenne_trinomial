@@ -921,7 +921,11 @@ void print_hex (char *s, GF2X a, int flip)
 _ntl_ulong
 get_certificate (GF2X a)
 {
-  return a.xrep.elts()[0];
+  // avoid segmentation fault when it's irreducible
+  if (a.xrep.length() != 0)
+    return a.xrep.elts()[0];
+  else
+    return (_ntl_ulong)0; // value is irrelevant, won't be used
 }
 
 void
