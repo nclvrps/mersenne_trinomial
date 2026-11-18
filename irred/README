@@ -1,0 +1,15 @@
+Original version of irred from 2003:
+
+
+irred version 3.15
+
+https://maths-people.anu.edu.au/~brent/irred.html
+updated URL:
+https://maths-people.anu.edu.au/~brent/ftp/trinom/irred315.tar.gz
+
+
+From the tarfile we really only need irred.c, which is reproduced in this directory as irred.orig.c,
+which was modified by Claude AI into the current version of irred.c
+for modern compilers and computer architectures.
+
+However, the tarfile is included in this directory for completeness.
