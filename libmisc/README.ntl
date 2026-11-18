@@ -1,0 +1,54 @@
+============
+Installing NTL or compiling it from source
+============
+
+# This has only been tested on Ubuntu 26.04
+# This is valid as of 2026, libraries may change
+
+
+# NOTE:
+# Install GF2X first, then NTL.
+
+# See https://libntl.org/doc/tour-unix.html
+# and especially https://libntl.org/doc/tour-gf2x.html
+
+
+# To install the compiler, etc.
+sudo apt install build-essential
+sudo apt install m4
+
+# To install:
+sudo apt install libntl-dev
+
+
+# To compile from source instead:
+
+mkdir libntl.org
+cd libntl.org
+
+git clone https://github.com/libntl/ntl
+
+cd ntl/src
+
+# Note:
+# ************* make check will fail if you don't do this, because it needs to find libgf2x.so
+# /usr/local/lib is NOT in the default library search path in Ubuntu
+# To add it, do:
+echo "/usr/local/lib" | sudo tee -a /etc/ld.so.conf.d/local.conf
+sudo ldconfig
+
+# See https://libntl.org/doc/tour-gf2x.html, we must specify NTL_GF2X_LIB=on
+
+./configure NTL_GF2X_LIB=on
+make
+make check
+
+# NOTE:
+# The above only creates a static .a library, not a shared .so library
+# (whereas the package libntl-dev does create a shared library)
+
+# This will install in /usr/local
+sudo make install
+
+# If you want to make sure the installed package doesn't interfere:
+sudo apt remove libntl-dev

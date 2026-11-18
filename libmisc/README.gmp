@@ -1,0 +1,62 @@
+============
+Installing GMP or compiling it from source
+============
+
+# This has only been tested on Ubuntu 26.04
+# This is valid as of 2026, libraries may change
+
+Easy way:
+sudo apt install libgmp-dev
+
+# Install the compiler, etc.
+sudo apt install build-essential
+sudo apt install m4
+
+# (First check https://gmplib.org to see if there's a more recent version)
+wget https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+tar xJf gmp-6.3.0.tar.xz
+cd gmp-6.3.0
+
+####################
+NOTE on Ubuntu 26.04, you must change lines lines 6571 and 8190 of the configure script from:
+void g(){}
+to
+void g(int, const t1 *, int, t1 *, const t1 *, int){}
+
+due to C23 standard's strictness regarding empty parameter lists
+####################
+
+Then do:
+./configure
+
+# Make sure it doesn't default to nehalem-pc-linux-gnu because it doesn't know anything more recent
+# Can do, for example: ./configure --build=alderlake-pc-linux-gnu
+
+# Can also do:
+./configure --build=x86_64-pc-linux-gnu CFLAGS="-O3 -march=native" CXXFLAGS="-O3 -march=native"
+
+# Can also do:
+./configure --enable-fat
+
+
+make
+make check
+sudo make install
+
+
+
+Check for /usr/lib/x86_64-linux-gnu/libgmp.so to see if libgmp-dev is installed
+Might also be /lib/x86_64-linux-gnu/libgmp.so
+    Maybe do:
+        sudo apt remove libgmp-dev
+    But instead might first do:
+        /sbin/ldconfig -v 2>/dev/null | grep -E '^[^[:space:]]'
+        or
+        /sbin/ldconfig -v 2>/dev/null | grep -v ^$'\t'
+    to see what the library path is, and see whether /usr/local/lib or /usr/lib/x86_64-linux-gnu has priority
+
+    And do:
+        ldd <executable>
+    to see which shared libraries it will actually use
+
+Or set LD_LIBRARY_PATH environment variable at runtime to override system defaults

@@ -1,0 +1,57 @@
+tunefft: fix inverted success assertion that aborts on every run
+
+gf2x_mul_fft() returns 0 on success and a negative error code on
+failure (see gf2x/gf2x-impl.h).  The two timing call sites in
+src/tunefft.c wrap the return value as
+
+    wantzero(gf2x_mul_fft(...) == 0);
+
+but wantzero(x) aborts when x != 0.  On success, (rc == 0) evaluates
+to 1, so the tuner calls abort() on the very first *successful* FFT
+multiplication -- deterministically, on every platform, immediately
+after the first Toom-Cook measurement:
+
+    Tuning FFT multiplication to wordsize 8000000
+    501..501 TC:2.6e-05 Aborted (core dumped)
+
+(501 = GF2X_MUL_FFT_BEGIN_TUNE/2 + 1, the first tuned size.  abort()
+prints nothing, and only the "TC:" fragment survives because tunefft
+fflushes stdout right before the FFT calls.)
+
+Fix: pass the return code to wantzero() directly, so it aborts only
+on a genuine error (negative return), which is the intended
+assertion.  All tuned sizes are >= 501 words per operand, far above
+GF2X_TERNARY_FFT_MINIMUM_SIZE (28), so the "arguments too small"
+error path cannot fire spuriously.
+
+Verified after the fix on gf2x 1.3.99 (Ubuntu 24.04, gcc 13.3):
+  - ./tunefft -s 1.4 700 -o tunefft.res completes, exit 0;
+  - both call sites are exercised (F2/split timings run for K >= 64)
+    and tunefft's internal check() validates every FFT product
+    against the Toom reference and F1 against F2, all passing;
+  - modify-thresholds consumes the .res and rewrites
+    GF2X_MUL_FFT_TABLE / GF2X_FFT_TUNING_INFO as intended.
+
+Note: .gitlab-ci.yml contains no tune targets, so nothing in CI
+exercises tunefft, which is presumably how this survived.
+
+Apply from the gf2x source root with:  patch -p1 < this-file
+---
+--- a/src/tunefft.c
++++ b/src/tunefft.c
+@@ -252,13 +252,13 @@
+         i = 1;
+ ugly_label:
+ 	for ( ; i <= 3; i++, K *= 3) {
+-	    TIME(t1[i], wantzero(gf2x_mul_fft(c, a, mid, b, mid, K) == 0));
++	    TIME(t1[i], wantzero(gf2x_mul_fft(c, a, mid, b, mid, K)));
+             if (tc_takes_too_long) {
+                 memcpy(u, c, 2 * maxn * sizeof(unsigned long));
+             }
+             check(a, mid, b, mid, reference, u, "F1", c);
+             if (K >= GF2X_WORDSIZE) {
+-                TIME(t2[i], wantzero(gf2x_mul_fft(v, a, mid, b, mid, -K) == 0));
++                TIME(t2[i], wantzero(gf2x_mul_fft(v, a, mid, b, mid, -K)));
+                 check(a, mid, b, mid, "F1", c, "F2", v);
+             } else {
+                 t2[i] = DBL_MAX;

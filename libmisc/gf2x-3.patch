@@ -1,0 +1,29 @@
+modify-thresholds: fft_tbl array needs to be larger
+
+This is the third patch required for "make tune-fft" to complete.
+
+The read_table function reads the lines of tunefft.res
+into the array fft_tbl. This array had a hardcoded size of 1000.
+
+This is too small. For example,
+on a Google Cloud c2 instance tunefft.res was 1597 lines long,
+and on a c3 instance, it was 1033 lines long.
+
+Buffer overflow causes modify-thresholds to crash,
+and it fails to update gf2x/gf2x-thresholds.com
+
+The simple-minded fix is just to increase the hardcoded size to 10000.
+
+Apply from the gf2x source root with:  patch -p1 < this-file
+---
+--- a/src/modify-thresholds.c   2026-08-29 03:50:17.448052288 -0400
++++ b/src/modify-thresholds.c   2026-08-29 03:50:28.464054102 -0400
+@@ -71,7 +71,7 @@
+     int method;
+ };
+
+-struct fft_tuning_pair fft_tbl[1000];
++struct fft_tuning_pair fft_tbl[10000];
+ unsigned long nstairs = 0;
+
+ char * toom_info_string = "\"placeholder\"";

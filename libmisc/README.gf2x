@@ -1,0 +1,121 @@
+============
+Installing GF2X or compiling it from source
+============
+
+# This has only been tested on Ubuntu 26.04
+# This is valid as of 2026, libraries may change
+
+
+# To install the compiler, etc.
+sudo apt install build-essential
+sudo apt install m4
+
+# To install:
+sudo apt install libgf2x-dev
+
+
+#######
+# NOTE:
+#######
+# In practice it seems it is really necessary
+# to compile from source and do the tuning.
+# Using the libgf2x-dev package
+# may result in slower runtimes by an order of magnitude
+# when running factor.cpp on r=136279841
+
+
+# To compile from source instead:
+
+sudo apt install autoconf
+sudo apt install libtool
+sudo apt install texinfo  # needed only for makeinfo
+
+mkdir gitlab.com
+cd    gitlab.com
+
+# It is not clear whether the gitlab repository below
+# blocks access to AI bots.
+# So if asking AI to look at the code,
+# it may be necessary to supply a tarfile instead.
+
+# However, when attempting to git clone with the command below,
+# it appears to require a username:
+
+git clone https://gitlab.com/gf2x/gf2x/gf2x.git/
+Username for 'https://gitlab.com':
+
+
+# Note: before October 2026 this was hosted at gitlab.inria.fr,
+# which did block access to AI bots.
+# git clone https://gitlab.inria.fr/gf2x/gf2x.git/
+
+
+cd gf2x
+
+#####################
+# NOTE: make tune-fft will abort below unless these patches are applied:
+
+patch -p1 < gf2x-1.patch
+patch -p1 < gf2x-2.patch
+patch -p1 < gf2x-3.patch
+
+# if unpatched, the result of that abort is that it will just use the defaults in gf2x/gf2x-thresholds.h
+# (which date from 2012)
+####################
+
+####################
+# Maybe do this, to avoid a warning when running "autoreconf --install"
+# Is it actually needed?
+
+ln -s gf2x.h.in.in gf2x.h.in
+####################
+
+# as per https://libntl.org/doc/tour-gf2x.html
+
+# CAUTION: if you make a mistake below
+# (like doing "make check" before doing make,
+# or attempting "make install" without "sudo")
+# you will probably need to start over at the ./configure step
+
+autoreconf --install
+./configure
+make
+make check
+make tune-lowlevel
+make tune-toom
+make tune-fft
+# This will install in /usr/local/
+sudo make install
+
+# not necessary to limit it, doesn't save much time at all
+# make tune-fft FFT_TUNING_LIMIT=4000000  # in the range of 2.13M for degree 136279841
+
+# if trying to tinker with the tunefft.c source code, it can be compiled with:
+# gcc -g -O4 -I. -Ifft -msse3 -mssse3 -msse4.1 -mpclmul -march=native -mtune=native    src/tunefft.c src/tuning-common.o src/.libs/libtiming.a ./libgf2x-local.a  -o src/tunefft
+
+# Note:
+# /usr/local/lib is NOT in the default library search path in Ubuntu
+# To add it, do
+echo "/usr/local/lib" | sudo tee -a /etc/ld.so.conf.d/local.conf
+sudo ldconfig
+
+# If you want to make sure the installed package doesn't interfere:
+sudo apt remove libgf2x-dev
+
+
+To run factor you will need:
+
+sudo apt install libgomp1
+(and the libraries compiled for GMP and NTL also)
+
+To compile "factor"
+
+either use a handmade Makefile, or
+
+make -n
+
+rm -f factor
+/bin/bash ../libtool  --tag=CXX   --mode=link g++  -g -O2 -Wall -W -fopenmp  -o factor factor.o halfgcd.o   -lgmp
+
+and change the last line to:
+/bin/bash ../libtool  --tag=CXX   --mode=link g++  -g -O2 -Wall -W -fopenmp  -o factor factor.o halfgcd.o   -lntl -lgf2x -lgmp
