@@ -1,0 +1,10 @@
+single-fault sweep: r=3217, s=640 (flips to working s with r-s=640), m=8, q=4
+  truth: 640 119 pa2e1bd9b0527ac56d78cc48309fe61
+  injection opportunities probed: 150   (never reached: 42)
+  checking OFF : 60 WRONG, 48 benign
+  checking ON  : 0 wrong, 108 correct
+  distribution of wrong answers:
+          2 640 145 p24d0d320d340119f7b3029c3b787ecdefec3d
+          2 640 302 p797f364f0aa553ed5304bd75e06a0d074d6320c32eaa9ff95d9cdcb5d92277ae04c50e4b9b27
+         56 640 irreducible
+  corrupted init_h, 4 runs: checking ON caught and repaired 4; checking OFF gave 4 wrong answers

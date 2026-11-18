@@ -50,6 +50,25 @@ NTLMSG = NTL: FAILED -- '$(CXX) $(NTLCHK) $(NTLLIB)' does not link.  Install lib
 endif
 endif
 
+# gf2x itself, called directly by the gcd engine for its CPU products (no
+# NTL object conversions).  Needs gf2x.h; detected by a try-link of
+# gf2x_check.cpp with the same libraries.  Without it everything still
+# works through NTL::mul, with a slower gcd.   make GF2X_OK=0 forces that.
+GF2XCHK := $(firstword $(wildcard common/gf2x_check.cpp gf2x_check.cpp))
+ifeq ($(origin GF2X_OK),undefined)
+GF2X_OK := $(shell if [ -n "$(GF2XCHK)" ] && $(CXX) $(GF2XCHK) $(NTLLIB) \
+  -o /tmp/gf2x_chk_$$$$ >/dev/null 2>&1; then echo 1; else echo 0; fi; \
+  rm -f /tmp/gf2x_chk_$$$$)
+endif
+ifeq ($(NTL_OK)$(GF2X_OK),11)
+NTLDEF += -DHAVE_GF2X
+NTLMSG := $(NTLMSG), gf2x called directly
+else
+ifeq ($(NTL_OK),1)
+NTLMSG := $(NTLMSG) -- but gf2x.h is not usable, so gcd products go through NTL (slower gcd)
+endif
+endif
+
 CPU  = sieve_ref cantor_ref gf2_dlog_selftest
 CUDA = coarse_sieve cantor_cuda trinomial_stage2 trinomial_scan tsfactor
 
@@ -92,7 +111,7 @@ trinomial_stage2: trinomial_stage2.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2
 trinomial_scan: trinomial_scan.cu gf2_trinomial_cuda.h gf2_gcd.h
 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
 
-tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h
+tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_hgcd_base.h
 	@echo "== $(NTLMSG) =="
 	@if [ "$(NTL_OK)" != "1" ] && [ "$(ALLOW_NO_NTL)" != "1" ]; then \
 	  echo "ERROR: tsfactor needs NTL for factor resolution (CanZass)."; \
@@ -103,12 +122,13 @@ tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_n
 # CPU-only timing of the gcd paths on this machine's CPU and gf2x build:
 # NTL's gcd against tsfactor's default (the certified chain), plus the
 # reference rows.  No GPU.   ./gcdbench 136279841 588 [finish] [quick] [threads]
-gcdbench: gcdbench.cpp gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_cantor_core.h
-	$(CXX) $(CXXFLAGS) $(INC) -DHAVE_NTL -o $@ gcdbench.cpp $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp)) $(NTLLIB) -pthread
+gcdbench: gcdbench.cpp gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_hgcd_base.h gf2_cantor_core.h
+	@echo "== $(NTLMSG) =="
+	$(CXX) $(CXXFLAGS) $(INC) $(NTLDEF) -o $@ gcdbench.cpp $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp)) $(NTLLIB) -pthread
 
 # CPU-only: every gcd path against NTL on randomized corner-case inputs
-gcdstress: gcdstress.cpp gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_cantor_core.h
-	$(CXX) $(CXXFLAGS) $(INC) -DHAVE_NTL -o $@ gcdstress.cpp $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp)) $(NTLLIB) -pthread
+gcdstress: gcdstress.cpp gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_hgcd_base.h gf2_cantor_core.h
+	$(CXX) $(CXXFLAGS) $(INC) $(NTLDEF) -o $@ gcdstress.cpp $(firstword $(wildcard common/gf2_gcd_ntl.cpp gf2_gcd_ntl.cpp)) $(NTLLIB) -pthread
 
 check_ref: check_ref.cpp
 	g++ -O2 -std=c++17 -o $@ $<
@@ -140,7 +160,7 @@ emul-coarse_sieve:
 emul-tsfactor:
 	@echo "== $(NTLMSG) =="
 	mkdir -p build_emul
-	for h in gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h gf2_ec.h; do \
+	for h in gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h gf2_ec.h gf2_hgcd_base.h; do \
 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
 	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
 	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
@@ -151,7 +171,7 @@ emul-tsfactor:
 
 emul-trinomial_scan:
 	mkdir -p build_emul
-	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h gf2_ec.h; do \
+	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h gf2_ec.h gf2_hgcd_base.h; do \
 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
 	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
 	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h

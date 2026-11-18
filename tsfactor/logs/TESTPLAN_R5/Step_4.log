@@ -1,0 +1,178 @@
+$ ./tsfactor --bench 136279841 588 --bench-gcd
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+bench r=136279841 s=588
+  squaring (legacy 3-kernel)        0.361 ms
+  squaring (fused)                  0.212 ms
+  Horner (m=24)                     1.080 ms
+  modmul (FFT + reduce)           228.141 ms
+    pack (one operand)              0.392 ms
+    forward FFT (one of 2)         75.412 ms
+    pointwise GF(2^64)              1.043 ms
+    inverse FFT                    75.777 ms
+    overlap-add                     0.283 ms
+    fold reduce (2 passes)          0.239 ms
+error checking (per block unless noted):
+  EC h-table pass (m=24)            1.280 ms
+  EC product + result folds         0.237 ms
+  EC readback + host algebra        0.089 ms
+  EC chain check (per window)       5.527 ms
+per-degree projection (m*t_sq + (t_mul + t_horner(m))/m), and the error-checking overhead at --ecw 8:
+  m=8       30.26 ms/degree   + EC  0.123 ms (0.41%)
+  m=12      21.60 ms/degree   + EC  0.109 ms (0.51%)
+  m=16      17.70 ms/degree   + EC  0.103 ms (0.58%)
+  m=20      15.70 ms/degree   + EC  0.098 ms (0.63%)
+  m=24      14.64 ms/degree   + EC  0.096 ms (0.65%)
+  m=32      13.96 ms/degree   + EC  0.092 ms (0.66%)
+  m=40      14.24 ms/degree   + EC  0.090 ms (0.63%)
+  m=48      14.98 ms/degree   + EC  0.089 ms (0.59%)
+  m=56      16.00 ms/degree   + EC  0.088 ms (0.55%)
+  m=64      17.19 ms/degree   + EC  0.087 ms (0.51%)
+FFT autotune (fwd+inv per config; ~1 min on GPU):
+  legacy per-level                      323.1 ms
+  fused tlv=2 blv=2 maxch=off           197.1 ms
+  fused tlv=2 blv=2 maxch=2^16          250.0 ms
+  fused tlv=2 blv=2 maxch=2^12          276.7 ms
+  fused tlv=2 blv=3 maxch=off           195.7 ms
+  fused tlv=2 blv=3 maxch=2^16          248.1 ms
+  fused tlv=2 blv=3 maxch=2^12          276.0 ms
+  fused tlv=2 blv=4 maxch=off           205.4 ms
+  fused tlv=2 blv=4 maxch=2^16          257.2 ms
+  fused tlv=2 blv=4 maxch=2^12          282.8 ms
+  fused tlv=2 blv=5 maxch=off           227.8 ms
+  fused tlv=2 blv=5 maxch=2^16          272.8 ms
+  fused tlv=2 blv=5 maxch=2^12          293.4 ms
+  fused tlv=3 blv=2 maxch=off           152.4 ms
+  fused tlv=3 blv=2 maxch=2^16          220.7 ms
+  fused tlv=3 blv=2 maxch=2^12          258.9 ms
+  fused tlv=3 blv=3 maxch=off           151.3 ms
+  fused tlv=3 blv=3 maxch=2^16          218.3 ms
+  fused tlv=3 blv=3 maxch=2^12          258.1 ms
+  fused tlv=3 blv=4 maxch=off           161.1 ms
+  fused tlv=3 blv=4 maxch=2^16          227.5 ms
+  fused tlv=3 blv=4 maxch=2^12          265.2 ms
+  fused tlv=3 blv=5 maxch=off           183.1 ms
+  fused tlv=3 blv=5 maxch=2^16          243.2 ms
+  fused tlv=3 blv=5 maxch=2^12          275.6 ms
+  fused tlv=4 blv=2 maxch=off           283.7 ms
+  fused tlv=4 blv=2 maxch=2^16          306.6 ms
+  fused tlv=4 blv=2 maxch=2^12          311.7 ms
+  fused tlv=4 blv=3 maxch=off           282.5 ms
+  fused tlv=4 blv=3 maxch=2^16          304.4 ms
+  fused tlv=4 blv=3 maxch=2^12          310.6 ms
+  fused tlv=4 blv=4 maxch=off           292.2 ms
+  fused tlv=4 blv=4 maxch=2^16          313.9 ms
+  fused tlv=4 blv=4 maxch=2^12          317.7 ms
+  fused tlv=4 blv=5 maxch=off           314.2 ms
+  fused tlv=4 blv=5 maxch=2^16          328.8 ms
+  fused tlv=4 blv=5 maxch=2^12          328.1 ms
+  fused tlv=5 blv=2 maxch=off           300.2 ms
+  fused tlv=5 blv=2 maxch=2^16          316.8 ms
+  fused tlv=5 blv=2 maxch=2^12          317.4 ms
+  fused tlv=5 blv=3 maxch=off           298.5 ms
+  fused tlv=5 blv=3 maxch=2^16          314.4 ms
+  fused tlv=5 blv=3 maxch=2^12          316.8 ms
+  fused tlv=5 blv=4 maxch=off           308.5 ms
+  fused tlv=5 blv=4 maxch=2^16          323.8 ms
+  fused tlv=5 blv=4 maxch=2^12          323.4 ms
+  fused tlv=5 blv=5 maxch=off           330.6 ms
+  fused tlv=5 blv=5 maxch=2^16          339.1 ms
+  fused tlv=5 blv=5 maxch=2^12          333.9 ms
+best: fused tlv=3 blv=3 maxch=0 -- fwd+inv 151.3 ms (2.14x vs legacy)
+  production: export GF2C_FFT=fused GF2C_TAYLOR_LV=3 GF2C_BFLY_LV=3 GF2C_FUSE_MAX_CH=0
+projected with tuned FFT: modmul ~230 ms, m=32 at ~14.0 ms/degree
+recommended m: 32 (analytic 32); expect ~14.0 ms/degree
+gcd bench (random A vs T, NTL): 50.71 s (gdeg 0)
+gcd bench, CERTIFIED (chain, CPU mults): 21.67 s (gdeg 0, status certified, -57.3% vs NTL)
+  mults: gpu 0 cpu 4644568 fallbacks 0
+  (--gcd-mt 3: 3 threads inside the gcd)
+
+
+$ ./tsfactor --bench 136279841 588 --bench-gcd --gpu-gcd
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+bench r=136279841 s=588
+  squaring (legacy 3-kernel)        0.363 ms
+  squaring (fused)                  0.214 ms
+  Horner (m=24)                     1.080 ms
+  modmul (FFT + reduce)           228.185 ms
+    pack (one operand)              0.393 ms
+    forward FFT (one of 2)         75.251 ms
+    pointwise GF(2^64)              1.029 ms
+    inverse FFT                    75.687 ms
+    overlap-add                     0.274 ms
+    fold reduce (2 passes)          0.231 ms
+error checking (per block unless noted):
+  EC h-table pass (m=24)            1.275 ms
+  EC product + result folds         0.175 ms
+  EC readback + host algebra        0.058 ms
+  EC chain check (per window)       5.505 ms
+per-degree projection (m*t_sq + (t_mul + t_horner(m))/m), and the error-checking overhead at --ecw 8:
+  m=8       30.28 ms/degree   + EC  0.111 ms (0.37%)
+  m=12      21.62 ms/degree   + EC  0.101 ms (0.47%)
+  m=16      17.72 ms/degree   + EC  0.096 ms (0.54%)
+  m=20      15.73 ms/degree   + EC  0.094 ms (0.59%)
+  m=24      14.68 ms/degree   + EC  0.092 ms (0.62%)
+  m=32      14.01 ms/degree   + EC  0.089 ms (0.64%)
+  m=40      14.29 ms/degree   + EC  0.088 ms (0.61%)
+  m=48      15.05 ms/degree   + EC  0.087 ms (0.58%)
+  m=56      16.08 ms/degree   + EC  0.086 ms (0.53%)
+  m=64      17.28 ms/degree   + EC  0.085 ms (0.49%)
+FFT autotune (fwd+inv per config; ~1 min on GPU):
+  legacy per-level                      322.9 ms
+  fused tlv=2 blv=2 maxch=off           197.1 ms
+  fused tlv=2 blv=2 maxch=2^16          250.1 ms
+  fused tlv=2 blv=2 maxch=2^12          276.6 ms
+  fused tlv=2 blv=3 maxch=off           196.1 ms
+  fused tlv=2 blv=3 maxch=2^16          247.7 ms
+  fused tlv=2 blv=3 maxch=2^12          275.9 ms
+  fused tlv=2 blv=4 maxch=off           205.9 ms
+  fused tlv=2 blv=4 maxch=2^16          257.0 ms
+  fused tlv=2 blv=4 maxch=2^12          282.8 ms
+  fused tlv=2 blv=5 maxch=off           228.1 ms
+  fused tlv=2 blv=5 maxch=2^16          272.5 ms
+  fused tlv=2 blv=5 maxch=2^12          293.2 ms
+  fused tlv=3 blv=2 maxch=off           152.7 ms
+  fused tlv=3 blv=2 maxch=2^16          220.5 ms
+  fused tlv=3 blv=2 maxch=2^12          259.1 ms
+  fused tlv=3 blv=3 maxch=off           151.0 ms
+  fused tlv=3 blv=3 maxch=2^16          218.4 ms
+  fused tlv=3 blv=3 maxch=2^12          258.2 ms
+  fused tlv=3 blv=4 maxch=off           160.8 ms
+  fused tlv=3 blv=4 maxch=2^16          227.6 ms
+  fused tlv=3 blv=4 maxch=2^12          265.1 ms
+  fused tlv=3 blv=5 maxch=off           183.4 ms
+  fused tlv=3 blv=5 maxch=2^16          243.0 ms
+  fused tlv=3 blv=5 maxch=2^12          275.5 ms
+  fused tlv=4 blv=2 maxch=off           283.0 ms
+  fused tlv=4 blv=2 maxch=2^16          306.3 ms
+  fused tlv=4 blv=2 maxch=2^12          310.9 ms
+  fused tlv=4 blv=3 maxch=off           281.5 ms
+  fused tlv=4 blv=3 maxch=2^16          304.2 ms
+  fused tlv=4 blv=3 maxch=2^12          310.4 ms
+  fused tlv=4 blv=4 maxch=off           291.4 ms
+  fused tlv=4 blv=4 maxch=2^16          313.1 ms
+  fused tlv=4 blv=4 maxch=2^12          317.2 ms
+  fused tlv=4 blv=5 maxch=off           313.8 ms
+  fused tlv=4 blv=5 maxch=2^16          329.0 ms
+  fused tlv=4 blv=5 maxch=2^12          327.8 ms
+  fused tlv=5 blv=2 maxch=off           299.2 ms
+  fused tlv=5 blv=2 maxch=2^16          316.0 ms
+  fused tlv=5 blv=2 maxch=2^12          316.8 ms
+  fused tlv=5 blv=3 maxch=off           298.0 ms
+  fused tlv=5 blv=3 maxch=2^16          315.5 ms
+  fused tlv=5 blv=3 maxch=2^12          318.5 ms
+  fused tlv=5 blv=4 maxch=off           308.1 ms
+  fused tlv=5 blv=4 maxch=2^16          326.0 ms
+  fused tlv=5 blv=4 maxch=2^12          324.0 ms
+  fused tlv=5 blv=5 maxch=off           330.1 ms
+  fused tlv=5 blv=5 maxch=2^16          338.7 ms
+  fused tlv=5 blv=5 maxch=2^12          333.7 ms
+best: fused tlv=3 blv=3 maxch=0 -- fwd+inv 151.0 ms (2.14x vs legacy)
+  production: export GF2C_FFT=fused GF2C_TAYLOR_LV=3 GF2C_BFLY_LV=3 GF2C_FUSE_MAX_CH=0
+projected with tuned FFT: modmul ~229 ms, m=32 at ~14.0 ms/degree
+recommended m: 32 (analytic 32); expect ~14.0 ms/degree
+gcd bench (random A vs T, NTL): 50.68 s (gdeg 0)
+gcd bench (random A vs T, hybrid): 19.36 s (gdeg 0, -61.8% vs NTL)
+  hybrid mults: gpu 802 cpu 4643088 fallbacks 0
+gcd bench, CERTIFIED (chain, GPU mults): 19.06 s (gdeg 0, status certified, -62.4% vs NTL)
+  mults: gpu 802 cpu 4643088 fallbacks 0
+  (--gcd-mt 3: 3 threads inside the gcd, for the products below the GPU's size threshold)

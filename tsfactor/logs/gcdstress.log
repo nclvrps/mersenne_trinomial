@@ -1,4 +1,18 @@
-gcdstress: 400 cases up to 120000 bits (196 with a nontrivial gcd), 4 engines each vs NTL
-  chain certified in 400 of 400; chain declined on its own 0 time(s); 42 forced declines re-certified by XGCD
-  127 of the cases ran each gcd's products on 3 threads
+gcdstress: word-level base case == reference on 16000 small pairs (12046 calls, 3116415 division steps)
+gcdstress: 400 cases up to 120000 bits (217 with a nontrivial gcd), 4 engines each vs NTL
+  chain certified in 400 of 400; chain declined on its own 0 time(s); 47 forced declines re-certified by XGCD
+  140 of the cases ran each gcd's products on 3 threads
+  word-level base case == reference on all 400 pairs, at 7 hand-over sizes
+  mismatches: 0   PASS
+gcdstress: word-level base case == reference on 60000 small pairs (44972 calls, 11624148 division steps)
+gcdstress: 1500 cases up to 200000 bits (743 with a nontrivial gcd), 4 engines each vs NTL
+  chain certified in 1500 of 1500; chain declined on its own 0 time(s); 174 forced declines re-certified by XGCD
+  493 of the cases ran each gcd's products on 3 threads
+  word-level base case == reference on all 1500 pairs, at 7 hand-over sizes
+  mismatches: 0   PASS
+gcdstress: word-level base case == reference on 48000 small pairs (35967 calls, 9170072 division steps)
+gcdstress: 1200 cases up to 30000 bits (594 with a nontrivial gcd), 4 engines each vs NTL
+  chain certified in 1200 of 1200; chain declined on its own 0 time(s); 110 forced declines re-certified by XGCD
+  403 of the cases ran each gcd's products on 3 threads
+  word-level base case == reference on all 1200 pairs, at 7 hand-over sizes
   mismatches: 0   PASS

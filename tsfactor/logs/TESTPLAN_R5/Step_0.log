@@ -1,0 +1,6 @@
+$ make tsfactor gcdbench gcdstress
+== NTL: OK (-lntl -lgf2x -lgmp), gf2x called directly ==
+nvcc -O3 -arch=native -Xcompiler -march=native -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o tsfactor tsfactor.cu gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -Xcompiler -pthread
+== NTL: OK (-lntl -lgf2x -lgmp), gf2x called directly ==
+g++ -O2 -march=native -Wall -Wextra -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o gcdbench gcdbench.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -pthread
+g++ -O2 -march=native -Wall -Wextra -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o gcdstress gcdstress.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -pthread

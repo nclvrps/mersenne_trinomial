@@ -3,22 +3,24 @@
 Deliverables: `factor_ec.cpp` (full modified source) and `factor_ec.patch`
 (unified diff against the original `factor.cpp`).
 
-> **Compile status: compiled, linked, and run.** Built against NTL 11.5.1 and
-> GMP with `g++ -O2 -std=c++11 -fopenmp`, using a CLMUL schoolbook shim for
-> `gf2x_mul` (see `BUILD_ec.md`). Output is byte-identical to unchecked
-> `factor` across 2700 trinomials, and 108/108 injected single-bit faults are
-> caught. What is *not* verified: timing against real gf2x, and behaviour at
-> r = 136279841. See handoff §13 for the full ledger.
+> **Status (round 5): compiled, linked, and run** against NTL 11.5.1, GMP and
+> gf2x 1.3.0 with `g++ -O2 -fopenmp`. Output is identical to the original
+> `factor` on 5781 trinomials in 20 configurations (`regress.sh`); 108/108
+> injected single-bit faults and 4/4 corrupted initialisations are caught
+> (`sweep.sh`). Rounds 2–3 were also run by Gord at r = 136279841; round 5 has
+> not been yet. See `errorcheck_handoff.md` §13 for the full ledger.
 
-New options:
+Options (round 5: checking is ON by default):
 
 ```
--ec        enable error checking
--ecw w     run the Gerbicz check every w blocks (default 1)
+-noec      turn error checking off
+-ec        accepted; it is the default
+-ecw w     run the Gerbicz check every w blocks (default 8)
 -ect       per-category cost breakdown at exit
--eci0      skip the duplicate init_h (saves one exponentiation per s)
+-eci0      skip the check of the h-table initialisation
 -ecg       also run each gcd twice and compare
 -ecfault N flip one bit at the N-th injection opportunity (testing only)
+-ecfaultinit   flip one bit of the first h-table after init (testing only)
 ```
 
 ---
@@ -73,16 +75,31 @@ Gerbicz check runs over. EC is suspended across the calibration and restored
 after. Your production runs pass `-m` explicitly and never enter it, but a run
 without `-m` would have.
 
-## Hunk 4 — `init_h` duplicate-and-compare
+## Hunk 4 — `init_h`: closed-form check (round 5; was duplicate-and-compare)
 
-The Gerbicz check certifies how the h-table *evolves*, not where it starts, so
-`init_h` runs twice and the results are compared.
+The Gerbicz check certifies how the h-table *evolves*, not where it starts.
+Rounds 2–4 therefore ran `init_h` twice and compared, which your logs priced
+at 5.4–7.6 s per `s` — 69% of all checking cost at `-skip 55`.
 
-Not as free as round 1 claimed: your log shows exponentiation going 5.65 s to
-11.22 s, about 2.3% of that run. It is a fixed cost per `s` value, so its share
-falls as the search goes deeper, but `-eci0` turns it off. A cheaper partial
-check exists — `h[0] = e_1 = sum_i Frob^i(x^(2^k))` costs `k + m - 1` squarings
-against `init_h`'s `m^2/2` — but it only covers one of the `m` entries.
+Round 5 replaces that with `ec_init_closed_form`. The table holds, in
+`h[j]`, the sum of `y^e` over the exponents `e < 2^m` of Hamming weight `j+1`
+(`y = y_k = x^(2^k) mod T`), so the sum `S` of all its entries is the
+geometric series `y + y^2 + ... + y^(2^m - 1)`, and
+
+```
+        (1 + y_k) (1 + S)  =  1 + y_k^(2^m)  =  1 + y_(k+m)      mod T.
+```
+
+Both sides are computed from scratch: `k + m` squarings of one residue and one
+`fastmulmod` (itself fold-checked), against the `m (k + m/2)` squarings of a
+second `init_h`. A table that fails is rebuilt and checked again; five
+failures in a row abort, as elsewhere. An error in the check's own squarings
+makes the identity fail too, which costs a rebuild and cannot make a bad
+table pass.
+
+Round 3 of this document said a cheap check "only covers one of the `m`
+entries" (it looked at `h[0]` alone). The sum of all entries is what has the
+closed form.
 
 ## Hunk 5 — retry wrapper around the interval body
 

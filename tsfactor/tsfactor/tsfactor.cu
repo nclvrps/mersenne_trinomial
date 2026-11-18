@@ -848,12 +848,16 @@ struct GcdRes {
 static u64 g_keep_bits = ((u64)1 << 22);
 static GpuMulHook *g_gm = nullptr;       // set when --gpu-gcd is active
 static bool g_use_hybrid = false;
+static bool g_engine_cpu = false;        // uncertified gcds also use the
+                                         // half-gcd engine (CPU products);
+                                         // main() sets it unless --gcd-ntl
 static bool g_hyb_xcheck = false;        // selftest: verify hybrid vs NTL
 static u64 ts_gcd(const u64 *a, size_t aw, const u64 *b, size_t bw,
                   std::vector<u64> *gout) {
 #ifdef HAVE_NTL
-    if (g_use_hybrid) {
-        u64 d = poly_gcd_hybrid(a, aw, b, bw, gout, g_keep_bits, g_gm);
+    if (g_use_hybrid || g_engine_cpu) {
+        u64 d = poly_gcd_hybrid(a, aw, b, bw, gout, g_keep_bits,
+                                g_use_hybrid ? g_gm : nullptr);
         if (g_hyb_xcheck) {
             std::vector<u64> gref;
             u64 dr = poly_gcd_ntl(a, aw, b, bw, &gref, g_keep_bits);
@@ -908,11 +912,18 @@ static const char *gcd_backend() {
                : (g_gm || g_use_hybrid)
                    ? "CERTIFIED half-gcd chain (GPU-offloaded mults, every "
                      "step fold-verified) + verified XGCD finish"
-                   : "CERTIFIED half-gcd chain (CPU mults via NTL/gf2x, "
+               : hyb_gf2x_direct()
+                   ? "CERTIFIED half-gcd chain (CPU products, gf2x called "
+                     "directly; every step fold-verified) + verified XGCD "
+                     "finish"
+                   : "CERTIFIED half-gcd chain (CPU products through NTL; "
                      "every step fold-verified) + verified XGCD finish";
     if (g_use_hybrid)
         return g_gm ? "hybrid HGCD (GPU-offloaded mults) + NTL finish"
                     : "hybrid HGCD (CPU mults) + NTL finish";
+    if (g_engine_cpu)
+        return "half-gcd engine (CPU products) + NTL finish -- NOT "
+               "certified";
     return "NTL gf2x-backed (HalfGCD + CanZass)";
 #else
     return "naive fallback -- NO NTL: factor resolution will fail for "
@@ -1356,6 +1367,14 @@ static bool write_file_atomic(const std::string &path, const void *hdr,
     return rename(tmp.c_str(), path.c_str()) == 0;
 }
 
+// the checkpoint and its two rotated generations
+static void remove_ckpts(const std::string &base) {
+    if (base.empty()) return;
+    remove(base.c_str());
+    remove((base + ".1").c_str());
+    remove((base + ".2").c_str());
+}
+
 static void rotate_ckpts(const std::string &base) {
     std::string c0 = base, c1 = base + ".1", c2 = base + ".2";
     remove(c2.c_str());
@@ -1567,6 +1586,20 @@ static volatile sig_atomic_t g_stop = 0;
 static void on_signal(int) { g_stop = 1; }
 
 // ---------------------------------------------------------------------------
+// The Euler-optimal schedule needs G = (cost of one gcd) / (cost of scanning
+// one degree).  Both are measured as the run goes (exponential averages over
+// the whole process, so every survivor after the first starts well
+// informed) unless --sched-G fixes G.  The gcd cost depends on the CPU, the
+// gf2x build and --gcd-mt / --gpu-gcd, which is why a constant no longer
+// serves: 4000 degrees was right for a 63 s gcd.
+static std::atomic<double> g_cost_gcd{0}, g_cost_deg{0};
+static void cost_note(std::atomic<double> &c, double v) {
+    if (!(v > 0)) return;
+    double old = c.load();
+    c.store(old > 0 ? 0.6 * old + 0.4 * v : v);
+}
+
+// ---------------------------------------------------------------------------
 // scan parameters and outcome
 
 struct SParams {
@@ -1577,7 +1610,9 @@ struct SParams {
     long Zq = 0;               // -Z: cap q, keep scanning
     u64 canzass_max = 0;       // 0 = auto (2*r^(2/3))
     bool sched_opt = false;    // Euler-optimal interval schedule
-    u64 sched_G = 0;           // c_g/c_s in degrees; 0 = default 4000
+    u64 sched_G = 0;           // c_g/c_s in degrees; 0 = measured at run
+                               // time (sched_G0 until the first gcd)
+    u64 sched_G0 = 3000;       // the initial guess for that
     double sched_rho = 0;      // geometric floor ratio; 0 = default 1.25
     int verbose = 0;
     int pend_max = 4;
@@ -1588,8 +1623,19 @@ struct SParams {
     long die_in_fine = -1;        // test hook: SIGTERM inside localize
     // error checking: after an interval at least this long, download the
     // next interval's start table BEFORE waiting on the gcd (see scan)
-    double ec_presnap_secs = 30.0;
+    double ec_presnap_secs = 2.0;
 };
+
+// G for the next interval: fixed by --sched-G, else measured
+static u64 sched_G_now(const SParams &P) {
+    if (P.sched_G) return P.sched_G;
+    double cg = g_cost_gcd.load(), cs = g_cost_deg.load();
+    if (!(cg > 0) || !(cs > 0)) return P.sched_G0;
+    double Gd = cg / cs;
+    if (Gd < 1) Gd = 1;
+    if (Gd > 1e8) Gd = 1e8;
+    return (u64)Gd;
+}
 
 struct ScanOut {
     enum Kind { FOUND, GAVE_UP, PRIMITIVE, RANGE, INTERRUPTED,
@@ -2052,7 +2098,7 @@ static ScanOut scan_one_s_once(TsGPU &G, GcdPool &pool, const SParams &P,
     QSched Q;
     Q.q0 = P.q0;
     Q.opt = P.sched_opt;
-    Q.optG = P.sched_G ? P.sched_G : 4000;
+    Q.optG = sched_G_now(P);
     if (P.sched_rho > 1.0) Q.rho_min = P.sched_rho;
     Q.m = (long)G.m;
     u64 k;                     // current interval start
@@ -2111,6 +2157,7 @@ static ScanOut scan_one_s_once(TsGPU &G, GcdPool &pool, const SParams &P,
             fflush(stdout);
         }
         G.reset_A();
+        Q.optG = sched_G_now(P);
         Q.grow(k);
         if (P.Zq && Q.q > P.Zq) Q.q = P.Zq;
     }
@@ -2281,6 +2328,7 @@ static ScanOut scan_one_s_once(TsGPU &G, GcdPool &pool, const SParams &P,
                      ": %s", s, pv.ka, pv.kb, R.ec_why);
             return 3;
         }
+        cost_note(g_cost_gcd, R.secs);
         if (P.verbose) {
             printf("   gcd %" PRIu64 "..%" PRIu64 " took %f%s\n",
                    pv.ka, pv.kb, R.secs, R.gdeg ? "  ** HIT **" : "");
@@ -2351,6 +2399,10 @@ static ScanOut scan_one_s_once(TsGPU &G, GcdPool &pool, const SParams &P,
         long q = Q.q;
         if (P.verbose) {
             printf("Current q %ld\n", q);
+            if (P.verbose >= 2 && P.sched_opt && !P.sched_G)
+                printf("   [schedule G %" PRIu64 " degrees: gcd %.1f s, "
+                       "%.2f ms/degree]\n", sched_G_now(P),
+                       g_cost_gcd.load(), 1e3 * g_cost_deg.load());
             fflush(stdout);
         }
         u64 k2 = k + (u64)q * G.m - 1;
@@ -2469,6 +2521,8 @@ static ScanOut scan_one_s_once(TsGPU &G, GcdPool &pool, const SParams &P,
         CUCHK(cudaDeviceSynchronize());
         double iv_wall = trin_now_s() - iv_t0 - iv_poll;
         out.degrees_scanned += (u64)(q - blk0) * G.m;
+        if (q > blk0)
+            cost_note(g_cost_deg, iv_wall / (double)((q - blk0) * G.m));
         if (P.verbose) {
             double per = iv_wall / (double)((q - blk0) * G.m);
             printf("   squares/products took %.1f (wct %.1f), per term "
@@ -2508,6 +2562,7 @@ static ScanOut scan_one_s_once(TsGPU &G, GcdPool &pool, const SParams &P,
             GcdRes R = pool.wait_get(pv.seq);
             TS_CONSUME(pv, R);
         }
+        Q.optG = sched_G_now(P);
         Q.grow(k - 1);
         if (P.Zq && Q.q > P.Zq) Q.q = P.Zq;
     }
@@ -3705,8 +3760,10 @@ static int selftest(int gcd_threads) {
                         ok_eq = false;
                     ncert++;
                 }
-                if (hyb_threads_ok()) {
-                    // the products of each matrix step on three threads
+                for (int hook = 0; hook < 2 && hyb_threads_ok(); hook++) {
+                    // the products of each matrix step on three threads:
+                    // alone, and sharing the work with the GPU hook (which
+                    // takes the products above its size threshold)
                     std::vector<u64> g2;
                     int st = -1;
                     const int sv_t = hyb_threads;
@@ -3714,7 +3771,8 @@ static int selftest(int gcd_threads) {
                     hyb_threads = 3;
                     hyb_mt_min_bits = 600;
                     u64 d2 = poly_gcd_certified(a.data(), a.size(), b.data(),
-                                                b.size(), &g2, ~0ULL, nullptr,
+                                                b.size(), &g2, ~0ULL,
+                                                hook ? &gm13 : nullptr,
                                                 &fa, &fb, &st);
                     hyb_threads = sv_t;
                     hyb_mt_min_bits = sv_mb;
@@ -4076,7 +4134,10 @@ static int bench(u64 r, u64 s) {
         }
         printf("projected with tuned FFT: modmul ~%.0f ms, m=%d at "
                "~%.1f ms/degree\n", t_mul2 * 1e3, (int)bm, bc * 1e3);
-        (void)sv_f; (void)sv_t; (void)sv_b; (void)sv_c;
+        gf2c_use_fused = sv_f;       // the autotune must not leave its
+        gf2c_taylor_lv = sv_t;       // last trial configuration behind
+        gf2c_bfly_lv = sv_b;
+        gf2c_fuse_max_ch = sv_c;
     }
         printf("recommended m: %d (analytic %d); expect ~%.1f ms/degree\n",
            best_m, mo, best_c * 1e3);
@@ -4136,6 +4197,8 @@ static void usage() {
         "  --gpu-gcd-min-bits N   offload mults with an operand >= N bits\n"
         "  --gcd-finish-bits N    gcd engine hands over to NTL below N bits\n"
         "                  (default 4194304)\n"
+        "  --gcd-base-bits N      gcd engine: pairs of at most N bits go to\n"
+        "                  the word-level base case (default 2048; tuning)\n"
         "  --gcd-full-apply       gcd engine: apply each half-gcd matrix to\n"
         "                  the full operands, as before round EC (A/B\n"
         "                  timing; the default multiplies the low half only)\n"
@@ -4146,8 +4209,10 @@ static void usage() {
         "                  empirical survival law S(k)=(16/9)/k: fewer,\n"
         "                  later GCDs (E[gcds]/survivor ~1.66 -> ~1.26;\n"
         "                  deep runs ~4-9x fewer); default: linear\n"
-        "  --sched-G N     gcd cost / scan cost in degrees (default 4000\n"
-        "                  ~ 63 s / 15.8 ms); tune from --bench numbers\n"
+        "  --sched-G N     gcd cost / scan cost in degrees.  Default: measured\n"
+        "                  as the run goes (a fixed N makes the schedule\n"
+        "                  reproducible; 4000 was the old constant,\n"
+        "                  ~ 63 s / 15.8 ms)\n"
         "  --sched-rho R   geometric floor for the opt schedule's deep\n"
         "                  tail (default 1.25)\n"
         "  --hsnap-mb N    RAM for h-table snapshots (default 2048).  A\n"
@@ -4171,11 +4236,13 @@ static void usage() {
         "  identity, which PROVES \"no factor in this interval\" instead of\n"
         "  trusting a minute of unchecked CPU/RAM work.  The certified\n"
         "  engine is also the faster one (measure: make gcdbench).\n"
-        "  --gcd-mt N      use N CPU threads inside each gcd (the products\n"
-        "                  of a matrix step run side by side; default 1).\n"
-        "                  Worth having when cores are idle during the gcd,\n"
-        "                  as under --pend-max 1.  Total gcd threads =\n"
-        "                  --gcd-threads x --gcd-mt.  CPU products only\n"
+        "  --gcd-mt N      CPU threads inside each gcd (the independent\n"
+        "                  products of a matrix step run side by side).\n"
+        "                  Default: the cores left over by --gcd-threads and\n"
+        "                  the scan thread, at most 4.  1 = single-threaded.\n"
+        "                  Total gcd threads = --gcd-threads x --gcd-mt.\n"
+        "                  Works together with --gpu-gcd (threads take the\n"
+        "                  products below the GPU's size threshold)\n"
         "  --gcd-ntl       plain NTL gcd instead: NOT checked (A/B timing)\n"
         "  --ecg-xgcd      certify with one verified NTL extended gcd\n"
         "                  instead of the chain (~1.4x NTL's gcd; reference)\n"
@@ -4205,12 +4272,16 @@ int main(int argc, char **argv) {
     P.skip = (u64)-1;
     int gcd_threads = 0, device = -1, want_m = 0;
     bool do_selftest = false, do_bench = false, legacy = false,
-         no_ckpt = false, allow_no_ntl = false, gpu_gcd = false,
+         no_ckpt = false, gpu_gcd = false,
          bench_gcd = false;
-    u64 gcd_min_bits_opt = 0;
+#ifndef HAVE_NTL
+    bool allow_no_ntl = false;
+#endif
+    u64 gcd_min_bits_opt = 0, gcd_base_bits = 0;
     int selftest_reps = 1;
     bool ecg_explicit = false, ecg_xgcd = false, gcd_ntl = false;
-    int gcd_mt = 1;
+    int gcd_mt = 0;            // 0 = automatic
+    bool gcd_mt_auto = false;
 
     // Extra options from the environment (TSFACTOR_ARGS="--ecg,--ect";
     // commas or spaces separate): lets a wrapper script's configuration add
@@ -4260,7 +4331,11 @@ int main(int argc, char **argv) {
         else if (a == "--canzass-max")
             P.canzass_max = strtoull(need("--canzass-max"), 0, 10);
         else if (a == "--legacy-sq") legacy = true;
-        else if (a == "--allow-no-ntl") allow_no_ntl = true;
+        else if (a == "--allow-no-ntl") {
+#ifndef HAVE_NTL
+            allow_no_ntl = true;
+#endif
+        }
         else if (a == "--gpu-gcd") gpu_gcd = true;
         else if (a == "--selftest-reps")
             selftest_reps = atoi(need("--selftest-reps"));
@@ -4299,6 +4374,8 @@ int main(int argc, char **argv) {
         else if (a == "--ecg-dup") g_ec.gcd_dup = true;
         else if (a == "--gcd-ntl") gcd_ntl = true;
         else if (a == "--gcd-mt") gcd_mt = atoi(need("--gcd-mt"));
+        else if (a == "--gcd-base-bits")
+            gcd_base_bits = strtoull(need("--gcd-base-bits"), 0, 10);
         else if (a == "--ect") g_ec.timing = true;
         else if (a == "--eci0") g_ec.init_check = false;
         else if (a == "--ec-retries") {
@@ -4342,9 +4419,23 @@ int main(int argc, char **argv) {
                         "without NTL_THREADS\n");
         gcd_mt = 1;
     }
-    hyb_threads = gcd_mt < 1 ? 1 : gcd_mt > 64 ? 64 : gcd_mt;
+    if (gcd_base_bits)
+        hyb_base_bits = gcd_base_bits < 64 ? 64
+                        : gcd_base_bits > 16320 ? 16320 : gcd_base_bits;
+    if (gcd_mt <= 0) {
+        gcd_mt_auto = true;
+        // automatic: the cores left over by the gcd workers and the scan
+        // thread, at most 4 (a matrix step has 4 independent products;
+        // more threads only help its 8-product sibling).  The selftest
+        // stays on one thread unless told otherwise.
+        unsigned hc = std::thread::hardware_concurrency();
+        int per = hc > 1 ? (int)((hc - 1) / (unsigned)gcd_threads) : 1;
+        gcd_mt = (do_selftest || !hyb_threads_ok()) ? 1
+                 : per < 1 ? 1 : per > 4 ? 4 : per;
+    }
+    hyb_threads = gcd_mt > 64 ? 64 : gcd_mt;
 #else
-    (void)gcd_mt;
+    (void)gcd_mt; (void)gcd_base_bits; (void)gcd_mt_auto;
 #endif
     if (do_selftest) {
         if (device >= 0) cudaSetDevice(device);
@@ -4448,9 +4539,11 @@ int main(int argc, char **argv) {
                        100.0 * (dt2 - dt) / dt);
                 printf("  mults: gpu %" PRIu64 " cpu %" PRIu64 " fallbacks %"
                        PRIu64 "\n", ng, nc, nf);
-                if (hyb_threads > 1 && !g_gm && !ecg_xgcd)
-                    printf("  (with --gcd-mt %d: %d threads inside the gcd)\n",
-                           hyb_threads, hyb_threads);
+                if (hyb_threads > 1 && !ecg_xgcd)
+                    printf("  (--gcd-mt %d: %d threads inside the gcd%s)\n",
+                           hyb_threads, hyb_threads,
+                           g_gm ? ", for the products below the GPU's size "
+                                  "threshold" : "");
                 if (gd2 != gd) printf("  *** MISMATCH vs NTL ***\n");
             }
             if (g_use_hybrid) g_ts_gm.fini();
@@ -4490,6 +4583,9 @@ int main(int argc, char **argv) {
     else g_ec.gcd_cert = ecg_explicit || gpu_gcd ||
                          !(gcd_ntl || g_ec.gcd_dup);
     hyb_cert_xgcd = ecg_xgcd;
+    // The half-gcd engine is the gcd backend, certified or not; plain NTL
+    // only on request (--gcd-ntl) and for --ecg-dup's two NTL runs.
+    g_engine_cpu = !gcd_ntl && !g_ec.gcd_dup;
 #else
     g_ec.gcd_cert = false;
     (void)ecg_explicit; (void)ecg_xgcd; (void)gcd_ntl;
@@ -4504,12 +4600,17 @@ int main(int argc, char **argv) {
 #endif
     fprintf(stderr, "GCD backend: %s\n", gcd_backend());
 #ifdef HAVE_NTL
-    if (hyb_threads > 1)
-        fprintf(stderr, "gcd: %d threads inside each gcd (--gcd-mt)%s\n",
-                hyb_threads, (g_ec.on && g_ec.gcd_cert && !hyb_cert_xgcd &&
-                              !gpu_gcd)
-                    ? "" : " -- NOTE: only the certified chain on CPU "
-                           "products uses them");
+    if (hyb_threads > 1) {
+        const bool engine = (g_ec.on && g_ec.gcd_cert && !hyb_cert_xgcd) ||
+                            g_use_hybrid || g_engine_cpu;
+        if (engine)
+            fprintf(stderr, "gcd: %d threads inside each gcd (--gcd-mt %d%s)"
+                    "\n", hyb_threads, hyb_threads,
+                    gcd_mt_auto ? ", chosen automatically" : "");
+        else if (!gcd_mt_auto)
+            fprintf(stderr, "gcd: --gcd-mt has no effect on NTL's own gcd "
+                    "(--gcd-ntl / --ecg-xgcd / --ecg-dup)\n");
+    }
 #endif
     g_ec.log_path = out_prefix + ".ec.log";
     if (g_ec.on) {
@@ -4556,8 +4657,6 @@ int main(int argc, char **argv) {
             "experiments): --allow-no-ntl.\n");
         exit(1);
     }
-#else
-    (void)allow_no_ntl;
 #endif
     if (device >= 0) cudaSetDevice(device);
 
@@ -4665,9 +4764,16 @@ int main(int argc, char **argv) {
                 "  [< pend-max+1: a deep hit may need the slow rebuild]");
     }
     if (P.q0 <= 0) P.q0 = (long)((600 + m - 1) / m);
-    if (P.sched_opt)
-        fprintf(stderr, "interval schedule: euler-optimal (G=%" PRIu64
-                " degrees)\n", P.sched_G ? P.sched_G : 4000);
+    if (P.sched_opt) {
+        if (P.sched_G)
+            fprintf(stderr, "interval schedule: euler-optimal (G=%" PRIu64
+                    " degrees, fixed by --sched-G)\n", P.sched_G);
+        else
+            fprintf(stderr, "interval schedule: euler-optimal, G = gcd time "
+                    "/ time per degree, measured as the run goes (%" PRIu64
+                    " degrees until the first gcd; --sched-G N fixes it)\n",
+                    P.sched_G0);
+    }
     fprintf(stderr, "r=%" PRIu64 " skip=%" PRIu64 " m=%d q0=%ld "
             "gcd-threads=%d pend-max=%d%s%s\n",
             r, P.skip, m, P.q0, gcd_threads, P.pend_max,
@@ -4736,6 +4842,10 @@ int main(int argc, char **argv) {
         fflush(rf);
         fsync(fileno(rf));
         fflush(stdout);
+        // This s is on record.  Its checkpoints (up to three generations of
+        // ~0.5 GB each at r=136279841) are of no further use: a checkpoint
+        // is only ever resumed for the s it was written for.
+        remove_ckpts(P.ckpt_base);
         if (P.verbose)
             printf("== s=%" PRIu64 " done in %.1f s (%" PRIu64
                    " degrees) ==\n", sv, o.wall, o.degrees_scanned);

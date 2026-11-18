@@ -20,9 +20,9 @@ fineDDF bisection path (forced, both h paths)      PASS
 -z gives up / -Z caps and continues                PASS
 checkpoint kill/resume equivalence                 PASS
 fine DDF interrupt/resume (2 resumed)             PASS
-hybrid HGCD vs NTL (gpu-mults 444, fb 0)             PASS
-end-to-end, hybrid gcd forced (gpu-mults 136, fb 0, drained 0)   PASS
-EC: no false alarms (6488 blocks, 4056 windows)        PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 1888, fb 0, drained 2)   PASS
+EC: no false alarms (7930 blocks, 4581 windows)        PASS
   h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
   hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
   a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
@@ -43,8 +43,8 @@ EC: faults under speculation (84 runs, 0 wrong)          PASS
 EC: persistent fault gives up cleanly              PASS
 EC: restart from a mid-interval verified state     PASS
 EC: idle flip repaired from the pre-wait snapshot  PASS
-EC: certified gcd == NTL (75 gcds)                  PASS
-EC: certified gcd under faults (600 runs, 344 caught) PASS
-EC: scans with certified gcd (78 scans, 110 gcds)    PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 111 gcds)    PASS
 EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
 SELFTEST: all PASS

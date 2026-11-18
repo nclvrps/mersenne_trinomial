@@ -97,6 +97,56 @@ int main(int argc, char **argv) {
     }
     const u64 finish_choices[] = {64, 300, 4096, 20000, 65536};
     long bad = 0, nontrivial = 0, certs = 0, declined = 0, threaded = 0;
+    long basechecks = 0;
+    // ---- the word-level base case on its own: small pairs of every shape
+    {
+        long nb = 0;
+        for (long it = 0; it < 40 * cases; it++) {
+            hyb_base_bits = 16000;
+            long n = 1 + (long)rnd_below(it % 7 == 0 ? 12000 : 700);
+            GF2X a = rpoly(n), b;
+            switch (rnd_below(8)) {
+            case 0: b = rpoly((long)rnd_below((u64)n + 1)); break;   // any degree
+            case 1: b = rpoly(n); break;                             // equal degree
+            case 2: b = rpoly(n - 1 - (long)rnd_below(3) < 0 ? 0 : n - 1 - (long)rnd_below(3)); break;
+            case 3: {                                                // long quotient
+                long d = n - 33 - (long)rnd_below(200);
+                b = rpoly(d < 0 ? 0 : d);
+                break;
+            }
+            case 4: {                                                // prescribed quotients
+                GF2X g; set(g);
+                from_quotients(a, b, g, n, (int)rnd_below(4));
+                break;
+            }
+            case 5: {                                                // sparse
+                clear(a); SetCoeff(a, n); SetCoeff(a, (long)rnd_below((u64)n + 1)); SetCoeff(a, 0);
+                b = rpoly((long)rnd_below((u64)n + 1));
+                break;
+            }
+            case 6: {                                                // common factor
+                GF2X g = rpoly(1 + (long)rnd_below(60));
+                a = rpoly(n) * g; b = rpoly((long)rnd_below((u64)n + 1)) * g;
+                break;
+            }
+            default: b = rpoly(n > 64 ? n - 64 + (long)rnd_below(64) : n / 2); break;
+            }
+            std::vector<u64> A = words(a), B = words(b);
+            if (!hyb_base_selfcheck(A.data(), A.size(), B.data(), B.size())) {
+                bad++;
+                if (bad <= 10)
+                    printf("MISMATCH base case: deg a %ld, deg b %ld\n",
+                           deg(a), deg(b));
+            }
+            nb++;
+        }
+        u64 bc, bs;
+        hyb_get_base_stats(bc, bs);
+        printf("gcdstress: word-level base case == reference on %ld small "
+               "pairs (%llu calls, %llu division steps)\n", nb,
+               (unsigned long long)bc, (unsigned long long)bs);
+    }
+
     u64 fb_before = 0, g0, c0;
     hyb_reset_stats();
     hyb_get_stats(g0, c0, fb_before);
@@ -160,6 +210,22 @@ int main(int argc, char **argv) {
         if (rnd_below(3) == 0) B.resize(B.size() + 1 + rnd_below(3), 0);
 
         hyb_ntl_finish_bits = finish_choices[rnd_below(5)];
+        // the size at which the recursion hands over to the word-level
+        // base case: from one machine word to the largest it supports
+        {
+            const u64 base_choices[] = {64, 200, 1000, 2048, 2048, 5000,
+                                        16000};
+            hyb_base_bits = base_choices[rnd_below(7)];
+        }
+        // word-level base case vs the reference one: reduced pair and
+        // matrix must be identical, on the whole pair and on its top part
+        if (!hyb_base_selfcheck(A.data(), A.size(), B.data(), B.size())) {
+            bad++;
+            printf("MISMATCH case %ld kind %d: word-level base case != "
+                   "reference (base %llu bits)\n", it, kind,
+                   (unsigned long long)hyb_base_bits);
+        }
+        basechecks++;
         // a third of the cases with the products of each matrix operation
         // on three threads (threshold lowered so that it happens here)
         hyb_threads = (hyb_threads_ok() && rnd_below(3) == 0) ? 3 : 1;
@@ -239,6 +305,8 @@ int main(int argc, char **argv) {
     printf("  %ld of the cases ran each gcd's products on 3 threads%s\n",
            threaded, hyb_threads_ok() ? "" : " (NTL built without "
            "NTL_THREADS: threading not tested)");
+    printf("  word-level base case == reference on all %ld pairs, at 7 "
+           "hand-over sizes\n", basechecks);
     printf("  mismatches: %ld   %s\n", bad, bad ? "*** FAIL ***" : "PASS");
     return bad ? 1 : 0;
 }

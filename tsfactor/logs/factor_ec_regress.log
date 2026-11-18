@@ -1,0 +1,21 @@
+  r=1279 default                      300 trinomials  OK, 0 false alarms
+  r=1279 -ecw 1                       300 trinomials  OK, 0 false alarms
+  r=1279 -ecw 4                       300 trinomials  OK, 0 false alarms
+  r=1279 -ecw 16                      300 trinomials  OK, 0 false alarms
+  r=1279 -noec                        300 trinomials  OK, 0 false alarms
+  r=1279 -eci0                        300 trinomials  OK, 0 false alarms
+  r=3217 default                      300 trinomials  OK, 0 false alarms
+  r=3217 -ecw 1                       300 trinomials  OK, 0 false alarms
+  r=3217 -ecw 4                       300 trinomials  OK, 0 false alarms
+  r=3217 -ecw 16                      300 trinomials  OK, 0 false alarms
+  r=3217 -noec                        300 trinomials  OK, 0 false alarms
+  r=3217 -eci0                        300 trinomials  OK, 0 false alarms
+  r=4423 default                      300 trinomials  OK, 0 false alarms
+  r=4423 -ecw 1                       300 trinomials  OK, 0 false alarms
+  r=4423 -ecw 4                       300 trinomials  OK, 0 false alarms
+  r=4423 -ecw 16                      300 trinomials  OK, 0 false alarms
+  r=4423 -noec                        300 trinomials  OK, 0 false alarms
+  r=4423 -eci0                        300 trinomials  OK, 0 false alarms
+  r=4423 -mt 2 -m 8                   300 trinomials  OK, 0 false alarms
+  r=9689 production options, stdin     81 trinomials  OK, 0 false alarms
+  ---- all regressions identical to the original factor ----

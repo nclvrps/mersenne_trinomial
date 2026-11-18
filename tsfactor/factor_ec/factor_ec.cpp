@@ -54,14 +54,16 @@ NTL_CLIENT
  *  On any failure the current interval is recomputed from a checkpoint.
  * ==================================================================== */
 
-static int ec_enabled   = 0;    /* -ec              */
-static int ec_window    = 1;    /* -ecw w           */
+static int ec_enabled   = 1;    /* ON by default since round 5; -noec */
+static int ec_window    = 8;    /* -ecw w           */
 static int ec_gcdrep    = 0;    /* -ecg             */
 static long ec_maxretry = 5;
 static volatile int ec_fail = 0;      /* set by any failing check */
 static long ec_detections = 0;
 static int  ec_timing   = 0;    /* -ect: per-category cost accounting  */
-static int  ec_initchk  = 1;    /* -eci0 to disable init_h duplication */
+static int  ec_initchk  = 1;    /* -eci0 to disable the init_h check   */
+static int  ec_fault_init = 0;  /* -ecfaultinit: corrupt the first h-table
+                                   right after it is built (testing only) */
 
 /* ---- fault injection, for validating the checker itself (-ecfault N).
    Flips one coefficient at the N-th injection opportunity.  Fires once, so a
@@ -91,7 +93,7 @@ enum { ECT_MULFOLD, ECT_DIVIS, ECT_COPY, ECT_HORNER, ECT_DIGEST,
 static const char *ec_tname[ECT_N] = {
   "fold check on product", "reduction divisibility", "copy t for check",
   "horner fold shadow", "gerbicz digest xor", "gerbicz sigma(D)",
-  "init_h duplicate", "gcd repeat" };
+  "init_h closed-form check", "gcd repeat" };
 static double ec_tsec[ECT_N];
 static long   ec_tcnt[ECT_N];
 
@@ -1019,6 +1021,64 @@ void copy_h (vec_GF2X& hold, vec_GF2X& h, long m)
     hold[i] = h[i];
 }
 
+void fastmulmod (GF2X& c, const GF2X& a, const GF2X& b, const GF2XModulus& F,
+                 _ntl_ulong r, _ntl_ulong s);
+
+/* --- EC (round 5): closed-form check of a freshly built h-table.
+
+   h[j] is the sum of y^e over the exponents e < 2^m of Hamming weight j+1,
+   with y = y_k = x^(2^k) mod T.  So the sum S of the whole table is
+   y + y^2 + ... + y^(2^m - 1), a geometric series:
+
+        (1 + y_k) (1 + S)  =  1 + y_k^(2^m)  =  1 + y_(k+m)      mod T.
+
+   Both sides are computable from scratch without the table: k + m squarings
+   of ONE residue and one modular product, against the m (k + m/2) squarings
+   that building the table a second time costs (which is what rounds 2-4 did:
+   5.4 - 7.6 s per s at r = 136279841, 69% of all checking at -skip 55).
+
+   An error in the table changes S; an error in this routine's own squarings
+   makes the identity fail too, which costs a rebuild and nothing else.
+   Returns 1 if the identity holds.                                      --- */
+static int
+ec_init_closed_form (const vec_GF2X& h, long k, long m, const GF2XModulus& F,
+                     _ntl_ulong r, _ntl_ulong s, int usefs)
+{
+  GF2X y, t, yk, S, one, u, v, lhs;
+  SetX (y);
+  set (one);
+  for (long i = 0; i < k + m; i++)
+    {
+      if (i == k)
+        yk = y;
+      if (usefs)
+        {
+          fastsqr (t, y, r, s);
+          swap (y, t);
+        }
+      else
+        SqrMod (y, y, F);
+    }
+  clear (S);
+  for (long j = 0; j < m; j++)
+    add (S, S, h[j]);
+  add (u, yk, one);
+  add (v, S, one);
+  add (y, y, one);                      /* 1 + y_(k+m) */
+  /* the product is checked by fastmulmod's own folds; keep its verdict
+     apart from the scan's, and keep the test injector's opportunity count
+     where it was before this check existed */
+  int fail_save = ec_fail;
+  long inj_save = ec_fault_at;
+  ec_fail = 0;
+  ec_fault_at = 0;
+  fastmulmod (lhs, u, v, F, r, s);
+  int mul_bad = ec_fail;
+  ec_fail = fail_save;
+  ec_fault_at = inj_save;
+  return !mul_bad && lhs == y;
+}
+
 void init_h (vec_GF2X& h, long k, long m, const GF2XModulus& F,
  	_ntl_ulong r, _ntl_ulong s, int usefs)
 
@@ -1108,14 +1168,17 @@ usage ()
   fprintf (stderr, "   -s0 s0  - start with x^r + x^s0 + 1, default 1\n");
   fprintf (stderr, "   -s1 s1  - ends with x^r + x^(s1-1) + 1, default floor(r/2)+1\n");
   fprintf (stderr, "   -mt n   - use n threads (default 1)\n");
-  fprintf (stderr, "   -ec     - enable hardware error checking (Gerbicz on the\n");
-  fprintf (stderr, "             h-table + cyclic-fold checks on the products)\n");
-  fprintf (stderr, "   -ecw w  - run the Gerbicz check every w blocks (default 1);\n");
+  fprintf (stderr, "   Hardware error checking (Gerbicz chain on the h-table, cyclic-fold\n");
+  fprintf (stderr, "   checks on the products, closed-form check of init_h) is ON by default:\n");
+  fprintf (stderr, "   -noec   - turn it off (for timing comparisons)\n");
+  fprintf (stderr, "   -ec     - accepted; it is the default\n");
+  fprintf (stderr, "   -ecw w  - run the Gerbicz check every w blocks (default 8);\n");
   fprintf (stderr, "             larger w is cheaper but rolls back further\n");
   fprintf (stderr, "   -ecg    - also recompute each gcd and compare\n");
   fprintf (stderr, "   -ect    - report per-category error-checking cost at exit\n");
-  fprintf (stderr, "   -eci0   - skip the duplicate init_h (saves one\n");
-  fprintf (stderr, "             exponentiation per s value)\n");
+  fprintf (stderr, "   -eci0   - skip the check of the h-table initialisation\n");
+  fprintf (stderr, "             (k+m squarings and one product per s value)\n");
+  fprintf (stderr, "   -ecfault N / -ecfaultinit - flip one bit (testing the checker)\n");
   exit (1);
 }
 
@@ -1245,9 +1308,21 @@ main (int argc, char *argv[])
           argv += 2;
           argc -= 2;
         }
+      else if (strcmp (argv[1], "-noec") == 0)
+        {
+          ec_enabled = 0;
+          argc --;
+          argv ++;
+        }
+      else if (strcmp (argv[1], "-ecfaultinit") == 0)
+        {
+          ec_fault_init = 1;
+          argc --;
+          argv ++;
+        }
       else if (strcmp (argv[1], "-ec") == 0)
         {
-          ec_enabled = 1;
+          ec_enabled = 1;		/* the default; accepted for old scripts */
           argc --;
           argv ++;
         }
@@ -1303,7 +1378,8 @@ main (int argc, char *argv[])
 	     ec_initchk ? "" : ", init_h check off",
 	     ec_timing  ? ", timing on" : "");
   else
-    fprintf (stderr, "Error checking disabled (use -ec to enable)\n");
+    fprintf (stderr, "Error checking DISABLED (-noec): a hardware fault "
+	     "will silently produce a wrong result\n");
 
   r = atoi (argv[1]);
 
@@ -1646,23 +1722,39 @@ main (int argc, char *argv[])
 		      st = GetTime ();
 		      init_h (h, k, m, F, r, s, usefastsqr);
 		      /* --- EC: the Gerbicz check certifies how the table
-			 *evolves*, not where it starts.  init_h is a one-time
-			 O(m*k0) cost, so just do it twice.               --- */
+			 *evolves*, not where it starts.  The start is checked
+			 against the closed form of its digest (see
+			 ec_init_closed_form); a table that fails is rebuilt. --- */
+		      if (ec_fault_init)
+			{		/* testing: a bad table must not pass */
+			  ec_fault_init = 0;
+			  long pos = deg (h[m / 2]) / 2;
+			  SetCoeff (h[m / 2], pos, !(rep (coeff (h[m / 2], pos))));
+			  fprintf (stderr, "EC INJECT: flipped bit %ld of "
+				   "h[%ld] right after init_h\n", pos, m / 2);
+			}
 		      if (ec_enabled && ec_initchk)
 			{
 			  EC_TIC (ECT_INIT);
-			  vec_GF2X h2 (INIT_SIZE, m);
-			  init_h (h2, k, m, F, r, s, usefastsqr);
-			  for (long jj = 0; jj < m; jj++)
-			    if (h2[jj] != h[jj])
-			      {
-				fprintf (stderr, "EC: init_h disagreed with "
-					 "itself (component %ld) for s=%ld\n",
-					 jj, input_s);
-				ec_detections++;
-				init_h (h, k, m, F, r, s, usefastsqr);
-				break;
-			      }
+			  for (long tries = 0;
+			       !ec_init_closed_form (h, k, m, F, r, s,
+						     usefastsqr); tries++)
+			    {
+			      fprintf (stderr, "EC FAIL [init_h] the h-table "
+				       "for s=%ld fails its closed-form check"
+				       " -- rebuilding\n", input_s);
+			      fflush (stderr);
+			      ec_detections++;
+			      if (tries + 1 >= ec_maxretry)
+				{
+				  fprintf (stderr, "EC: %ld consecutive "
+					   "failures at the same point -- this "
+					   "is not a cosmic ray. Aborting.\n",
+					   ec_maxretry);
+				  exit (1);
+				}
+			      init_h (h, k, m, F, r, s, usefastsqr);
+			    }
 			  EC_TOC (ECT_INIT);
 			}
 		      if (verbose)

@@ -158,8 +158,11 @@ done
 "$T" $C --out "$W/kill" >> "$W/kill.out" 2>> "$W/kill.err"
 st=$?
 nres=$(grep -c "^Resumed" "$W/kill.out")
-if cmp -s "$W/kref.results.txt" "$W/kill.results.txt" && [ $st -eq 0 ] && [ "$nres" -ge 1 ]; then
-    note "interrupt/resume: stopped 3 times, $nres mid-interval resume(s) from checkpoint, results identical"
+left=$(ls "$W"/kill.ckpt* 2>/dev/null | wc -l)
+if cmp -s "$W/kref.results.txt" "$W/kill.results.txt" && [ $st -eq 0 ] && [ "$nres" -ge 1 ] && [ "$left" -eq 0 ]; then
+    note "interrupt/resume: stopped 3 times, $nres mid-interval resume(s) from checkpoint, results identical, no checkpoint file left behind"
+elif [ "$left" -ne 0 ]; then
+    bad "interrupt/resume: $left checkpoint file(s) left behind after the list was finished"
 else
     bad "interrupt/resume: status $st, $nres resume(s), results $(cmp -s "$W/kref.results.txt" "$W/kill.results.txt" && echo identical || echo DIFFER)"
 fi

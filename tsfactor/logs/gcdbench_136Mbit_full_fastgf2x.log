@@ -1,0 +1,9 @@
+gcd of a random residue with x^136279841 + x^588 + 1; NTL WITH gf2x; engine products by gf2x directly; NTL finish below 4194304 bits
+  NTL GCD (--gcd-ntl)              53.44 s   (gcd degree 0)
+  CERTIFIED, NTL XGCD              63.35 s    +18.5% vs NTL   [certified]  (--ecg-xgcd)
+  engine as of round 3             70.80 s    +32.5% vs NTL   (full apply, bit-level base case)
+  engine as of round 4             47.18 s    -11.7% vs NTL   (split apply, bit-level base case)
+  engine now, uncertified          37.69 s    -29.5% vs NTL   (word-level base case)
+  CERTIFIED chain, 1 thread        38.76 s    -27.5% vs NTL, +2.8% vs uncertified   [certified]
+  CERTIFIED chain, --gcd-mt 2      24.63 s    -53.9% vs NTL, 1.57x as fast as 1 thread   [certified]
+  all agree: yes

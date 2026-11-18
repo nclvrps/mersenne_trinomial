@@ -121,21 +121,37 @@ bool trinomial_divisible_ntl(const u64 *f, size_t fw, u64 r, u64 s) {
 #include <atomic>
 #include <thread>
 #include <NTL/config.h>
+#ifdef HAVE_GF2X
+#include <gf2x.h>                 // direct products, no NTL conversions
+#endif
 #define GF2_EC_HOST_ONLY
 #include "gf2_ec.h"
+#include "gf2_hgcd_base.h"
 
 u64 hyb_gpu_min_bits   = (u64)1 << 21;   // >= 2 Mbit -> offer to the GPU
 u64 hyb_ntl_finish_bits = (u64)1 << 22;  // <= 4 Mbit -> NTL finishes
-static u64 hyb_n_gpu = 0, hyb_n_cpu = 0, hyb_n_fb = 0;
-static std::mutex hyb_stat_mu;
+static std::atomic<u64> hyb_n_gpu{0}, hyb_n_cpu{0}, hyb_n_fb{0};
+static std::atomic<u64> hyb_n_base{0}, hyb_n_basesteps{0};
 
 void hyb_get_stats(u64 &g, u64 &c, u64 &f) {
-    std::lock_guard<std::mutex> lk(hyb_stat_mu);
-    g = hyb_n_gpu; c = hyb_n_cpu; f = hyb_n_fb;
+    g = hyb_n_gpu.load();
+    c = hyb_n_cpu.load();
+    f = hyb_n_fb.load();
+}
+void hyb_get_base_stats(u64 &calls, u64 &steps) {
+    calls = hyb_n_base.load();
+    steps = hyb_n_basesteps.load();
 }
 void hyb_reset_stats() {
-    std::lock_guard<std::mutex> lk(hyb_stat_mu);
-    hyb_n_gpu = hyb_n_cpu = hyb_n_fb = 0;
+    hyb_n_gpu = 0; hyb_n_cpu = 0; hyb_n_fb = 0;
+    hyb_n_base = 0; hyb_n_basesteps = 0;
+}
+bool hyb_gf2x_direct() {
+#ifdef HAVE_GF2X
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool ntl_gf2x_backed() {
@@ -151,7 +167,9 @@ bool hyb_cert_xgcd = false;              // see gf2_gcd.h
 bool hyb_force_fallback = false;         // test hook, see gf2_gcd.h
 bool hyb_split_apply = true;             // see gf2_gcd.h
 int hyb_threads = 1;                     // see gf2_gcd.h
-u64 hyb_mt_min_bits = (u64)1 << 15;      // see gf2_gcd.h
+u64 hyb_base_bits = 2048;                // see gf2_gcd.h
+bool hyb_base_ref = false;               // see gf2_gcd.h
+u64 hyb_mt_min_bits = (u64)1 << 16;      // see gf2_gcd.h
 bool hyb_threads_ok() {
 #ifdef NTL_THREADS
     return true;
@@ -160,6 +178,53 @@ bool hyb_threads_ok() {
 #endif
 }
 static std::atomic<long> hyb_fault_ctr{0};
+
+// ---- optional built-in profile (compile with -DHYB_PROF; single thread):
+// where one gcd's time goes, by category.  gcdbench prints it.
+#ifdef HYB_PROF
+#include <x86intrin.h>
+#include <chrono>
+enum { HP_BASE, HP_MUL_S, HP_MUL_M, HP_MUL_L, HP_MUL_XL, HP_DIV, HP_SHIFT,
+       HP_ADD, HP_FOLD, HP_N };
+u64 hyb_prof_ticks[HP_N], hyb_prof_calls[HP_N];
+struct HypT {
+    int c; u64 t0;
+    explicit HypT(int c_) : c(c_), t0(__rdtsc()) {}
+    ~HypT() { hyb_prof_ticks[c] += __rdtsc() - t0; hyb_prof_calls[c]++; }
+};
+#define HYP(c) HypT hyp_timer_(c)
+void hyb_prof_reset() {
+    for (int i = 0; i < HP_N; i++) hyb_prof_ticks[i] = hyb_prof_calls[i] = 0;
+}
+void hyb_prof_report(double total_s) {
+    static const char *nm[HP_N] = {"word-level base case", "products < 4 kbit",
+        "products 4-64 kbit", "products 64 kbit-1 Mbit", "products >= 1 Mbit",
+        "division steps", "shifts/low parts (copies)", "additions",
+        "certificate folds"};
+    u64 sum = 0;
+    for (int i = 0; i < HP_N; i++) sum += hyb_prof_ticks[i];
+    // ticks -> seconds by calibration against the caller's total
+    static double tps = 0;
+    if (tps == 0) {
+        u64 t0 = __rdtsc();
+        auto c0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration<double>(std::chrono::steady_clock::now() - c0).count() < 0.05) {}
+        tps = (double)(__rdtsc() - t0) / 0.05;
+    }
+    double acc = 0;
+    for (int i = 0; i < HP_N; i++) {
+        double sec = (double)hyb_prof_ticks[i] / tps;
+        acc += sec;
+        printf("    %-28s %9.3f s  %5.1f%%  (%llu calls)\n", nm[i], sec,
+               100.0 * sec / total_s, (unsigned long long)hyb_prof_calls[i]);
+    }
+    printf("    %-28s %9.3f s  %5.1f%%\n", "everything else",
+           total_s - acc, 100.0 * (total_s - acc) / total_s);
+    for (int i = 0; i < HP_N; i++) hyb_prof_ticks[i] = hyb_prof_calls[i] = 0;
+}
+#else
+#define HYP(c)
+#endif
 
 namespace hyb {
 
@@ -175,6 +240,7 @@ struct Cert {
     u64 n = 0;               // identities verified
 };
 static inline void vfold(EcFold &f, const V &v) {
+    HYP(HP_FOLD);
     ecf_fold_host(f, v.data(), v.size());
 }
 static bool fault_now() {                // test hook
@@ -225,6 +291,7 @@ static void vxor_shl(V &dst, const V &src, u64 k) {
 }
 
 static V vshr(const V &a, u64 k) {       // a >> k bits (drop low k)
+    HYP(HP_SHIFT);
     int64_t d = vdeg(a);
     if (d < (int64_t)k) return V();
     size_t wo = (size_t)(k >> 6);
@@ -241,6 +308,7 @@ static V vshr(const V &a, u64 k) {       // a >> k bits (drop low k)
 }
 
 static V vlow(const V &a, u64 k) {       // a mod x^k (the low k bits)
+    HYP(HP_SHIFT);
     size_t nw = (size_t)((k + 63) >> 6);
     if (nw > a.size()) nw = a.size();
     V out(a.begin(), a.begin() + nw);
@@ -250,7 +318,25 @@ static V vlow(const V &a, u64 k) {       // a mod x^k (the low k bits)
     return out;
 }
 
-// CPU product via NTL (routes through gf2x when NTL is so built)
+// CPU product.  With gf2x available it is called directly on the word
+// arrays (gf2x_mul is reentrant and has its own small-size code); otherwise
+// through NTL, with a shift-xor loop for tiny operands.
+#ifdef HAVE_GF2X
+static V cpu_mul(const V &a, const V &b) {
+    static_assert(sizeof(unsigned long) == sizeof(u64), "64-bit words");
+    size_t an = a.size(), bn = b.size();
+    while (an && !a[an - 1]) an--;
+    while (bn && !b[bn - 1]) bn--;
+    if (!an || !bn) return V();
+    V out(an + bn);
+    HYP((an < bn ? an : bn) < 64 ? HP_MUL_S : (an < bn ? an : bn) < 1024
+            ? HP_MUL_M : (an < bn ? an : bn) < 16384 ? HP_MUL_L : HP_MUL_XL);
+    gf2x_mul((unsigned long *)out.data(), (const unsigned long *)a.data(),
+             an, (const unsigned long *)b.data(), bn);
+    vtrim(out);
+    return out;
+}
+#else
 static V cpu_mul(const V &a, const V &b) {
     NTL::GF2X A, B, C;
     to_gf2x(A, a.data(), a.size());
@@ -263,7 +349,7 @@ static V cpu_mul(const V &a, const V &b) {
 }
 
 // direct shift-xor product for small operands: avoids NTL conversion
-// overhead on the millions of tiny matrix-update multiplies
+// overhead on small matrix-update multiplies
 static V small_mul(const V &a, const V &b) {
     V out(a.size() + b.size() + 1, 0);
     for (size_t i = 0; i < a.size(); i++) {
@@ -277,29 +363,33 @@ static V small_mul(const V &a, const V &b) {
     vtrim(out);
     return out;
 }
+#endif
 
 static V vmul(const V &a, const V &b, GpuMulHook *gm) {
     int64_t da = vdeg(a), db = vdeg(b);
     if (da < 0 || db < 0) return V();
     u64 ab = (u64)da + 1, bb = (u64)db + 1;
+#ifndef HAVE_GF2X
     u64 mn = ab < bb ? ab : bb;
     if (mn <= 512) {                     // tiny operand: direct shift-xor
-        { std::lock_guard<std::mutex> lk(hyb_stat_mu); hyb_n_cpu++; }
+        hyb_n_cpu.fetch_add(1, std::memory_order_relaxed);
         return (ab <= bb) ? small_mul(a, b) : small_mul(b, a);
     }
+#endif
     if (gm && (ab >= hyb_gpu_min_bits || bb >= hyb_gpu_min_bits)) {
         V out;
         if (gm->mul(a.data(), a.size(), ab, b.data(), b.size(), bb, out)) {
-            { std::lock_guard<std::mutex> lk(hyb_stat_mu); hyb_n_gpu++; }
+            hyb_n_gpu.fetch_add(1, std::memory_order_relaxed);
             vtrim(out);
             return out;
         }
     }
-    { std::lock_guard<std::mutex> lk(hyb_stat_mu); hyb_n_cpu++; }
+    hyb_n_cpu.fetch_add(1, std::memory_order_relaxed);
     return cpu_mul(a, b);
 }
 
 static V vadd(V a, const V &b) {
+    HYP(HP_ADD);
     vxor_shl(a, b, 0);
     vtrim(a);
     return a;
@@ -321,8 +411,12 @@ static void cert_divstep(Cert &C, const V &q, V &rem) {
     C.n++;
 }
 static V divstep(V &a, V &b, Cert *C = nullptr) {
+    HYP(HP_DIV);
     int64_t da = vdeg(a), db = vdeg(b);
-    if ((u64)da + 1 > ((u64)1 << 16)) {
+    // A long quotient on big operands goes to NTL's DivRem.  The usual
+    // quotient has degree 1 or 2: a couple of shift-xor passes, whatever
+    // the operand size.
+    if ((u64)da + 1 > ((u64)1 << 16) && da - db >= 64) {
         NTL::GF2X A, B, Q, R;
         to_gf2x(A, a.data(), a.size());
         to_gf2x(B, b.data(), b.size());
@@ -382,7 +476,7 @@ static bool try_mat2(const V &r0c0, const V &r0c1,
         {r1c0.data(), r1c0.size(), eb[2]}, {r1c1.data(), r1c1.size(), eb[3]}};
     GpuMulHook::Op ox{x.data(), x.size(), xb}, oy{y.data(), y.size(), yb};
     if (!gm->mat2_apply(m, ox, oy, o0, o1)) return false;
-    { std::lock_guard<std::mutex> lk(hyb_stat_mu); hyb_n_gpu += 2; }
+    hyb_n_gpu.fetch_add(2, std::memory_order_relaxed);
     vtrim(o0);
     vtrim(o1);
     return true;
@@ -424,7 +518,14 @@ static void cpu_mat2(const Mat2 &M, const V &x, const V &y, V &o0, V &o1,
     const V *ml[4] = {&M.m[0][0], &M.m[0][1], &M.m[1][0], &M.m[1][1]};
     const V *op[4] = {&x, &y, &x, &y};
     V p[4];
-    bool par = hyb_threads > 1 && !gm;
+    // Threads are for products that stay on the CPU.  With a GPU hook that
+    // means everything below its size threshold (the hook itself is not
+    // re-entrant, and what it takes it does faster than four cores).
+    bool par = hyb_threads > 1;
+    if (par && gm)
+        for (int i = 0; i < 4 && par; i++)
+            par = vbits(*ml[i]) < hyb_gpu_min_bits &&
+                  vbits(*op[i]) < hyb_gpu_min_bits;
     if (par) {
         int big = 0;
         for (int i = 0; i < 4; i++) big += mt_worth(*ml[i], *op[i]);
@@ -436,9 +537,29 @@ static void cpu_mat2(const Mat2 &M, const V &x, const V &y, V &o0, V &o1,
     o1 = vadd(std::move(p[2]), p[3]);
 }
 
-// (a, b) <- M (a, b).  With C the two products are verified against the
-// carried folds, whoever computed them (NTL/gf2x on the CPU or the GPU
-// hook):  phi(a') = phi(M00) phi(a) + phi(M01) phi(b), likewise b'.
+// The check of one matrix step (a, b) -> (na, nb) = M (a, b) against the
+// carried folds:  phi(na) = phi(M00) phi(a) + phi(M01) phi(b), likewise nb.
+// It is the identity of the WHOLE step, however na and nb were computed.
+static void cert_matstep(Cert &C, const Mat2 &M, const V &na, const V &nb) {
+    EcFold m00, m01, m10, m11, fna, fnb, t1, t2;
+    vfold(m00, M.m[0][0]); vfold(m01, M.m[0][1]);
+    vfold(m10, M.m[1][0]); vfold(m11, M.m[1][1]);
+    vfold(fna, na);
+    vfold(fnb, nb);
+    ecf_mul(t1, m00, C.fa);
+    ecf_mul(t2, m01, C.fb);
+    ecf_xor(t1, t2);
+    bool ok = ecf_eq(t1, fna);
+    ecf_mul(t1, m10, C.fa);
+    ecf_mul(t2, m11, C.fb);
+    ecf_xor(t1, t2);
+    ok = ok && ecf_eq(t1, fnb);
+    if (!ok) C.ok = false;
+    else { C.fa = fna; C.fb = fnb; C.n++; }
+}
+
+// (a, b) <- M (a, b).  With C the step is verified, whoever computed the
+// products (gf2x/NTL on the CPU or the GPU hook).
 static void mat_apply(const Mat2 &M, V &a, V &b, GpuMulHook *gm,
                       Cert *C = nullptr) {
     if (M.ident) return;
@@ -449,21 +570,7 @@ static void mat_apply(const Mat2 &M, V &a, V &b, GpuMulHook *gm,
         cpu_mat2(M, a, b, na, nb, gm);
     if (C) {
         if (fault_now()) flip_mid(nb);       // test: a product is wrong
-        EcFold m00, m01, m10, m11, fna, fnb, t1, t2;
-        vfold(m00, M.m[0][0]); vfold(m01, M.m[0][1]);
-        vfold(m10, M.m[1][0]); vfold(m11, M.m[1][1]);
-        vfold(fna, na);
-        vfold(fnb, nb);
-        ecf_mul(t1, m00, C->fa);
-        ecf_mul(t2, m01, C->fb);
-        ecf_xor(t1, t2);
-        bool ok = ecf_eq(t1, fna);
-        ecf_mul(t1, m10, C->fa);
-        ecf_mul(t2, m11, C->fb);
-        ecf_xor(t1, t2);
-        ok = ok && ecf_eq(t1, fnb);
-        if (!ok) C->ok = false;
-        else { C->fa = fna; C->fb = fnb; C->n++; }
+        cert_matstep(*C, M, na, nb);
     }
     a = std::move(na);
     b = std::move(nb);
@@ -494,21 +601,7 @@ static void mat_apply_split(const Mat2 &M, V &a, V &b, const V &ah,
     vtrim(nb);
     if (C) {
         if (fault_now()) flip_mid(nb);       // test: a product is wrong
-        EcFold m00, m01, m10, m11, fna, fnb, t1, t2;
-        vfold(m00, M.m[0][0]); vfold(m01, M.m[0][1]);
-        vfold(m10, M.m[1][0]); vfold(m11, M.m[1][1]);
-        vfold(fna, na);
-        vfold(fnb, nb);
-        ecf_mul(t1, m00, C->fa);
-        ecf_mul(t2, m01, C->fb);
-        ecf_xor(t1, t2);
-        bool ok = ecf_eq(t1, fna);
-        ecf_mul(t1, m10, C->fa);
-        ecf_mul(t2, m11, C->fb);
-        ecf_xor(t1, t2);
-        ok = ok && ecf_eq(t1, fnb);
-        if (!ok) C->ok = false;
-        else { C->fa = fna; C->fb = fnb; C->n++; }
+        cert_matstep(*C, M, na, nb);
     }
     a = std::move(na);
     b = std::move(nb);
@@ -536,7 +629,13 @@ static Mat2 mat_mul(const Mat2 &A, const Mat2 &B, GpuMulHook *gm) {
     if (B.ident) return A;
     Mat2 C;
     C.ident = false;
-    if (hyb_threads > 1 && !gm && mt_worth(A.m[1][1], B.m[1][1])) {
+    bool par = hyb_threads > 1 && mt_worth(A.m[1][1], B.m[1][1]);
+    if (par && gm)
+        for (int i = 0; i < 2 && par; i++)
+            for (int j = 0; j < 2 && par; j++)
+                par = vbits(A.m[i][j]) < hyb_gpu_min_bits &&
+                      vbits(B.m[i][j]) < hyb_gpu_min_bits;
+    if (par) {
         // the eight products of C = A B, side by side
         V p[8];
         par_run(8, [&](int t) {
@@ -562,7 +661,19 @@ static Mat2 mat_mul(const Mat2 &A, const Mat2 &B, GpuMulHook *gm) {
     return C;
 }
 
-static const u64 HGCD_BASE_BITS = 4096;
+// The classical base case: one division step at a time on the vector
+// operands.  This was the engine's bottom until round 5; it is kept as the
+// REFERENCE for hgb::hgcd_base (gf2_hgcd_base.h), which must reproduce it
+// exactly, and for builds/inputs the word-level routine declines.
+static void hgcd_base_ref(V &a, V &b, u64 mm, Mat2 &M, GpuMulHook *gm,
+                          bool &ok, Cert *C) {
+    int64_t guard = 0, lim = vdeg(a) + 8;
+    while (!vzero(b) && (u64)vdeg(b) >= mm) {
+        V q = divstep(a, b, C);
+        mat_lstep(M, q, gm);
+        if (++guard > lim) { ok = false; break; }
+    }
+}
 
 // In-place half-gcd: with n = deg a and mm = ceil(n/2), reduces (a, b)
 // by unimodular steps until deg a >= mm > deg b, returning the transform
@@ -579,13 +690,48 @@ static Mat2 hgcd(V &a, V &b, GpuMulHook *gm, bool need_matrix, bool &ok,
     if (n <= 0) return M;
     u64 mm = ((u64)n + 1) / 2;
     if (vzero(b) || (u64)vdeg(b) < mm) return M;
-    if ((u64)n <= HGCD_BASE_BITS) {
-        int guard = 0;
-        while (!vzero(b) && (u64)vdeg(b) >= mm) {
-            V q = divstep(a, b, C);
-            mat_lstep(M, q, gm);
-            if (++guard > (int)HGCD_BASE_BITS + 4) { ok = false; break; }
+    if ((u64)n <= hyb_base_bits) {
+        if (!hyb_base_ref && vdeg(b) <= n &&
+            (u64)n + 64 <= (u64)hgb::MAX_BITS) {
+            // word-level base case (gf2_hgcd_base.h): the same quotient
+            // sequence as the reference, ~31 quotient bits per pass
+            const int nw = (int)(n / 64 + 1);
+            a.resize((size_t)nw, 0);
+            b.resize((size_t)nw, 0);
+            u64 Mb[4 * hgb::MAXM];
+            int mw = 0;
+            long st = 0;
+            V a0, b0;
+            if (C) { a0 = a; b0 = b; }
+            bool base_ok;
+            {
+                HYP(HP_BASE);
+                base_ok = hgb::hgcd_base(a.data(), b.data(), nw, mm, Mb, &mw,
+                                         &st);
+            }
+            if (base_ok) {
+                hyb_n_base.fetch_add(1, std::memory_order_relaxed);
+                hyb_n_basesteps.fetch_add((u64)st, std::memory_order_relaxed);
+                vtrim(a);
+                vtrim(b);
+                if (st) {
+                    M.ident = false;
+                    for (int e = 0; e < 4; e++) {
+                        V &d = M.m[e >> 1][e & 1];
+                        d.assign(Mb + (size_t)e * hgb::MAXM,
+                                 Mb + (size_t)e * hgb::MAXM + mw);
+                        vtrim(d);
+                    }
+                    if (C) {             // the whole base step, as one matrix
+                        if (fault_now()) flip_mid(b);
+                        cert_matstep(*C, M, a, b);
+                    }
+                }
+                return M;
+            }
+            if (C) { a = a0; b = b0; }   // declined before touching anything
         }
+        hgcd_base_ref(a, b, mm, M, gm, ok, C);
         return M;
     }
     // first recursion on the top halves
@@ -670,7 +816,7 @@ static u64 hyb_gcd_core(const u64 *aw_, size_t awn, const u64 *bw_, size_t bwn,
         return 0;
     }
     if (!ok) {
-        { std::lock_guard<std::mutex> lk(hyb_stat_mu); hyb_n_fb++; }
+        hyb_n_fb++;
         if (C) {                         // the caller certifies another way
             *status = GCD_CERT_NONE;
             return 0;
@@ -761,6 +907,39 @@ u64 poly_gcd_certified(const u64 *aw_, size_t awn, const u64 *bw_, size_t bwn,
     }
     if (status) *status = st;
     return d;
+}
+// TEST (not thread-safe: it toggles hyb_base_ref).  The half-gcd of (a, b),
+// once on the word-level base case and once on the reference one; the
+// reduced pair and the transform must agree word for word, and the
+// transform must be what the contract says:  deg a' >= ceil(n/2) > deg b'.
+bool hyb_base_selfcheck(const u64 *a, size_t aw, const u64 *b, size_t bw) {
+    using namespace hyb;
+    V a1(a, a + aw), b1(b, b + bw);
+    vtrim(a1); vtrim(b1);
+    if (vdeg(a1) < vdeg(b1)) std::swap(a1, b1);
+    V a2 = a1, b2 = b1;
+    const int64_t n = vdeg(a1);
+    const bool sv = hyb_base_ref;
+    bool ok1 = true, ok2 = true;
+    hyb_base_ref = false;
+    Mat2 M1 = hgcd(a1, b1, nullptr, true, ok1);
+    hyb_base_ref = true;
+    Mat2 M2 = hgcd(a2, b2, nullptr, true, ok2);
+    hyb_base_ref = sv;
+    if (!ok1 || !ok2) return false;
+    vtrim(a1); vtrim(b1); vtrim(a2); vtrim(b2);
+    if (a1 != a2 || b1 != b2 || M1.ident != M2.ident) return false;
+    if (!M1.ident)
+        for (int i = 0; i < 2; i++)
+            for (int j = 0; j < 2; j++) {
+                vtrim(M1.m[i][j]); vtrim(M2.m[i][j]);
+                if (M1.m[i][j] != M2.m[i][j]) return false;
+            }
+    if (n > 0) {
+        const int64_t mm = (n + 1) / 2;
+        if (vdeg(a1) < mm || vdeg(b1) >= mm) return false;
+    }
+    return true;
 }
 void hyb_fault_reset() { hyb_fault_ctr = 0; }
 long hyb_fault_count() { return hyb_fault_ctr.load(); }

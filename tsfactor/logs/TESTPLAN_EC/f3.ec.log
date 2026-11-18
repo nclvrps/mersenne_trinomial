@@ -1,3 +1,0 @@
-2026-11-16 22:41:07  A*C product / Horner     s=12337659 block 1643..1672: phi(A*C) != phi(A)*phi(C)
-2026-11-16 22:41:07  note                     s=12337659: restarting from the verified state at interval 1493, block 0
-2026-11-16 22:44:55  note                     s=12337659: completed after 1 restart(s)

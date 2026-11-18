@@ -1,0 +1,161 @@
+$ make factor factor_ec
+g++ -O4 -march=native -fomit-frame-pointer -funroll-loops -fopenmp -DHAVE_CONFIG_H -I.     -Wall -W -MT factor.o -MD -MP -c -o factor.o factor.cpp
+factor.cpp: In function ‘void fastsqr_old(NTL::GF2X&, NTL::GF2X&, _ntl_ulong, _ntl_ulong)’:
+factor.cpp:169:17: warning: left shift of negative value [-Wshift-negative-value]
+  169 |   mask2 = (~1L) << (alpha & wlenm);
+      |           ~~~~~~^~~~~~~~~~~~~~~~~~
+factor.cpp: In function ‘int main(int, char**)’:
+factor.cpp:1562:38: warning: ‘certificate’ may be used uninitialized [-Wmaybe-uninitialized]
+ 1562 |                         (certificate ^ 0x2) & 0xFFFFFFFF);
+      |                         ~~~~~~~~~~~~~^~~~~~
+factor.cpp:1124:22: note: ‘certificate’ was declared here
+ 1124 |           _ntl_ulong certificate;
+      |                      ^~~~~~~~~~~
+g++ -O4 -march=native -fomit-frame-pointer -funroll-loops -fopenmp -DHAVE_CONFIG_H -I.     -Wall -W -MT halfgcd.o -MD -MP -c -o halfgcd.o halfgcd.cpp
+g++ -O4 -march=native -fomit-frame-pointer -funroll-loops -fopenmp -Wall -W -o factor factor.o halfgcd.o -lntl -lgf2x -lgmp
+g++ -O4 -march=native -fomit-frame-pointer -funroll-loops -fopenmp -DHAVE_CONFIG_H -I.     -Wall -W -MT factor_ec.o -MD -MP -c -o factor_ec.o factor_ec.cpp
+factor_ec.cpp: In function ‘void fastsqr_old(NTL::GF2X&, NTL::GF2X&, _ntl_ulong, _ntl_ulong)’:
+factor_ec.cpp:378:17: warning: left shift of negative value [-Wshift-negative-value]
+  378 |   mask2 = (~1L) << (alpha & wlenm);
+      |           ~~~~~~^~~~~~~~~~~~~~~~~~
+factor_ec.cpp: In function ‘int main(int, char**)’:
+factor_ec.cpp:2141:38: warning: ‘certificate’ may be used uninitialized [-Wmaybe-uninitialized]
+ 2141 |                         (certificate ^ 0x2) & 0xFFFFFFFF);
+      |                         ~~~~~~~~~~~~~^~~~~~
+factor_ec.cpp:1506:22: note: ‘certificate’ was declared here
+ 1506 |           _ntl_ulong certificate;
+      |                      ^~~~~~~~~~~
+
+
+$ ./regress.sh
+g++ -O4 -march=native -fomit-frame-pointer -funroll-loops -fopenmp -Wall -W -o factor_ec factor_ec.o halfgcd.o -lntl -lgf2x -lgmp
+  r=1279 default                      300 trinomials  OK, 0 false alarms
+  r=1279 -ecw 1                       300 trinomials  OK, 0 false alarms
+  r=1279 -ecw 4                       300 trinomials  OK, 0 false alarms
+  r=1279 -ecw 16                      300 trinomials  OK, 0 false alarms
+  r=1279 -noec                        300 trinomials  OK, 0 false alarms
+  r=1279 -eci0                        300 trinomials  OK, 0 false alarms
+  r=3217 default                      300 trinomials  OK, 0 false alarms
+  r=3217 -ecw 1                       300 trinomials  OK, 0 false alarms
+  r=3217 -ecw 4                       300 trinomials  OK, 0 false alarms
+  r=3217 -ecw 16                      300 trinomials  OK, 0 false alarms
+  r=3217 -noec                        300 trinomials  OK, 0 false alarms
+  r=3217 -eci0                        300 trinomials  OK, 0 false alarms
+  r=4423 default                      300 trinomials  OK, 0 false alarms
+  r=4423 -ecw 1                       300 trinomials  OK, 0 false alarms
+  r=4423 -ecw 4                       300 trinomials  OK, 0 false alarms
+  r=4423 -ecw 16                      300 trinomials  OK, 0 false alarms
+  r=4423 -noec                        300 trinomials  OK, 0 false alarms
+  r=4423 -eci0                        300 trinomials  OK, 0 false alarms
+  r=4423 -mt 2 -m 8                   300 trinomials  OK, 0 false alarms
+  r=9689 production options, stdin     81 trinomials  OK, 0 false alarms
+  ---- all regressions identical to the original factor ----
+
+
+$ ./sweep.sh
+single-fault sweep: r=3217, s=640 (flips to working s with r-s=640), m=8, q=4
+  truth: 640 119 pa2e1bd9b0527ac56d78cc48309fe61
+  injection opportunities probed: 150   (never reached: 42)
+  checking OFF : 60 WRONG, 48 benign
+  checking ON  : 0 wrong, 108 correct
+  distribution of wrong answers:
+          2 640 145 p24d0d320d340119f7b3029c3b787ecdefec3d
+          2 640 302 p797f364f0aa553ed5304bd75e06a0d074d6320c32eaa9ff95d9cdcb5d92277ae04c50e4b9b27
+         56 640 irreducible
+  corrupted init_h, 4 runs: checking ON caught and repaired 4; checking OFF gave 4 wrong answers
+
+
+$ ./factor_ec -ect -v -skip 55 -k 55 -s0 588 -s1 589 -m 14 -q 16 136279841
+./factor_ec -ect -v -skip 55 -k 55 -s0 588 -s1 589 -m 14 -q 16 136279841
+This is factor version 2.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1, timing on
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=16 block(s)
+Use fine DDF above 530450
+Using 1 thread(s)
+Using reciprocal trinomial
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+Degree 3: skip
+Degree 4: skip
+Degree 5: skip
+Degree 6: skip
+Degree 7: skip
+Degree 8: skip
+Degree 9: skip
+Degree 10: skip
+Degree 11: skip
+Degree 12: skip
+Degree 13: skip
+Degree 14: skip
+Degree 15: skip
+Degree 16: skip
+Degree 17: skip
+Degree 18: skip
+Degree 19: skip
+Degree 20: skip
+Degree 21: skip
+Degree 22: skip
+Degree 23: skip
+Degree 24: skip
+Degree 25: skip
+Degree 26: skip
+Degree 27: skip
+Degree 28: skip
+Degree 29: skip
+Degree 30: skip
+Degree 31: skip
+Degree 32: skip
+Degree 33: skip
+Degree 34: skip
+Degree 35: skip
+Degree 36: skip
+Degree 37: skip
+Degree 38: skip
+Degree 39: skip
+Degree 40: skip
+Degree 41: skip
+Degree 42: skip
+Degree 43: skip
+Degree 44: skip
+Degree 45: skip
+Degree 46: skip
+Degree 47: skip
+Degree 48: skip
+Degree 49: skip
+Degree 50: skip
+Degree 51: skip
+Degree 52: skip
+Degree 53: skip
+Degree 54: skip
+Degree 55: skip
+Exponentiation took 8.688599
+Current q 16
+Interval 56..279:
+   squares/products took 40.3 (wct 40.4), per term 0.180 (wct 0.180)
+   gcd took 42.796730
+Current q 32
+Interval 280..727:
+   squares/products took 79.9 (wct 80.0), per term 0.178 (wct 0.179)
+   gcd took 42.784333
+CanZass took 0.001866, total degree 1767, small degree 486
+588 486 p548cbdde4893d07f2b8aa661a37e7092be1edd9887bc82ee586e13fb2ff061625a11cf91d8ae6e1a4f7e6ee512192b0446e9dc4b353a2dc14bf7529227
+Error checking: 0 detection(s) / recovery(ies)
+
+Error-checking cost breakdown
+  category                        calls      seconds    ms/call
+  fold check on product              49        0.148      3.025
+  reduction divisibility             49        0.831     16.968
+  copy t for check                   49        0.114      2.320
+  horner fold shadow                 48        0.035      0.729
+  gerbicz digest xor                720        1.451      2.015
+  gerbicz sigma(D)                    6        0.691    115.172
+  init_h closed-form check            1        1.854   1853.777
+  TOTAL                                        5.124
+
+If any ms/call above looks absurd, that check is the
+problem -- compare against ecbench for the same r and s.

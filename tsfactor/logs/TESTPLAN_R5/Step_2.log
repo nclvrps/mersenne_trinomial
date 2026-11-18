@@ -1,0 +1,28 @@
+$ ./gcdbench 136279841 588
+gcd of a random residue with x^136279841 + x^588 + 1; NTL WITH gf2x; engine products by gf2x directly; NTL finish below 4194304 bits
+  NTL GCD (--gcd-ntl)              50.95 s   (gcd degree 0)
+  CERTIFIED, NTL XGCD              60.18 s    +18.1% vs NTL   [certified]  (--ecg-xgcd)
+  engine as of round 3             68.55 s    +34.6% vs NTL   (full apply, bit-level base case)
+  engine as of round 4             47.14 s     -7.5% vs NTL   (split apply, bit-level base case)
+  engine now, uncertified          36.25 s    -28.8% vs NTL   (word-level base case)
+  CERTIFIED chain, 1 thread        36.12 s    -29.1% vs NTL, -0.4% vs uncertified   [certified]
+  CERTIFIED chain, --gcd-mt 4      17.28 s    -66.1% vs NTL, 2.09x as fast as 1 thread   [certified]
+  all agree: yes
+
+
+$ ./gcdbench 136279841 588 4194304 quick 6     # last row on 6 threads
+gcd of a random residue with x^136279841 + x^588 + 1; NTL WITH gf2x; engine products by gf2x directly; NTL finish below 4194304 bits
+  NTL GCD (--gcd-ntl)              51.32 s   (gcd degree 0)
+  engine now, uncertified          36.46 s    -29.0% vs NTL   (word-level base case)
+  CERTIFIED chain, 1 thread        36.45 s    -29.0% vs NTL, -0.0% vs uncertified   [certified]
+  CERTIFIED chain, --gcd-mt 6      17.06 s    -66.8% vs NTL, 2.14x as fast as 1 thread   [certified]
+  all agree: yes
+
+
+$ ./gcdbench 136279841 588 4194304 quick 2
+gcd of a random residue with x^136279841 + x^588 + 1; NTL WITH gf2x; engine products by gf2x directly; NTL finish below 4194304 bits
+  NTL GCD (--gcd-ntl)              50.97 s   (gcd degree 0)
+  engine now, uncertified          36.79 s    -27.8% vs NTL   (word-level base case)
+  CERTIFIED chain, 1 thread        36.39 s    -28.6% vs NTL, -1.1% vs uncertified   [certified]
+  CERTIFIED chain, --gcd-mt 2      23.60 s    -53.7% vs NTL, 1.54x as fast as 1 thread   [certified]
+  all agree: yes

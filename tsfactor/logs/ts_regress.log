@@ -1,39 +1,39 @@
 r=3217: 92 reference results (original binary)
   noec      identical  
-  ec        identical  780 blocks and 410 h-table chain windows verified
-  chain     identical  860 blocks and 428 h-table chain windows verified
-  chainold  identical  808 blocks and 414 h-table chain windows verified
+  ec        identical  965 blocks and 391 h-table chain windows verified
+  chain     identical  793 blocks and 391 h-table chain windows verified
+  chainold  identical  832 blocks and 391 h-table chain windows verified
   ecw1      identical  704 blocks and 841 h-table chain windows verified
-  xgcd      identical  708 blocks and 391 h-table chain windows verified
-  ntl       identical  714 blocks and 393 h-table chain windows verified
-  dup       identical  715 blocks and 393 h-table chain windows verified
-  gpugcd    identical  761 blocks and 405 h-table chain windows verified
+  xgcd      identical  876 blocks and 391 h-table chain windows verified
+  ntl       identical  860 blocks and 391 h-table chain windows verified
+  dup       identical  1007 blocks and 391 h-table chain windows verified
+  gpugcd    identical  978 blocks and 393 h-table chain windows verified
   opt       identical  1095 blocks and 325 h-table chain windows verified
-  mt        identical  736 blocks and 398 h-table chain windows verified
+  mt        identical  761 blocks and 391 h-table chain windows verified
 r=4423: 121 reference results (original binary)
   noec      identical  
-  ec        identical  970 blocks and 522 h-table chain windows verified
-  chain     identical  1037 blocks and 538 h-table chain windows verified
-  chainold  identical  989 blocks and 526 h-table chain windows verified
+  ec        identical  1288 blocks and 520 h-table chain windows verified
+  chain     identical  1062 blocks and 520 h-table chain windows verified
+  chainold  identical  1058 blocks and 520 h-table chain windows verified
   ecw1      identical  963 blocks and 1144 h-table chain windows verified
-  xgcd      identical  963 blocks and 520 h-table chain windows verified
-  ntl       identical  963 blocks and 520 h-table chain windows verified
-  dup       identical  1002 blocks and 524 h-table chain windows verified
-  gpugcd    identical  1094 blocks and 551 h-table chain windows verified
+  xgcd      identical  1321 blocks and 526 h-table chain windows verified
+  ntl       identical  1137 blocks and 520 h-table chain windows verified
+  dup       identical  1334 blocks and 520 h-table chain windows verified
+  gpugcd    identical  1860 blocks and 701 h-table chain windows verified
   opt       identical  1412 blocks and 413 h-table chain windows verified
-  mt        identical  994 blocks and 528 h-table chain windows verified
+  mt        identical  1075 blocks and 520 h-table chain windows verified
 r=9689: 81 reference results (original binary)
   noec      identical  
-  ec        identical  859 blocks and 391 h-table chain windows verified
-  chain     identical  817 blocks and 389 h-table chain windows verified
-  chainold  identical  840 blocks and 393 h-table chain windows verified
+  ec        identical  1129 blocks and 399 h-table chain windows verified
+  chain     identical  843 blocks and 377 h-table chain windows verified
+  chainold  identical  899 blocks and 377 h-table chain windows verified
   ecw1      identical  781 blocks and 913 h-table chain windows verified
-  xgcd      identical  875 blocks and 388 h-table chain windows verified
-  ntl       identical  796 blocks and 382 h-table chain windows verified
-  dup       identical  842 blocks and 393 h-table chain windows verified
-  gpugcd    identical  1035 blocks and 444 h-table chain windows verified
+  xgcd      identical  1142 blocks and 417 h-table chain windows verified
+  ntl       identical  963 blocks and 377 h-table chain windows verified
+  dup       identical  1151 blocks and 377 h-table chain windows verified
+  gpugcd    identical  2563 blocks and 805 h-table chain windows verified
   opt       identical  963 blocks and 290 h-table chain windows verified
-  mt        identical  850 blocks and 397 h-table chain windows verified
+  mt        identical  863 blocks and 377 h-table chain windows verified
 TSFACTOR_ARGS: options taken from the environment, results identical
   --ec-fault h:40      injected, caught (EC FAIL [h-table chain]), results identical
   --ec-fault hmid:25   injected, caught (EC FAIL [h-table chain]), results identical
@@ -48,7 +48,7 @@ TSFACTOR_ARGS: options taken from the environment, results identical
   --ec-fault snap:2    injected into state that was never read again: harmless
   the same kind of flip with --no-ec (4 runs): 1 gave wrong results, silently
   persistent fault: exit status 3, no wrong line written
-interrupt/resume: stopped 3 times, 3 mid-interval resume(s) from checkpoint, results identical
+interrupt/resume: stopped 3 times, 3 mid-interval resume(s) from checkpoint, results identical, no checkpoint file left behind
 fault after a resume: detected, results identical
 
 ts_regress: all PASS

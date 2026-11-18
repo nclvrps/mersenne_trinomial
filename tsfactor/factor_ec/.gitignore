@@ -1,0 +1,4 @@
+*.d
+*.o
+factor
+factor_ec

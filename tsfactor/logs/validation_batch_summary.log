@@ -1,0 +1,27 @@
+== 1. selftest x5 (normal build)
+   PASS lines: 161  FAIL: 0  ===== 5 runs complete: all runs PASS =====
+== 2. ts_regress vs the original binary
+   46 identical lines; ts_regress: all PASS
+== 3. gcdstress, default + two long runs
+   gcdstress: word-level base case == reference on 16000 small pairs (12046 calls, 3116415 division steps)
+     mismatches: 0   PASS
+   gcdstress: word-level base case == reference on 60000 small pairs (44972 calls, 11624148 division steps)
+     mismatches: 0   PASS
+   gcdstress: word-level base case == reference on 48000 small pairs (35967 calls, 9170072 division steps)
+     mismatches: 0   PASS
+== 4. sanitizers: tsfactor (ASan+UBSan)
+   selftest: PASS lines 32, sanitizer reports 0, SELFTEST: all PASS
+   ts_regress: ts_regress: all PASS
+== 5. sanitizers: gcdstress (ASan+UBSan, then TSan)
+   asan:   mismatches: 0   PASS; reports 0
+   tsan:   mismatches: 0   PASS; reports 0
+== 6. the NTL product path (no -DHAVE_GF2X)
+     mismatches: 0   PASS
+== 7. build without NTL
+1
+SELFTEST: kernel suites PASS; resolution suites SKIPPED (built without NTL)
+== 8. portable carry-less multiply (no PCLMUL): base case
+     mismatches: 0   PASS
+== done
+
+[exited with code 0]

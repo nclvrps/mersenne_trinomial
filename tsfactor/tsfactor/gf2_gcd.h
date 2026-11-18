@@ -231,6 +231,21 @@ extern bool hyb_force_fallback;  // TEST: make the chain decline
 extern int hyb_threads;
 extern u64 hyb_mt_min_bits;
 bool hyb_threads_ok();
+// The bottom of the half-gcd recursion.  Pairs of at most hyb_base_bits bits
+// are reduced by the word-level routine of gf2_hgcd_base.h (the polynomial
+// form of Lehmer's method: exact, allocation-free, ~31 quotient bits per
+// pass).  hyb_base_ref = true selects the old bit-level loop instead -- the
+// reference the word-level routine must reproduce exactly (gcdstress).
+extern u64 hyb_base_bits;        // default 2048; at most 16320
+extern bool hyb_base_ref;
+void hyb_get_base_stats(u64 &calls, u64 &division_steps);
+// TEST (single-threaded): half-gcd of (a, b) with the word-level base case
+// and with the reference one; true iff reduced pair and transform agree
+// exactly and satisfy the half-gcd contract.
+bool hyb_base_selfcheck(const u64 *a, size_t aw, const u64 *b, size_t bw);
+// true if the engine calls gf2x directly for its CPU products (built with
+// -DHAVE_GF2X); otherwise they go through NTL::mul with conversions
+bool hyb_gf2x_direct();
 extern long hyb_fault_at;        // TEST: corrupt the N-th verified step
 void hyb_fault_reset();          // TEST: restart the step counter
 long hyb_fault_count();          // TEST: verified steps seen so far

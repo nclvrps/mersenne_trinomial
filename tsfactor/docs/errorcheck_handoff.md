@@ -1,31 +1,36 @@
 # Low-cost error checking for trinomial factor search over GF(2)
-## Analysis + handoff document — Round 4
+## Analysis + handoff document — Round 5
 
-> **Round 4 implemented the scheme in `tsfactor` (CUDA), on by default**, and
-> in doing so found four things that change this document:
+> **Round 5 in one paragraph.** Gord compiled the round-4 `tsfactor` with nvcc
+> and ran the whole test plan on the real GPU: everything passed, and the
+> scan checks cost about 1% as estimated (§12). His logs also showed that the
+> gcd was 58% of a survivor's wall time and that the certified gcd engine,
+> "27% faster than NTL" in the sandbox, was 6% *slower* on his machine: half
+> of every gcd was the engine's bit-level base case, hidden in the sandbox by
+> a gf2x ten times slower than his. Round 5 replaces that base case (§6.5),
+> which roughly halves the single-threaded gcd and lets `--gcd-mt` scale;
+> ports the closed-form init check to `factor_ec`; and turns checking on by
+> default there too.
 >
-> 1. **The h-table digest has a closed form** (§4.7). The initialisation can be
->    verified from first principles with `k + m` squarings and one modmul.
->    Round 3's conclusion that no cheap `init_h` check exists (old §12) was
->    **wrong**.
-> 2. **The gcd can be certified without computing cofactors** (§6.3): verifying
->    each step of the half-gcd reduction chain with folds is enough to prove
->    "no factor here", at a cost of a few percent of the gcd.
-> 3. **The gcd engine got faster than NTL's** (§6.4): a half-gcd matrix only
->    has to be multiplied into the *low* half of the operands. Certified and
->    24–32% faster than the unchecked NTL gcd in the sandbox (32% at
->    136 Mbit); it is now tsfactor's default.
-> 4. **The fold length must not be a power of two** (§5.1). It is now 61 words
->    in both programs.
+> What rounds 4 and 5 changed in this document:
 >
-> §13 remains the ledger of what is verified by execution and what is not.
-> For the tsfactor integration itself read `tsfactor_handoff_EC.md`.
+> 1. **The h-table digest has a closed form** (§4.7): the initialisation is
+>    verified with `k + m` squarings and one product. Now in both programs.
+> 2. **The gcd can be certified without computing cofactors** (§6.3).
+> 3. **Split application** of half-gcd matrices (§6.4) and a **word-level
+>    base case** (§6.5): together they make the certified gcd the fastest
+>    gcd available here, and the default.
+> 4. **The fold length must not be a power of two** (§5.1): 61 words.
+> 5. **CPU frequency-domain batching was measured and not adopted** (§6.5).
+>
+> §13 is the ledger of what is verified by execution, where, and what is not.
+> For the tsfactor integration itself read `tsfactor_handoff.md` (Rounds 8
+> and 9 there).
 
-**Status: implemented in both programs.** `factor_ec` (CPU, opt-in `-ec`):
-measured 1.8% of wall clock at r = 136279841 excluding the duplicate
-`init_h`. `tsfactor` (GPU, on by default, gcd certified by default): validated
-under CPU emulation including fault injection at 14 sites and one run at the
-production exponent; **not yet compiled by nvcc or run on a GPU**.
+**Status: implemented in both programs, on by default in both.** `tsfactor`
+round 4 is verified on the real GPU; round 5 (host-side changes only) is
+verified under emulation and with the gcd tools, and has not been through
+nvcc. `factor_ec` round 5 is verified at small r.
 
 The core fact is unchanged: in characteristic 2 the squaring map is
 **additive** as well as multiplicative, so the Gerbicz "product of
@@ -39,20 +44,22 @@ version and deterministic for single faults.
 | File | What it is |
 |---|---|
 | `errorcheck_handoff.md` | This document: the mathematics, the measurements, the status ledger. Start here. |
-| `tsfactor_handoff_EC.md` | The tsfactor integration: where each check sits, recovery, options, tests. Append it to `tsfactor_handoff.md`. |
-| `TESTPLAN_EC.md` | What to run on the real GPU, in order, and what to send back. |
+| `tsfactor_handoff.md` | The complete tsfactor record. Round 8 there is the error-checking integration (where each check sits, recovery, options, tests); Round 9 is the gcd work of round 5. |
+| `TESTPLAN_R5.md` | What to run on the real machine now, in order, and what to send back. |
 | **tsfactor** | |
 | `gf2_ec.h` | Fold algebra (host) + checking kernels (device). Header-only. Replaces round 3's `ec_cuda.cuh`. |
 | `tsfactor.cu`, `gf2_gcd.h`, `gf2_gcd_ntl.cpp` | The implementation; the certified gcd lives in the last two. |
-| `gcdbench.cpp` | CPU-only timing of plain / certified / old-engine gcd. `make gcdbench` |
-| `gcdstress.cpp` | CPU-only randomized cross-check of every gcd path against NTL. `make gcdstress` |
+| `gf2_hgcd_base.h` | the word-level (Lehmer) base case of the gcd engine, §6.5 |
+| `gcdbench.cpp` | CPU-only timing of every gcd path and engine generation. `make gcdbench` |
+| `gcdstress.cpp` | CPU-only randomized cross-check of every gcd path against NTL, and of the word-level base case against the reference one. `make gcdstress` |
+| `experiments/fftbatch_bench.cpp` | the measurement behind "CPU batching: not adopted" (§6.5) |
 | `tests/ts_regress.sh` | tsfactor command-line regression: 33 configuration runs vs the original binary, injected faults, interrupt/resume. |
 | **factor_ec** | |
-| `factor_ec.cpp`, `factor_ec.patch`, `factor_ec.patch.md` | Patched `factor.cpp`, the diff, and hunk-by-hunk commentary. Round 4 changed one line: the fold is 61 words. |
+| `factor_ec.cpp`, `factor_ec.patch`, `factor_ec.patch.md` | Patched `factor.cpp`, the diff, and hunk-by-hunk commentary. Round 5: checking on by default, closed-form init check. |
 | `ec_words.h` | Word-level primitives shared by `factor_ec`, `ecbench`, `ectest2`. |
 | `ectest.cpp`, `ectest2.cpp` | Unit tests of the word primitives against bit-level references. |
 | `ecbench.cpp` | Per-primitive cost at any (r,s), no NTL. |
-| `regress.sh`, `sweep.sh` | factor_ec vs factor on 2700 trinomials; the 150-opportunity fault sweep. |
+| `regress.sh`, `sweep.sh` | factor_ec vs factor on 5781 trinomials in 20 configurations; the 150-opportunity fault sweep plus corrupted initialisations. |
 | **model** | |
 | `gecsim_core.h`, `gecsim.cpp`, `gecsim_results.txt` | Dependency-free model of the algorithm with a fault injector (round 1). |
 | **superseded, not shipped** | `tsfactor_ec_design.md`, `ec_cuda.cuh`, `ectest_gpu.cpp`, `eccuda_emul_test.cpp` (round 3's design for a frozen tsfactor: 64-word fold, shift-fold quotient). The tsfactor selftest now covers everything they tested. |
@@ -145,6 +152,16 @@ Every single one produced a silent missed factor. So the value of error
 checking here is not "avoid wasted work" — it is "avoid publishing a wrong
 negative result", which for a search whose entire output is negative results is
 the whole ball game.
+
+One qualification (Gord, round 5). There is a last line of defence outside
+these programs: a trinomial that survived everything would be re-verified
+with an independent, slower program before anything was announced — `irred`,
+or `factor`'s own irreducibility mode, which computes a residue by `r`
+squarings and would take a few weeks at r = 136279841. So a false "no
+factor" would not end up *published*. What it costs is everything spent
+scanning deeper on an `s` that should have been retired, and then that
+verification run; and it would be found out at the worst possible moment.
+The checks exist to keep the wrong result from arising in the first place.
 
 ---
 
@@ -328,21 +345,23 @@ function, and the digest sees `E(1)`, which is `eps` times a product of
 factors `(1+x)^(2^i)` — units, because `T(1) = 1`. A nonzero `eps` cannot
 vanish.
 
-This replaces "run `init_h` twice". How much it saves depends on what a
-modmul costs relative to a squaring, because the one modmul dominates:
+The left side is also a geometric series, which is the quickest way to
+believe it: the table's entries are the sums of `y^e` over exponents `e < 2^m`
+of each Hamming weight, so `S = y + y^2 + ... + y^(2^m - 1)` with `y = y_k`,
+and `(1 + y)(1 + S) = 1 + y^(2^m)`.
 
-* **factor_ec** (`m = 14`, `k = 56`): a modmul is ~200 squarings, the init
-  ~870 squarings, the check ~270: **~30% instead of 100%**, i.e. roughly 2 s
-  instead of the 5.5–7.6 s measured for the duplicate. factor_ec still runs
-  the init twice (`-eci0` turns that off) — porting (***) there is a small,
-  self-contained job, and the one place where it buys real time.
-* **tsfactor** (`m ~ 30`): the GPU squaring is a single fused kernel
-  (~0.26 ms) and a modmul is ~900 of them. The init is squarings only,
-  `m(k + m/2)` of them — about **half a second** at `k = 56` — and the check
-  is ~0.25 s: 46% of the init at `k = 56`, 14% at `k = 280`, tending to `1/m`
-  on a deep resume, where the init takes minutes. Either way it is noise
-  next to a gcd, so the init is simply not the issue in tsfactor that it was
-  in factor_ec, and `--eci0` has no claim to be the default.
+This replaces "run `init_h` twice". In both programs the table is built from
+squarings only, `m (k + m/2)` of them; the check is `k + m` squarings and one
+product, so what it saves depends on what a product costs in squarings:
+
+* **factor_ec** (`m = 14`, `k = 56`): the init is 882 squarings, the check 69
+  squarings and a product worth ~200: roughly **2 s instead of the 5.4–7.6 s**
+  measured for the duplicate, which was 69% of all checking at `-skip 55`.
+  Implemented in round 5 (`ec_init_closed_form`); `-eci0` skips it.
+* **tsfactor** (`m ~ 30`): a product is ~900 fused GPU squarings. The init
+  is about half a second at `k = 56` and 1.6 s at `k = 263`; the check
+  measured **0.28 s** on the RTX 2070 SUPER. Noise next to a gcd, which is why
+  `--eci0` has no claim to be the default.
 
 **Correction.** Round 3 examined a different identity,
 `H + y_m G = H^2 + y_0 G^2`, which needs two modmuls, concluded that "any
@@ -573,20 +592,19 @@ Because the big products are verified on the host whoever computed them, this
 also covers the **GPU multiplications** of `--gpu-gcd`, which had no
 protection at all.
 
-Measured: certification adds between 1% and 9% to the engine in the runs of
-§6.4 (the folds are linear-time and the extended finish is on a pair a small
-fraction of the size; the larger figures include timing noise). Selftest: 75
+Measured: certification adds 0–4% to the engine (Gord's machine: 55.1 s
+certified against 54.8 s uncertified; the folds are linear-time and the
+extended finish is on a pair a small fraction of the size). Selftest: 75
 certified gcds equal to NTL's; 600 runs with one fault at step N = 1..40 —
 every fault that fired produced "certificate failed", never a certified wrong
 answer.
 
-### 6.4 Split application: the certified gcd is also the faster one (round 4)
+### 6.4 Split application (round 4)
 
 The engine (tsfactor's `hyb::hgcd`, written in an earlier round for
-`--gpu-gcd`) was 30–40% *slower* than NTL's gcd on CPU multiplications. The
-reason turned out to be one line. `hgcd` recurses on the top half of the
-pair — in place, on a copy — and gets back a matrix `R`; it then applied `R`
-to the full-length operands. But with `a = (a >> k) x^k + (a mod x^k)`,
+`--gpu-gcd`) recurses on the top half of the pair — in place, on a copy — and
+gets back a matrix `R`; it then applied `R` to the full-length operands. But
+with `a = (a >> k) x^k + (a mod x^k)`,
 
 ```
         R (a, b)  =  x^k * R (a >> k, b >> k)  +  R (a mod x^k, b mod x^k)
@@ -607,53 +625,138 @@ products of size `n/4` per recursion level:
 identity verified by §6.3 is that of the *whole* step, however `a'` was
 assembled, so the certificate is unaffected.
 
-Measured, sandbox (one core, 2.1 GHz Xeon, distro gf2x 1.3.0, **untuned**):
+### 6.5 The base case was half the gcd (round 5) — and a lesson about benchmarks
+
+Round 4 measured the split engine 27–32% **faster** than NTL's gcd in the
+sandbox and made it tsfactor's default. On Gord's machine it was 6% **slower**
+(55.1 s against 51.9 s). Both measurements were right. The sandbox used the
+distribution's gf2x, built without PCLMUL: its multiplications are about ten
+times slower than those of a source-built gf2x, so there the gcd *was* its
+large products and the product count decided everything. With fast products
+the rest of the engine shows, and the rest was large: `--gcd-mt 4` only
+reached 1.57x, which by Amdahl's law says **half of the time was not in the
+parallel products at all**. `tsfactor --bench-gcd` printed the reason in
+passing: `cpu 135960386` — 136 million multiplications per gcd.
+
+Those were the bottom of the recursion. Below 4096 bits the engine did Euclid
+one division step at a time on `std::vector` operands, with a bit-at-a-time
+shift-xor product per quotient to maintain the matrix: about 68 million
+steps, each allocating.
+
+**The replacement (`gf2_hgcd_base.h`) is the polynomial form of Lehmer's
+method.** Take the top 64 bits of the pair, same alignment for both; run
+Euclid on those two machine words, accumulating a 2x2 matrix of word-sized
+polynomials (shifts and xors only); then apply that matrix to the full
+operands and to the accumulated matrix with carry-less word multiplications —
+about 31 quotient bits per pass. No allocation, no library call.
+
+Over `GF(2)[x]` the usual Lehmer caveat ("the quotient computed from leading
+digits may be off by one") does not exist, because there are no carries. The
+rule is exact: with the dividend's leading bit at bit 63 of the window, a
+division step whose divisor has window degree `v` is the true step **iff
+`2v >= 63`**. (The true remainder is `window_remainder * x^j + e` with
+`deg e < j + 63 - v'`, `v'` the previous divisor's window degree; the quotient
+depends only on the top `u - v + 1` bits of dividend and divisor.) So the
+window Euclid runs while the divisor's degree is at least 32 — which is the
+ordinary half-gcd stopping rule applied to a 64-bit pair — and what it
+produces is not an approximation: the quotient sequence, the matrix and the
+reduced pair are **identical** to the old loop's. That is how it is tested
+(`hyb_base_selfcheck`, `gcdstress`): the old loop is kept as the reference and
+the two are compared word for word: 124,000 small pairs of every shape, and
+3100 stress cases at seven hand-over sizes, without a difference.
+
+Two smaller changes went with it: the engine's CPU products call `gf2x_mul`
+directly on its word arrays instead of converting to and from `NTL::GF2X`
+(`-DHAVE_GF2X`, detected by the Makefile), and the per-product statistics
+counter no longer takes a mutex.
+
+Where one production-size gcd's time goes now (`gcdbench` built with
+`-DHYB_PROF`, single thread, sandbox with the source-built gf2x):
 
 ```
-                                  4.0 Mbit              16 Mbit
-   NTL GCD                         5.43 s               39.06 s
-   CERTIFIED, NTL XGCD             7.63 s  +40.6%       56.00 s  +43.4%
-   engine, full apply (old)        7.08 s  +30.5%       55.02 s  +40.9%
-   engine, split apply             3.95 s  -27.2%       28.38 s  -27.3%
-   CERTIFIED chain                 4.15 s  -23.5%       28.61 s  -26.7%
-
-                                  136 Mbit (production size, finish 4 Mbit)
-   NTL GCD                         972.0 s
-   engine, split apply             605.8 s  -37.7%
-   CERTIFIED chain                 657.7 s  -32.3%
+    products >= 1 Mbit            24.8 s   62%
+    products 64 kbit - 1 Mbit     10.0 s   25%
+    products 4 - 64 kbit           2.0 s    5%
+    word-level base case           0.9 s    2%
+    products < 4 kbit              0.6 s    1.5%
+    division steps, shifts, adds   0.8 s    2%
+    everything else                1.0 s    2.5%
 ```
 
-The ratio follows from the multiplication counts and should carry over to a
-tuned gf2x, but that is an inference: `gcdbench` measures it on the machine
-at hand. Correctness: `gcdstress`, 3100 randomized inputs chosen to reach the
-corner cases (prescribed quotient sequences, planted factors, degenerate
-pairs), four engines against NTL, no mismatch.
+93% products, and 87% in products large enough to be worth a thread: the
+serial fraction fell from about 50% to about 13%.
 
-### 6.5 Which to use
+Measured. Left: Gord's machine (6-core Zen 2, tuned gf2x), round-4 code, his
+`gcdbench 136279841 588`. Right: the sandbox with gf2x built from his source
+(its NTL gcd time happens to match his), round-5 code.
 
-| tsfactor | what runs | vs NTL's gcd (sandbox) |
+```
+                                    round 4 (Gord)      round 5 (sandbox, same NTL time)
+   NTL GCD                             51.9 s              53.4 s
+   CERTIFIED, NTL XGCD                 60.9 s  +17%        63.4 s  +19%
+   engine as of round 3                78.2 s  +51%        70.8 s  +33%
+   engine as of round 4                54.8 s   +6%        47.2 s  -12%
+   engine now, uncertified                                 37.7 s  -30%
+   CERTIFIED chain, 1 thread           55.1 s   +6%        38.8 s  -28%
+   CERTIFIED chain, 2 threads          42.1 s  -19%        24.6 s  -54%  (22.7 s in another run)
+   CERTIFIED chain, 4 threads          35.1 s  -32%        (two cores only)
+```
+
+(The sandbox's "round 3" and "round 4" rows are those algorithms inside
+today's code, so they already benefit from the direct gf2x calls; that is why
+round 4 reads -12% there and +6% on Gord's machine.)
+The round-5 column on four real cores is the number still missing; with a
+13% serial fraction and the 4x scaling Gord's machine showed on the products,
+it should land near 12–15 s.
+
+**Frequency-domain batching on the CPU: measured, not adopted.** Round 4
+proposed it as "the next speedup" and estimated 25–35%. The four products of a
+matrix application share operands (6 forward + 2 inverse transforms instead of
+12), and gf2x exports exactly the interface for it (`gf2x-ternary-fft.h`,
+`addcompose_n`). Measured against four separate `gf2x_mul` calls
+(`experiments/fftbatch_bench.cpp`), single thread:
+
+```
+     operand words        matrix x vector          matrix x matrix
+        2048 (130 kbit)        0%                       0%
+        8192                  -2% .. -16%               0%
+       32768 (2 Mbit)        -12% .. -25%             -21%
+      131072                 -15% .. -20%             -25%
+      524288 (34 Mbit)       -12% .. -19%             -19%
+     Cantor FFT instead: slower than separate products at every size.
+```
+
+So about 15–20% on the products above 2 Mbit, nothing below 0.5 Mbit: roughly
+10% of a single-threaded gcd. In a Schönhage-type FFT the pointwise products
+are themselves recursive multiplications and are not shared, which is why the
+gain is so much smaller than on the GPU's additive FFT. And it does not
+combine with threads: four whole products run side by side on four cores,
+whereas the batched form needs six transforms, then four pointwise passes,
+then two inverses — on four cores that is *slower* in wall time than the
+unbatched products, and it only pulls ahead with six or more. Since the
+threads are worth 3–4x and batching 1.1x, the threads won; and the GPU hook,
+which does batch, remains available for the largest products.
+
+### 6.6 Which to use
+
+| tsfactor | what runs | notes |
 |---|---|---|
-| default | certified chain, CPU multiplications | −24% to −32% (−32% at 136 Mbit) |
-| `--gcd-mt N` | the same, with the 4 products of a matrix application and the 8 of a matrix product on N threads | correct (cross-checked, ThreadSanitizer clean); 1.29x from 2 threads on the sandbox's two virtual CPUs, unmeasured on real cores — the recursion, division steps and small products stay sequential |
-| `--gpu-gcd` | certified chain, large products on the GPU | unmeasured since the split; was neutral before it and before the FFT tuning |
-| `--ecg-xgcd` | one verified NTL `XGCD` | +42% |
-| `--ecg-dup` | NTL twice, compared | +100% (free in wall time with a spare core); transient faults only |
-| `--gcd-ntl` | NTL, **unchecked** | 0 |
+| default | certified chain, CPU products, `--gcd-mt` threads (automatic: cores left over, at most 4) | the fastest CPU configuration and the checked one |
+| `--gcd-mt 1` | the same on one thread | when the cores are needed elsewhere |
+| `--gpu-gcd` | certified chain, products above 2 Mbit on the GPU, the rest on the threads | the GPU idles during a gcd under `--pend-max 1`; worth timing against the default (`--bench-gcd`) |
+| `--ecg-xgcd` | one verified NTL `XGCD` | +17–20% over NTL's gcd; independent reference |
+| `--ecg-dup` | NTL twice, compared | transient faults only |
+| `--gcd-ntl` | NTL, **unchecked** | A/B timing |
+| `--no-ec` | the engine, **uncertified** | (round 4: NTL) |
 
 For `factor_ec` the same lemma applies to `halfgcd.cpp`: `FastGCD` applies its
 matrices to the operands in two places per level, and those are the steps to
 verify. Not implemented; `-ecg` there still repeats the gcd.
 
-The round-1 idea of **batching** (one extended gcd of `prod_i A_i` per `s`
+The round-1 idea of **batching gcds** (one extended gcd of `prod_i A_i` per `s`
 instead of one per interval) is superseded: with certification this cheap
 there is nothing left to amortise, and most survivors are resolved by their
 first gcd anyway.
-
-**Next speedup, not done.** The four products of a matrix application share
-operands, and so do the eight of a matrix product: in the frequency domain
-that is 6 + 2 transforms instead of 12, and 8 + 4 instead of 24. tsfactor's
-GPU hook already batches this way; on the CPU it needs gf2x's FFT interface
-(`gf2x-fft.h`) rather than NTL's `mul`. Estimated at a further 25–35%.
 
 ---
 
@@ -661,13 +764,13 @@ GPU hook already batches this way; on the CPU it needs gf2x's FFT interface
 
 | Substep | Check | Cost | Coverage |
 |---|---|---|---|
-| h-table initialisation | closed form (***), §4.7 (tsfactor); run twice (factor_ec) | `k+m` squarings + 1 modmul (~0.25 s on a GPU); or +100% of init | any single fault |
+| h-table initialisation | closed form (***), §4.7, in both programs | `k+m` squarings + 1 product (0.28 s on the GPU; ~2 s in factor_ec) | any single fault |
 | h-table squarings, idle table | Frobenius-linear Gerbicz chain, §4, full-width compare | 1 table pass per block + `m` squarings per window | deterministic, single fault |
 | Horner build of `C` | fold of an independent recomputation, checked through the product | shares the table pass | error `e` with `phi(e) != 0` |
 | product `A*C` | `phi(t) = phi(A) phi(C)` on the unreduced product, `phi(A)` carried | 2r bits of streaming fold | same; also a flip in the idle `A` |
 | reduction mod `T` | tsfactor (`2s < r`): closed-form quotient fold. factor_ec (`s > r/2`): divisibility in the reciprocal domain, §5.2 | one fold; or ~1/2 of the fastmulmod EC cost | tsfactor: `phi(e) != 0`; factor_ec: **every** error |
 | transfers, snapshots, checkpoints | fold on both sides; fold stored with the copy and rechecked on use | linear | `phi(e) != 0` |
-| gcd | §6: certified chain (tsfactor default, `--gpu-gcd`), verified `XGCD` (`--ecg-xgcd`), or repeated (`--ecg-dup`, factor_ec `-ecg`); plain NTL (`--gcd-ntl`) is **unchecked** | a few % of the gcd, on an engine 27–38% faster than NTL's / +42% / +100% | proof / proof / transient faults |
+| gcd | §6: certified chain (tsfactor default, `--gpu-gcd`), verified `XGCD` (`--ecg-xgcd`), or repeated (`--ecg-dup`, factor_ec `-ecg`); plain NTL (`--gcd-ntl`) and `--no-ec` are **unchecked** | 0–4% of the gcd, on an engine faster than NTL's (§6.5) / +17% / +100% | proof / proof / transient faults |
 | reported factor | `f | T` by `x^r mod f`; degree within its interval | milliseconds | exact |
 
 Recovery: a failed check restarts from the newest state that was verified
@@ -759,8 +862,8 @@ bit shifts and the cost goes up several-fold for no benefit.
 
 ## 10. `tsfactor` (CUDA): as implemented
 
-The full record is `tsfactor_handoff_EC.md`. What differs from factor_ec, and
-why:
+The full record is `tsfactor_handoff.md` (Rounds 8 and 9). What differs from
+factor_ec, and why:
 
 * **Opposite reduction regime.** tsfactor enforces `2s < r`; factor.cpp flips
   to `s > r/2`. The closed-form quotient `q = t_H + (t >> (2r-s))` is valid in
@@ -783,11 +886,12 @@ why:
   happily begin from a corrupted table.
 
 * **The gcd is certified by default**, by the chain of §6.3 on the engine of
-  §6.4. `--gcd-ntl` goes back to the unchecked NTL gcd.
+  §6.4–6.5, on several threads. `--gcd-ntl` goes back to the unchecked NTL
+  gcd.
 
-Cost of the scan checks is estimated at 0.5–1% of scan time (m ~ 30, window
-8) and 81 MB of VRAM; the emulator cannot time a GPU, and `--bench` now
-reports the real figures.
+Cost of the scan checks, measured on an RTX 2070 SUPER: 0.6% of scan time
+projected by `--bench` (m = 24..32, window 8), +1.0% on a real survivor, and
+81 MB of VRAM.
 
 ---
 
@@ -836,16 +940,47 @@ Round 1: feasibility analysis, the Frobenius-linear Gerbicz identity, `gecsim`.
 
 Round 2: diagnosed and fixed the `ec_reduce_ref` divergence (§5.2); compiled,
 linked and ran the patch; 2700-trinomial regression; 108/108 injected faults
-caught. Gord then confirmed it at production size — see below.
+caught. Gord then confirmed it at production size.
 
 Round 3: measured overhead reconciled against Gord's production log; two
 defects found and fixed from that data; the scheme mapped onto a then-frozen
-`tsfactor` with kernels written and validated under emulation.
+`tsfactor`.
 
-Round 4 (this one): implemented in `tsfactor`, on by default, with rollback
-and restart; closed form for the table digest (§4.7); certified gcd (§6.3)
-on a faster engine (§6.4), now the default gcd; fold length 61 in both
-programs (§5.1); `factor_ec` otherwise unchanged.
+Round 4: implemented in `tsfactor`, on by default, with rollback and restart;
+closed form for the table digest (§4.7); certified gcd (§6.3) with split
+application (§6.4); fold length 61 in both programs (§5.1).
+
+Round 5 (this one): Gord compiled round 4 with nvcc and ran the whole test
+plan on the RTX 2070 SUPER — everything passed (below). His logs showed the
+gcd to be 58% of a survivor's wall time and half of each gcd to be the
+engine's base case; that was rewritten (§6.5). `--gcd-mt` became automatic,
+the interval schedule now measures its own gcd/scan cost ratio, finished
+survivors no longer leave checkpoint files behind. `factor_ec`: closed-form
+init check implemented, checking on by default.
+
+### `tsfactor` on the real GPU (Gord, round-4 code, RTX 2070 SUPER, 6-core Zen 2)
+
+```
+  make tsfactor (nvcc)            compiles; 5 unused-variable warnings (fixed in round 5)
+  --selftest, --selftest-reps 20  32 PASS lines each, 21 runs
+  ts_regress.sh ./tsfactor        all PASS (33 configurations, 11 faults, fatal, resume)
+  --bench: scan-check kernels     h-table pass 1.36 ms/block (m=24), folds 0.24 ms,
+                                  readback 0.10 ms, chain check 5.6 ms/window
+                                  => 0.6% of scan time at m = 24..32, --ecw 8   (estimate was 0.5-1%)
+  real survivor (s=12337659, skip 262, 3 intervals, factor of degree 5816):
+     --no-ec                      280.2 s   scan 124.0 s   gcd 3 x 51 s
+     default                      305.5 s   scan 125.2 s   gcd 3 x 59 s
+     scan overhead                +1.0%  (--ect table: 3.8 s, of which 2.4 s are the
+                                  7 verified h-table transfers at 0.34 s each)
+     gcd                          +16%: the certified chain was SLOWER than NTL there (§6.5)
+  --ec-fault h:200, idle:1, t:50, xferh:1
+                                  each caught, restarted or re-read, same result line
+  interrupt + resume              same result line
+```
+
+So the checking itself costs about 1% of the scan, as estimated. What the
+round-4 default cost in practice was 8 s per gcd, from a gcd engine that was
+slower than believed; round 5 removes that and then some.
 
 ### `factor_ec` at production size, r = 136279841
 
@@ -857,51 +992,40 @@ Round 2 run (s = 588, m = 14, q = 15), `-ect` against the unchecked baseline:
   gcd               110.89 -> 110.20 s   (-0.69, noise; EC does nothing here)
 
   EC on intervals only          4.50 s = 3.5% of squares/products = 1.8% of total
-  EC including init_h           9.94 s                            = 4.1% of total
 ```
 
-Result byte-identical to the unchecked run, zero false alarms.
-
-Round 3 build, rerun by Gord at `-skip 55 -k 55 -m 14 -q 16` (his current
-sieving configuration):
+Round 3 build, rerun by Gord at `-skip 55 -k 55 -m 14 -q 16`:
 
 ```
   EC total (-ect)               11.07 s   of which the duplicate init_h  7.64 s
   EC total with -eci0            3.38 s
-  copy t for check               2.6 ms per call   (was 7.9: the round-3 fix worked)
-  digest XOR                     1.60 s over 675 calls   (was untimed)
-  ecbench                        ~38 ms of checking per fastmulmod, 1.3% projected
 ```
 
-Both round-3 defects are confirmed fixed. The duplicate `init_h` is now 69%
-of all checking cost in this configuration — which is exactly what (***) of
-§4.7 would cut to about 2 s. That port is the one worthwhile change left in
-`factor_ec`; it was not done this round because `factor_ec` now only does
-shallow sieving on ECC machines and tsfactor was the priority.
-
-Note that `mersenne_trinomial.py` starts `factor_ec` **without** `-ec`: the
-sieving stage currently runs unchecked. Adding `-ec -eci0` to that command
-line would cost about 2% there.
+Round 5 replaces the duplicate `init_h` (882 squarings) by the closed-form
+check (69 squarings and one product): expected about 2 s instead of 7.6 s,
+**not yet measured at production size**. `init_h` in factor.cpp is built from
+squarings only, exactly as in tsfactor (an earlier version of this document
+said it used modular products; it does not).
 
 ### Open items, in rough order of value
 
-- [ ] **Run tsfactor on a real GPU** (`TESTPLAN_EC.md`). Everything in §13
-      under "emulation" needs that confirmation.
-- [ ] **`gcdbench` on the production machine.** The default gcd changed; the
-      sandbox says −32% at production size; a tuned gf2x has not been asked.
-- [ ] `--gcd-mt N` timed on a machine with more than two cores
-      (`gcdbench r s finish quick N`); then decide whether tsfactor should
-      default to more than one thread per gcd under `--pend-max 1`.
-- [ ] `--gpu-gcd` re-timed: the split application and the FFT tuning both
-      postdate the last measurement (63.0 vs 63.6 s).
-- [ ] CPU frequency-domain batching of the matrix products (§6.5, end).
-- [ ] Port (***) to `factor_ec` (`init_h` check: ~2 s instead of ~7.6 s).
+- [ ] **Round-5 numbers on Gord's machine**: `gcdbench 136279841 588` (expect
+      the certified chain near 40 s on one thread and 12–15 s on four),
+      `--bench-gcd` with and without `--gpu-gcd`, one real survivor.
+- [ ] **nvcc compile of the round-5 tsfactor.cu.** The gcd engine is host
+      code and was tested here with g++; the changes inside tsfactor.cu are
+      host-side too, but they have not been through nvcc.
+- [ ] `factor_ec -ect` at production size with the closed-form init check.
+- [ ] `--gpu-gcd` against the threaded default; `--gpu-gcd-min-bits` may want
+      re-tuning now that the CPU side is faster.
+- [ ] Strassen for the 2x2 matrix product on one thread (7 products instead
+      of 8): about 4% of a single-threaded gcd, nothing with 4+ threads.
 - [ ] Certify `factor_ec`'s gcd the same way (two verified steps per level in
       `halfgcd.cpp`'s `FastGCD`); `-ecg` there still repeats the gcd.
 - [ ] Control-flow guards of §9.3, in both programs.
 - [ ] Fuse the digest XOR into the squaring's output store (factor_ec: 1.6 s
-      of 3.4 s interval cost; tsfactor: only if `--bench` shows the table pass
-      matters).
+      of 3.4 s interval cost; tsfactor: the table pass is 1.36 ms against a
+      1.08 ms Horner — fusing them would roughly halve the 0.6%).
 - [ ] The absolute digest chain of §4.7 (last paragraph), advanced while the
       GPU idles through a gcd: makes stuck-bit faults deterministic to catch.
 
@@ -911,54 +1035,61 @@ line would cost about 2% there.
 
 Round 1 shipped an untested patch on the grounds that the analysis was the
 deliverable. The analysis was right and the patch still cost 45 minutes of
-machine time. The distinction is therefore kept explicit.
+machine time. Round 4 shipped a gcd "27% faster than NTL" measured on a
+library ten times slower than the one in production; on the real machine it
+was 6% slower. The distinction between what was measured where is therefore
+kept explicit.
 
 ### `factor_ec` — verified by execution
 
 | Claim | How |
 |---|---|
-| Compiles and links | g++ 13.3, NTL 11.5.1, distro gf2x 1.3.0 (here); NTL 11.6.0 + patched gf2x (Gord) |
-| No false alarms | 2700 trinomials here (rerun with the 61-word fold); production runs at r = 136279841 (64-word fold) |
-| Output unchanged | byte-identical to unchecked `factor`, both scales |
-| Faults are caught | 108/108 injected single-bit faults, 0 wrong answers (rerun with the 61-word fold) |
-| Faults matter | 60/108 give a wrong answer unchecked, 56 of them a false `irreducible` |
-| Overhead at production size | 1.8% of wall clock excluding `init_h`, 4.1% including it (64-word fold; the 61-word fold does the same work) |
+| Compiles and links | g++ 13.3, NTL 11.5.1, distro gf2x 1.3.0 (here); NTL 11.6.0 + patched gf2x (Gord, rounds 2–3) |
+| No false alarms, output unchanged | round 5: 5781 trinomials in 20 configurations (default, three windows, `-noec`, `-eci0`, `-mt 2`, the production option set with s on stdin), identical to `factor`; production runs at r = 136279841 (rounds 2–3) |
+| Faults are caught | 108/108 injected single-bit faults, 0 wrong answers; 60/108 give a wrong answer unchecked, 56 of them a false `irreducible` |
+| Closed-form init check | a corrupted fresh h-table is caught and rebuilt in 4/4 runs; the same corruption unchecked gives 4/4 wrong answers |
+| Overhead at production size | 1.8% of wall clock excluding `init_h` (round 2, 64-word fold) |
 | Word primitives | `ectest2`, 54400 checks against bit-level references |
 
-Not verified: the 61-word fold at production size (one changed constant; the
-regression and the sweep pass with it); behaviour above r = 136279841;
-multi-threaded operation (`-t > 1`) — the scratch buffers are `thread_local`
-but that path is unexercised, and the `-ect` counters are plain globals that
-will race harmlessly; the `-ecg` repeated gcd, which is a stopgap.
+Not verified: round 5's `factor_ec` at production size (the 61-word fold and
+the closed-form init check have only run at small r); the cost of the new
+init check there; behaviour above r = 136279841; the `-ecg` repeated gcd,
+which is a stopgap.
 
-### `tsfactor` — verified by execution, under CPU emulation
-
-The real kernel bodies run through the project's `cuda_emul.h`
-(`make emul-tsfactor`), sequentially.
+### `tsfactor` — verified on the real GPU (Gord, round-4 code)
 
 | Claim | How |
 |---|---|
-| Compiles warning-free | g++ 13.3, `-Wall -Wextra`; also without NTL (same warnings as before the round) |
-| Old behaviour intact | the 16 pre-existing selftest suites pass; `--no-ec` and ten checking configurations give results byte-identical to the **original binary** on 294 survivors at r = 3217, 4423, 9689 (`ts_regress.sh`) |
-| Kernels compute what the host algebra predicts | selftest: 48 `(r, s, m)` cases of device folds vs host; block predictions vs the real `C`, `A*C`, `A*C mod T` |
-| No false alarms | ~6500 blocks and ~4100 chain windows in the selftest, ~30000 blocks in the regression; twenty consecutive selftest repeats |
-| Faults are caught | selftest sweep, 14 sites, 216 faults: 0 wrong answers with checking, 81 of 206 wrong without; 84 more under speculation; 11 on the command line |
-| Recovery works | restart from the interval start, from a mid-interval verified state, from a disk checkpoint; in-place repair of an idle flip; persistent fault → exit status 3 and no result line |
-| Interrupt/resume intact | three interruptions and resumes, then a fault after a resume, results identical |
-| Certified gcd is right | 75 gcds in the selftest (chain on CPU products, on the GPU hook, on three threads, XGCD, declined chain); 600 fault runs: fired ⇔ certificate failed; `gcdstress`: 3100 inputs × 4 engines vs NTL, 0 mismatches |
-| Memory safety | ASan + UBSan clean: selftest, `ts_regress.sh`, `gcdstress` |
-| Strided fold loops | selftest rebuilt with `-DEC_NBLK_MAX=1` (many strides per thread, as at production size) |
-| Production size | emulated scans at r = 136279841 (s = 320), once with each certified gcd mode: result equal to the oracle, all block and chain checks passing, gcd certified (chain: 660 s; XGCD: 1360 s; NTL's plain gcd on that machine: 972 s) |
+| Compiles with nvcc | CUDA on Ubuntu 26.04, g++ 15.2 host compiler |
+| Kernels correct under real concurrency | `--selftest` 32/32, 21 consecutive runs |
+| Old behaviour intact, faults caught, recovery works | `ts_regress.sh ./tsfactor`: all PASS |
+| Production size | s = 12337659: identical result line in 8 runs (checking off, on, with timing, four injected faults, interrupt/resume) |
+| Scan-check cost | 0.6% projected by `--bench`, +1.0% measured on the survivor |
+
+### `tsfactor` — verified under CPU emulation (round-5 code)
+
+The real kernel bodies run through `cuda_emul.h` (`make emul-tsfactor`),
+sequentially. Round 5 changed only host code.
+
+| Claim | How |
+|---|---|
+| Compiles warning-free | g++ 13.3, `-Wall -Wextra` |
+| Selftest | 32/32; repeated; under ASan + UBSan |
+| Old behaviour intact | `ts_regress.sh` against the **original (pre-round-4) binary**: 33 configuration runs identical, faults caught, resume, no checkpoint left behind |
+| Word-level base case == reference | `gcdstress`: 124,000 small pairs of every shape and 3100 stress cases at seven hand-over sizes, reduced pair and matrix identical word for word; also under ASan + UBSan and with the portable (non-PCLMUL) multiply |
+| Every gcd path == NTL | `gcdstress`: 3100 cases, four engines each, a third of them on three threads; ThreadSanitizer clean; also with products routed through NTL (`GF2X_OK=0`) |
+| Certified gcd | selftest: 90 gcds (chain on CPU products, on the GPU hook, on three threads, threads + hook together, XGCD, declined chain); 600 fault runs: fired ⇔ certificate failed |
+| Production size | emulated scan at r = 136279841 (s = 320): result equal to the oracle, gcd certified in 23 s on two threads |
 
 ### `tsfactor` — NOT verified
 
-* **Nothing has been through `nvcc`; nothing has run on a GPU.** There is no
-  CUDA toolkit in the authoring sandbox.
-* **Concurrency.** Emulation is sequential. The checking kernels are
-  gather-form with one writer per output word (two have many writers of the
-  *same* value), which is why a race is unlikely; unlikely is not tested.
-* **Every GPU cost figure** is an estimate. `--bench` and `--ect` report the
-  real ones.
-* **The gcd speedup on a tuned gf2x.** Sandbox only.
-* **The 2 GB-scale paths under real memory pressure** (snapshots, rollback
-  state) — exercised once, at production size, in emulation.
+* **Round 5 has not been through nvcc or run on a GPU.** Its changes are in
+  host code (the gcd engine, option handling, scheduling, checkpoint
+  cleanup), compiled and tested here with g++.
+* **The round-5 gcd on more than two cores, and on Gord's tuned gf2x.** The
+  sandbox now uses gf2x built from his source tree with PCLMUL (untuned
+  thresholds), which reproduces his NTL gcd time to within 1%; that is
+  evidence, not a measurement on his machine.
+* **Concurrency of the checking kernels beyond what the selftest exercises.**
+* **The self-measuring schedule in production**: exercised at small r and in
+  one emulated production-size run (a single interval).

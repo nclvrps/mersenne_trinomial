@@ -1,0 +1,9 @@
+* Step 5: The results files are all identical to each other and to the files from Round 4:
+
+$ sha256sum *.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  r5.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  r5_sched_G.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  r5_with_ckpt.results.txt
+
+* Step 5: This time the .ckpt file did not remain behind after completion.
+* Step 5: After resuming, the schedule G value is reset to the initial default of 3000. I believe this is intentional, because the resumption might be taking place under changed circumstances and may be happening after considerable time has elapsed after the original run. But I wonder what happens if the interruption coincidentally happens to occur just before the normal end of an interval... then there might not be enough time left to do an accurate benchmark to recalibrate sched G for the next interval. Or perhaps I am misunderstandinghow it works.
