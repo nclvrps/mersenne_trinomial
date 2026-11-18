@@ -2,7 +2,7 @@
 
 ***********************************************************
 Forked version (2026):
-    https://github.com/nclvrps/irred
+    https://github.com/nclvrps/mersenne_trinomial irred subdirectory
 
 Cleaned up with the assistance of Claude (chatbot)
 to create a version suited for 64-bit machines
@@ -1078,7 +1078,7 @@ int main(int argc, char *argv[])
 #undef NEED_VALUE
     }
 
-  printf("This is irred (forked github.com/nclvrps/irred version %s, %s)\n",
+  printf("This is irred (forked github.com/nclvrps/mersenne_trinomial/ version %s, %s)\n",
          IRRED_VERSION, IRRED_DATE);
 
   if (!choose_interleave(isa)) {
