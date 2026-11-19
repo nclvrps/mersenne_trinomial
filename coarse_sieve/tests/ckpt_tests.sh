@@ -1,11 +1,13 @@
 #!/bin/bash
-# round-8 checkpoint tests (emulated build).  Degrees 19-23 from base18 at
+# round-9 checkpoint tests (emulated build).  Degrees 19-23 from base18 at
 # s <= 999999 with chunks of 2^16 u: 4, 8, 16, 32, 64 chunks (124 in all).
-# Round 8 adds the lock file (L1-L3), the watchdog (W1-W3), and checkpoints
-# of the grouped loop order and of TP from global memory (K22-K24).
+# Round 8 added the lock file (L1-L3), the watchdog (W1-W3), and checkpoints
+# of the grouped loop order and of TP from global memory (K22-K24); round 9
+# checkpoints of the cubic tower (K25: resumed by round 9, refused mid-degree
+# by round 8) and round 8's checkpoints under round 9 and back (K26-K27).
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-N=$ROOT/build/r8/cs; R5=$ROOT/build/r5/cs_wide; OR=$ROOT/oracles
-R6B=$ROOT/build/r6/cs; R7B=$ROOT/build/r7/cs
+N=$ROOT/build/r9/cs; R5=$ROOT/build/r5/cs_wide; OR=$ROOT/oracles
+R6B=$ROOT/build/r6/cs; R7B=$ROOT/build/r7/cs; R8B=$ROOT/build/r8/cs
 mkdir -p $ROOT/work/ckpt && cd $ROOT/work/ckpt || exit 1
 cp -f $ROOT/fixtures/base18.survivors.txt .
 fail=0
@@ -54,7 +56,7 @@ clean
 COARSE_METHOD=logs COARSE_TEST_STOP_AFTER_BUCKETS=37 $R5 136279841 23 K --smax 999999 --load-survivors base18.survivors.txt --min-depth 19 > K_5a.log 2>&1
 if [ -s K.ckpt ]; then
   $N $ARGS > K_5b.log 2>&1; rc=$?
-  [ $rc = 1 ] && grep -q "not a readable checkpoint (format v4, rounds 6-8)" K_5b.log && grep -q "no generation of it is usable" K_5b.log && yes_ "K5 round-5 checkpoint refused (exit 1)" || no_ "K5 v3 refusal (rc=$rc)"
+  [ $rc = 1 ] && grep -q "not a readable checkpoint (format v4, rounds 6-9)" K_5b.log && grep -q "no generation of it is usable" K_5b.log && yes_ "K5 round-5 checkpoint refused (exit 1)" || no_ "K5 v3 refusal (rc=$rc)"
   $N $ARGS --fresh > K_5c.log 2>&1; rc=$?
   [ $rc = 0 ] && [ -s K.ckpt.old ] && yes_ "K5 --fresh sets it aside and runs" || no_ "K5 --fresh (rc=$rc)"
   ck2 K $REF "K5 that run == reference"
@@ -99,7 +101,7 @@ ck2 K $REF "K8 (subfield) == reference"
 clean
 COARSE_TUNE_MIN=19 COARSE_TUNE_PICK=1 COARSE_TEST_STOP_AFTER_CHUNKS=6 $N $ARGS > K_8e.log 2>&1
 COARSE_TUNE_MIN=19 $N $ARGS > K_8f.log 2>&1
-grep -q "tune d=20.* -> GF(2^5) r6-order\]" K_8e.log && grep -q "^d=20 logs (tower over GF(2^5), round-6 loop order" K_8f.log && ! grep -q "tune d=20" K_8f.log && yes_ "K8 resumed d=20 kept round 6's loop order without re-tuning" || no_ "K8 loop order kept"
+grep -q "tune d=20.* -> GF(2^5) r9-order\]" K_8e.log && grep -q "^d=20 logs (tower over GF(2^5), round-9 loop order" K_8f.log && ! grep -q "tune d=20" K_8f.log && yes_ "K8 resumed d=20 kept round 9's loop order without re-tuning" || no_ "K8 loop order kept"
 ck2 K $REF "K8 (loop order) == reference"
 
 # K9: resuming with another chunk size is refused
@@ -115,7 +117,7 @@ if [ -s K.ckpt ] && [ -s K.ckpt.1 ] && [ -s K.ckpt.2 ]; then
   head -c 100 K.ckpt.1 > t && mv t K.ckpt.1                    # header cut
   sz=$(stat -c %s K.ckpt); head -c $((sz / 2)) K.ckpt > t && mv t K.ckpt   # payload cut
   $N $ARGS --checkpoint-mins 0.0001 > K_10b.log 2>&1
-  grep -q "checkpoint K.ckpt: truncated or damaged" K_10b.log && grep -q "checkpoint K.ckpt.1: not a readable checkpoint (format v4, rounds 6-8)" K_10b.log && grep -q "continuing from K.ckpt.2" K_10b.log && yes_ "K10 two damaged generations skipped, continued from K.ckpt.2" || no_ "K10 fallback"
+  grep -q "checkpoint K.ckpt: truncated or damaged" K_10b.log && grep -q "checkpoint K.ckpt.1: not a readable checkpoint (format v4, rounds 6-9)" K_10b.log && grep -q "continuing from K.ckpt.2" K_10b.log && yes_ "K10 two damaged generations skipped, continued from K.ckpt.2" || no_ "K10 fallback"
   ck2 K $REF "K10 == reference"
 else no_ "K10 three generations not written"; fi
 
@@ -227,22 +229,22 @@ COARSE_TEST_STOP_AFTER_CHUNKS=5 $N $ARGS --no-checkpoint > K_18.log 2>&1; rc=$?
 [ $rc = 0 ] && grep -q "stopping after 5 chunks (COARSE_TEST_STOP_AFTER_CHUNKS); no checkpoint, nothing saved" K_18.log && ! grep -q "run the same command again" K_18.log && [ ! -e K.ckpt ] && yes_ "K18 --no-checkpoint test stop: nothing saved, said so" || no_ "K18 (rc=$rc)"
 
 # K19: a real round-6 checkpoint (written by the round-6 binary) continues
-# under round 7, with the same results
+# under round 9, with the same results
 if [ -x $R6B ]; then
   clean
   COARSE_TEST_STOP_AFTER_CHUNKS=37 $R6B $ARGS > K_19a.log 2>&1
   $N $ARGS > K_19b.log 2>&1; rc=$?
-  [ $rc = 0 ] && grep -q "^d=22: resuming at chunk 9/32" K_19b.log && grep -q "the checkpoint, from round 6, has no time for the runs before" K_19b.log && yes_ "K19 round-6 checkpoint resumed by round 8" || no_ "K19 (rc=$rc)"
+  [ $rc = 0 ] && grep -q "^d=22: resuming at chunk 9/32" K_19b.log && grep -q "the checkpoint, from round 6, has no time for the runs before" K_19b.log && yes_ "K19 round-6 checkpoint resumed by round 9" || no_ "K19 (rc=$rc)"
   ck2 K $REF "K19 == reference"
 else no_ "K19 no round-6 binary at $R6B"; fi
 
 # K19b: a round-7 checkpoint (written by the round-7 binary) continues
-# under round 8, with its times
+# under round 9, with its times
 if [ -x $R7B ]; then
   clean
   COARSE_TEST_STOP_AFTER_CHUNKS=37 $R7B $ARGS > K_19c.log 2>&1
   $N $ARGS > K_19d.log 2>&1; rc=$?
-  [ $rc = 0 ] && grep -q "^d=22: resuming at chunk 9/32" K_19d.log && grep -q "^d=22 done .* [0-9.]*s in all (this run [0-9.]*s, resumed at chunk 9 of 32)$" K_19d.log && yes_ "K19b round-7 checkpoint resumed by round 8 (times carried)" || no_ "K19b (rc=$rc)"
+  [ $rc = 0 ] && grep -q "^d=22: resuming at chunk 9/32" K_19d.log && grep -q "^d=22 done .* [0-9.]*s in all (this run [0-9.]*s, resumed at chunk 9 of 32)$" K_19d.log && yes_ "K19b round-7 checkpoint resumed by round 9 (times carried)" || no_ "K19b (rc=$rc)"
   ck2 K $REF "K19b == reference"
 else no_ "K19b no round-7 binary at $R7B"; fi
 
@@ -253,12 +255,12 @@ $N $ARGS > K_20b.log 2>&1
 grep -q "^d=22: resuming at chunk 9/32" K_20b.log && yes_ "K20 stopped with round 6's fill, resumed with the pooled one" || no_ "K20 resume"
 ck2 K $REF "K20 == reference"
 
-# K21: and the other way: round 6's binary continues a round-8 checkpoint
+# K21: and the other way: round 6's binary continues a round-9 checkpoint
 if [ -x $R6B ]; then
   clean
   COARSE_TEST_STOP_AFTER_CHUNKS=37 $N $ARGS > K_21a.log 2>&1
   $R6B $ARGS > K_21b.log 2>&1; rc=$?
-  [ $rc = 0 ] && grep -q "^d=22: resuming at chunk 9/32" K_21b.log && yes_ "K21 round-8 checkpoint resumed by round 6" || no_ "K21 (rc=$rc)"
+  [ $rc = 0 ] && grep -q "^d=22: resuming at chunk 9/32" K_21b.log && yes_ "K21 round-9 checkpoint resumed by round 6" || no_ "K21 (rc=$rc)"
   ck2 K $REF "K21 == reference"
 fi
 
@@ -284,7 +286,7 @@ COARSE_TUNE_MIN=19 $N $ARGS > K_23b.log 2>&1
 grep -q "tune d=20.* -> GF(2^5) r5-order TP-global\]" K_23a.log && grep -q "^d=20 logs (tower over GF(2^5), round-5 loop order, TP from global memory" K_23b.log && ! grep -q "tune d=20" K_23b.log && yes_ "K23 resumed d=20 kept TP from global memory without re-tuning" || no_ "K23 TP kept"
 ck2 K $REF "K23 == reference"
 
-# K24: round 7's binary continues round-8 checkpoints of the grouped order
+# K24: round 7's binary continues round-9 checkpoints of the grouped order
 # and of TP from global memory (it reads the order as its own pipelined one
 # and ignores the flag): the same results
 if [ -x $R7B ]; then
@@ -299,6 +301,58 @@ if [ -x $R7B ]; then
   [ $rc = 0 ] && grep -q "^d=20: resuming at chunk 2/8" K_24d.log && yes_ "K24 round 7 resumed a TP-global checkpoint" || no_ "K24 TP (rc=$rc)"
   ck2 K $REF "K24 (TP) == reference"
 else no_ "K24 no round-7 binary at $R7B"; fi
+
+# K25 (round 9): a degree sieved with the cubic tower (d=24 of 24-25 from
+# OB's survivors, 128 chunks): stopped mid-degree, the same command -- even
+# without COARSE_METHOD -- resumes it with the cubic tower; round 8's binary
+# refuses that checkpoint (it has no such engine) and leaves it alone
+AC="136279841 24-25 KC --load-survivors $OR/OB.survivors.txt"
+rm -f KC.* KCR.*
+$N 136279841 24-25 KCR --load-survivors $OR/OB.survivors.txt --no-checkpoint > K_25r.log 2>&1
+COARSE_METHOD=cubic COARSE_TEST_STOP_AFTER_CHUNKS=40 $N $AC > K_25a.log 2>&1; rc=$?
+[ $rc = 0 ] && [ -s KC.ckpt ] && grep -q "checkpoint: d=24 chunk 40/128" K_25a.log && grep -q "^d=24 logs (cubic tower over GF(2^8)" K_25a.log && yes_ "K25 cubic tower stopped at d=24 chunk 40/128" || no_ "K25 stop (rc=$rc)"
+cp KC.ckpt K_25saved.ckpt
+if [ -x $R8B ]; then
+  $R8B $AC > K_25b.log 2>&1; rc=$?
+  [ $rc = 1 ] && grep -q "d=24: the checkpoint's engine is not possible here" K_25b.log && cmp -s KC.ckpt K_25saved.ckpt && yes_ "K25 round 8 refuses the cubic checkpoint (exit 1), leaves it alone" || no_ "K25 round 8 refusal (rc=$rc)"
+else no_ "K25 no round-8 binary at $R8B"; fi
+$N $AC > K_25c.log 2>&1; rc=$?
+[ $rc = 0 ] && grep -q "^d=24: resuming at chunk 40/128" K_25c.log && grep -q "^d=24 logs (cubic tower over GF(2^8), round-5 loop order" K_25c.log && grep -q "^d=25 logs (PH" K_25c.log && [ ! -e KC.ckpt ] && yes_ "K25 round 9 resumes it with the cubic tower (d=25: the usual engine)" || no_ "K25 resume (rc=$rc)"
+ck2 KC KCR "K25 == uninterrupted run (tower at d=24)"
+rm -f KC.*
+COARSE_TUNE_MIN=24 COARSE_TUNE_PICK=11 COARSE_TEST_STOP_AFTER_CHUNKS=40 $N $AC > K_25d.log 2>&1
+COARSE_TUNE_MIN=24 $N $AC > K_25e.log 2>&1
+grep -q "tune d=24.* -> cubic GF(2^8) grouped\]" K_25d.log && grep -q "^d=24: resuming at chunk 40/128" K_25e.log && grep -q "^d=24 logs (cubic tower over GF(2^8), grouped loop order" K_25e.log && ! grep -q "tune d=24" K_25e.log && grep -q "tune d=25" K_25e.log && yes_ "K25 a tuned cubic tower (grouped) is kept on resume without re-tuning" || no_ "K25 tuned cubic kept"
+ck2 KC KCR "K25 (tuned) == uninterrupted run"
+rm -f KC.*
+
+# K26: round 8's checkpoints continue under round 9: its loop order 1 (round
+# 6's there) as round 9's, its grouped order as round 9's grouped one
+if [ -x $R8B ]; then
+  clean
+  COARSE_TEST_STOP_AFTER_CHUNKS=37 $R8B $ARGS > K_26a.log 2>&1
+  $N $ARGS > K_26b.log 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "^d=22: resuming at chunk 9/32" K_26b.log && grep -q "^d=22 done .* [0-9.]*s in all (this run [0-9.]*s, resumed at chunk 9 of 32)$" K_26b.log && yes_ "K26 round-8 checkpoint resumed by round 9 (times carried)" || no_ "K26 (rc=$rc)"
+  ck2 K $REF "K26 == reference"
+  clean
+  COARSE_TUNE_MIN=19 COARSE_TUNE_PICK=1 COARSE_TEST_STOP_AFTER_CHUNKS=6 $R8B $ARGS > K_26c.log 2>&1
+  COARSE_TUNE_MIN=19 $N $ARGS > K_26d.log 2>&1; rc=$?
+  grep -q "tune d=20.* -> GF(2^5) r6-order\]" K_26c.log && grep -q "^d=20: resuming at chunk 2/8" K_26d.log && grep -q "^d=20 logs (tower over GF(2^5), round-9 loop order" K_26d.log && ! grep -q "tune d=20" K_26d.log && yes_ "K26 round 8's r6-order degree resumed in round 9's order" || no_ "K26 r6-order (rc=$rc)"
+  ck2 K $REF "K26 (r6-order) == reference"
+  clean
+  COARSE_TUNE_MIN=19 COARSE_TUNE_PICK=2 COARSE_TEST_STOP_AFTER_CHUNKS=6 $R8B $ARGS > K_26e.log 2>&1
+  COARSE_TUNE_MIN=19 $N $ARGS > K_26f.log 2>&1; rc=$?
+  grep -q "^d=20: resuming at chunk 2/8" K_26f.log && grep -q "^d=20 logs (tower over GF(2^5), grouped loop order" K_26f.log && yes_ "K26 round 8's grouped degree resumed in round 9's grouped order" || no_ "K26 grouped (rc=$rc)"
+  ck2 K $REF "K26 (grouped) == reference"
+
+# K27: and round 8's binary continues round 9's checkpoints of the other
+# engines and orders (round 9's order as its round-6 one)
+  clean
+  COARSE_TUNE_MIN=19 COARSE_TUNE_PICK=1 COARSE_TEST_STOP_AFTER_CHUNKS=37 $N $ARGS > K_27a.log 2>&1
+  $R8B $ARGS > K_27b.log 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "^d=22: resuming at chunk 9/32" K_27b.log && grep -q "^d=22 logs (tower, classic, round-6 loop order" K_27b.log && yes_ "K27 round-9 checkpoint (round 9's order) resumed by round 8" || no_ "K27 (rc=$rc)"
+  ck2 K $REF "K27 == reference"
+else no_ "K26-K27 no round-8 binary at $R8B"; fi
 
 # L1 (round 8): a lock file left by a killed run is noted as harmless; the
 # run proceeds, and its clean exit removes the file

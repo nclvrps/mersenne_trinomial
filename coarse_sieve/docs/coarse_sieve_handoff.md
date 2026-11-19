@@ -1,292 +1,426 @@
-# coarse_sieve, round 8: a watchdog, a clearer lock, and three experiments on the memory stalls
+# coarse_sieve, round 9: less local-memory traffic per class, and a cubic tower for d=54
 
-**Baseline: round 7 (2026-10-26), which you validated on hardware.**
-- All selftests passed. Regressions at d = 40-44 identical; the d=51 production run matched the known ranges, with no false positives or negatives.
-- Round 7 against round 6, measured: d=44 150 s (268 s), d=45 434 s (568 s), 1.3-1.9x over d = 40-45. At d=44 the fills went 242 → 215 → 174 → 151 s (`COARSE_FILL` 0 → 3).
-- The resumed done line showed the time of all runs, as asked.
+**Baseline: round 8 (2026-10-28), which you validated on hardware.**
+- All selftests passed. The grouped kernels gave identical outputs at d = 40-45, and the T4 ran d=52 for $1.98.
+- As predicted, the grouped order lost at the tower degrees (+12-35%) and about tied at RR (−3 to +2%). The tuner picked it at d=45 and d=53.
+- `COARSE_LDCG=0` made no difference (149.95 vs 150.09 s at d=44, 430.54 vs 430.18 s at d=45).
 
 ## Deliverables
 
 | file | what |
 |---|---|
-| `coarse_sieve.cu` | Round 8. |
-| `cuda_emul.h` | `__ldcg` and `clock64()` for the emulated build. |
-| `Makefile` | `coarse_sieve` links with `-pthread` (the watchdog thread). New target `coarse_sieve_prof`: the phase-timing build (section 6). |
-| `coarse_sieve_round8.patch` | All of the above as a patch against round 7 (flat paths). |
-| `coarse_sieve_devkit_r8.tar.gz` | The dev kit for continuing in a new conversation (section 12). |
+| `coarse_sieve.cu` | Round 9. |
+| `gf2_dlog.h` | The cubic tower; the exponent-plane prefetch in g^u. |
+| `t_cubic.cpp` | New unit test: the cubic tower against an independent host Pohlig-Hellman. |
+| `cuda_emul.h` | `cudaEventQuery` for the emulated build. |
+| `Makefile` | A comment only. |
+| `randread.cu` | New microbenchmark (dev kit `tools/`): your GPU's random-read rate, alone and beside streaming traffic. |
+| `coarse_sieve_round9.patch` | All of the above as a patch against round 8 (flat paths). |
+| `coarse_sieve_devkit_r9.tar.gz` | The dev kit for round 10 (section 10). |
 
-`gf2_dlog.h`, `gf2_dlog_selftest.cpp`, `gf2_wide_field.h`, `gf2_wide_setup.h` and `tools/` are unchanged.
+`gf2_dlog_selftest.cpp`, `gf2_wide_field.h`, `gf2_wide_setup.h` and the other unit tests are unchanged.
 
 ## TL;DR
 
-* **Your questions:**
-  - The `.lock` file is only there to hold a lock. A leftover one is harmless, and `--fresh` is right to leave it alone (section 7).
-  - The hang was environmental. The first Ctrl-C couldn't act on it, because stops are taken between chunks.
-  - Long threads: yes, start a new conversation per round. The dev kit makes that easy.
-* **The lock file** (section 7).
-  - A leftover lock file now gets a note saying it is harmless.
-  - A double Ctrl-C removes the run's lock file.
-  - A small race in taking the lock is closed.
-* **A watchdog** (section 7). If nothing progresses for `--watchdog-mins` (default 30), the run says so and exits with status 3. The checkpoint is intact, so a wrapper loop can restart an unattended cloud run.
-* **Round 7's pass now runs at the tuner's rate** (section 1). The fill fix closed the whole 1.2-1.9x gap. My predicted 20% drop in the tune lines did not happen (3-6%).
-* **What the profiles say** (section 2).
-  - All three kernels are latency-bound: 19-30% of issue slots used.
-  - The batch arrays in local memory are 64-83% of the L1 traffic, and 90% of their loads miss L1. RR at d=47 waits on memory 70% of the time.
-  - My hypothesis: the batch arrays' round trips to L2 and DRAM are the main stall.
-* **Round 8 tests that hypothesis three ways.** The tuner or a simple A/B run measures each:
-  1. **A grouped loop order** (section 3), a new tuner candidate at d ≥ 40: groups of 8 classes in registers, four inversions per batch instead of one.
-  2. **Table reads that bypass L1** (section 4), the default; `COARSE_LDCG=0` for the A/B.
-  3. **TP in global memory** at d = 48 and 52 (section 5), a tuner candidate. It trades shared memory for twice the L1, and decides d=52 on the T4.
-* **A phase-timing build**, `make coarse_sieve_prof` (section 6). It shows where each loop order's time goes.
-* **I can't predict which way these land.** Each has a real cost against its saving. The tune lines will tell.
-* **Before production with round 8,** please validate the grouped kernels on your GPU (step 1 of section 10, ~15 min). They are new code that the emulator has checked but your GPU hasn't run. `COARSE_PIPE=0` keeps the tuner away from them.
+* **Your round-8 data, read** (section 1). The phase timing shows where the grouped order won and lost.
+  - It cut g^u's time by 63% and marking's by 59%, with the same code and work. Less local-memory traffic made every wait shorter.
+  - It gave all of that back in the fill (spilled state reloaded at every enumeration step) and in the logs (eight copies of the code, so instruction-cache misses).
+* **The SASS exports** (section 2). At d=47, three places in the code take 65% of RR's stall samples:
+  - the two RR table reads, 24%;
+  - one local load in g^u, 24%;
+  - the backward loop's loads, 17%.
 
-## 1. Round 7 on your card
+  At d=44, add 23% for instruction-cache misses.
+* **Round 9 keeps what won and removes what lost** (section 3):
+  1. **g^u's exponent planes** are loaded three steps ahead (round 8: ~25 instructions), with L1 prefetches two groups ahead.
+  2. **A new loop order, `r9-order`**, replaces round 6's: 9 local accesses per class instead of round 5's 12.
+  3. **The grouped order, rewritten:** rolled loops (one copy of the code, not eight), and the fill's state parked across each batch. The RR grouped kernels are now spill-free, except at d=45 and 51.
+  4. **L1 prefetches of the batch arrays**, on by default; `COARSE_PREFETCH=0` turns them off for the A/B.
+* **A cubic tower for d=54** (section 4).
+  - It treats GF(2^54) as a cubic extension of GF(2^18).
+  - Per class: four logs in GF(2^18) from 26 KB of shared tables, and two reads of a 2 MB table that L2 can hold. The quadratic tower instead makes a DRAM read of its 1 GB T.
+  - A tuner candidate at d = 42, 48 and 54.
+* **None of this has run on a GPU.**
+  - The tuner times every engine and loop order; the A/Bs of section 8 measure the rest.
+  - My guess, and no more than that: a few % at RR, more at d=54 if the cubic tower's table stays in L2. Each change could also lose.
+* **Your questions** (section 6):
+  - **WSL2's 100% CPU** is real CPU time, but WSL2's doing, not the sieve's. It costs no GPU speed. `COARSE_SYNC=poll` is there to test it.
+  - **ncu on the T4:** not needed. To see whether its pass is throttled, log `nvidia-smi` instead.
+  - **Files sent while I work** reach me at my next step.
+  - **Multi-GPU** still works with round 9. It adds throughput only, and a mixed pair runs at the slower card's pace.
+* **d=51, reconstructed:** ≈25,772 s, i.e. 0.584 ns/class against the tune line's 0.580 (section 1).
 
-The pass time per class, against the tune line's (your round-7 log; the pass includes the table build and tuning, a second or two):
+## 1. Round 8 on your cards
 
-| d | engine | pass, ns/class | tune, ns/class | ratio (round 6's) |
+**The grouped order's passes**, against round 7's (round 5's order):
+
+| d | engine | round 7, r5-order | round 8, grouped | ratio |
 |---|---|---|---|---|
-| 40 | tower GF(2^10) | 0.374 | 0.342 | 1.09 (1.94) |
-| 41 | RR | 0.501 | 0.479 | 1.05 (1.34) |
-| 42 | tower GF(2^7) | 0.378 | 0.364 | 1.04 (1.80) |
-| 43 | RR | 0.530 | 0.533 | 0.99 (1.24) |
-| 44 | tower GF(2^11) | 0.376 | 0.380 | 0.99 (1.75) |
-| 45 | RR | 0.555 | 0.548 | 1.01 (1.25) |
+| 40 | tower GF(2^10) | 10.3 s | 13.39 s | 1.30 |
+| 41 | RR | 26.9 s | 26.12 s | 0.97 |
+| 42 | tower GF(2^7) | 39.6 s | 53.56 s | 1.35 |
+| 43 | RR | 108.4 s | 110.03 s | 1.02 |
+| 44 | tower GF(2^11) | 150.3 s | 168.01 s | 1.12 |
+| 45 | RR | 433.8 s | 428.06 s | 0.99 |
 
-- **What this shows.** The tuner's dense sample and the real pass now run at the same rate per class: the real pass has full batches.
-- **My side prediction failed.** I expected the tune lines themselves to drop ~20%, from the shorter runs in the tuner's sample. They fell 3-6%: the run quantization I blamed in round 7 was a small effect. The gap was the fill.
-- **d=51:** the tune line said 0.577 ns/class, i.e. ~7.1 h for 4.4e13 classes, and the first dot's estimate was 7.0 h. If you still have the done line, I'd like it for the projections.
+**Tuned:** d=44 chose GF(2^11) r5-order at 0.377 ns/class (150.09 s); d=45 chose RR grouped at 0.534 ns/class (430.18 s, 1% under round 7).
 
-## 2. What the profiles say, and what they don't
+**The phase timing** (warp-cycles per log and lane; "other" ~0 throughout):
 
-**Round 6's fill against round 7's, d=44, the same chunk (131: 852M classes):**
+| d=47, RR | fill | g^u | logs | inversion | marking | total |
+|---|---|---|---|---|---|---|
+| r5-order | 5,097 | 11,344 | 17,306 | 370 | 9,441 | 43,558 |
+| r6-order | | | | | | 43,209 |
+| grouped | 10,318 | 4,249 | 22,509 | 2,583 | 3,876 | 43,535 |
 
-| | fill 0 (round 6) | fill 3 (round 7) |
-|---|---|---|
-| kernel time | 630.7 ms | 494.3 ms (1.28x) |
-| active threads per warp | 14.7 | 20.8 |
-| instructions | 50.2e9 | 42.3e9 |
-| issue slots busy | 27.9% | 30.2% |
+At d=44 (tower) the totals were 28,198 (r5), 29,031 (r6) and 31,941 (grouped).
 
-**Where the time goes**, in all three profiles (d44_fill0, d44_fill3, d47_rr):
-- **Latency-bound.** With 4 warps per scheduler (occupancy 50%, limited by 126-128 registers), the schedulers find no eligible warp 70-81% of the time.
-- **The top stall is waiting on memory** ("L1TEX scoreboard"): 45% of each warp's time at d=44, 70% for RR at d=47.
-- **Local memory dominates L1.** It is 64% (RR) to 80-83% (tower) of all L1 sectors, and 90% of its loads miss L1. That traffic is the batch arrays: the 32 classes per lane with their u, x, log, prefix product and gg, ~1 KB per thread, so 512 KB per SM against a 64 KB L1. It is about half of all L2 traffic, and L2's hit rate is only 37% for RR, 61-63% for the tower, so much of it goes on to DRAM.
-- **The table reads are random**, using 8 of every 32 bytes fetched. That's inherent: one log per read.
-- **The cost per log** (one log serves a class and its partner): RR at d=47 runs ~1,530 thread-instructions and ~40,000 warp-cycles per log and lane. The schedulers issue in about one cycle in five.
+**What it shows.** The grouped order did what it was meant to do, then lost it again:
+- **g^u fell 63%.** That code is identical in both orders, so this is not less work. It is shorter waits: the grouped kernel makes fewer local-memory accesses, so its exponent-plane loads come back sooner.
+- **Marking fell 59%:** its values came from registers instead of local memory.
+- **That −12,700 was lost again:**
+  - the fill, +5,200: the spilled enumeration state, reloaded at every step (round 8's section 3 named this risk);
+  - the logs, +5,200: eight copies of a class's code, too big for the instruction cache;
+  - the inversions, +2,200: four per batch instead of one.
 
-**What I counted in the SASS.** Per class, the round-5 order makes ~12 local-memory accesses:
-- one store in the fill;
-- one load and one store in the bit-slice transposes;
-- in the forward loop, two loads and three stores;
-- in the backward loop, four loads.
+  This is the strongest evidence yet that local-memory traffic is what the kernel waits on. Round 9 is built on it (section 3).
 
-**What I can't tell from the summary pages:** *which* instructions the warps wait at. Two exports from your existing reports would show it per SASS instruction, without re-profiling:
+**The T4.**
+- **d=44:** 260.59 s, i.e. 0.652 ns/class, 1.74x the 2070 SUPER's 0.375.
+- **d=52:** 61,535 s, i.e. 0.711 ns/class, against its tune line's 0.577: the pass ran 1.23x slower than the tune.
+  - On your 2070 SUPER the two agree within 1%: d=51 1.006, d = 40-45 within 1-9% (round 8, section 1).
+  - My guess: the T4, a 70 W passively cooled card, clocks down under hours of load, where the tuner's seconds-long samples see its boost clock. Section 6 says how to check.
+- **$1.98 for d=52** against ~$14 with `factor`: very nice.
 
-    ncu --import d47_rr.ncu-rep --page source --print-source sass --csv > d47_rr_sass.csv
-    ncu --import d44_fill3.ncu-rep --page source --print-source sass --csv > d44_fill3_sass.csv
-    nvcc --version
+**d=51, reconstructed.** Your d=49 calibration puts ~2.7 s outside the done line: wall clock 14,187.5 s, done line 14,184.78 s. That time goes to reading the seed and setting up. Applied to d=51, the line would have read about:
 
-With your nvcc version I can build the same SASS here and map the addresses back to the code. The phase timing of section 6 answers the coarser question of which phase gets the time.
+    d=51 done (logs/RR, 524288 chunks): 44152937520670 classes, ? heavy progressions, 25772s
 
-## 3. The grouped loop order (`grouped`, `COARSE_PIPE=2`)
+- **The time:** 25,775.05 − 2.7 ≈ 25,772 s, ±1 s for `date`'s truncation.
+- **The rate:** I(51) = 44,152,937,520,670 classes, so 0.5837 ns/class, against the tune's 0.580: the pass ran at the tuner's rate (1.006).
+- **The heavy count** can't be reconstructed. Unlike at d=49, degree-51 classes can have small moduli (orders like 103 · 2143), so it need not be 0.
 
-**Why.** The round-5 and round-6 orders carry each class's log, unit J, prefix product and gg from the forward loop to the backward one through the batch arrays: three stores, then four loads, tens of thousands of instructions apart, in a working set L1 can't hold. Montgomery's trick needs all 32 classes' prefix products before its one inversion, so those arrays can't simply shrink.
+## 2. What the SASS exports show
 
-**What the grouped order does.**
-- It cuts each batch into four groups of 8 classes, each with its own inversion.
-- The loops over a group are unrolled, so the group's v, J, prefix product and gg are indexed by constants and live in registers.
-- Only u (from the fill) and x = g^u + 1 (from the bit-sliced phase) pass through local memory: written once, read once.
-- In the SASS, the group loops have no local stores at all and two loads per class: u and x.
+Your two exports carry every SASS instruction of round 7's kernels with its stall samples. I located the hot instructions by reading the SASS against round 7's source: its loops, loads and table reads.
 
-**What it costs.**
-- **Four inversions per batch instead of one:** by my count ~5-8% more instructions, depending on the exponent λ(M) − 1 (19 bits at d=52, 29 at d=51, 33 at d=53).
-- **Eight copies of a class's code.** That is the main risk.
-  - **RR (odd d):** a group loop of ~6,700 SASS instructions (105 KB). By my reading its hot part is ~200 instructions per class, ~26 KB for the eight, since the irregular classes are rare. That no longer fits the 16 KB L0 instruction cache, but should fit L1's 46 KB.
-  - **Tower (even d):** ~11,400 instructions (178 KB). About half the classes are irregular (3 always divides 2^d − 1), so their lift and marking code is hot too: ~600 instructions per class, ~75 KB for the group. That overflows L1's instruction cache, and **I expect the grouped order to lose at even d**, unless the local-memory savings outweigh the instruction misses.
-  - The round-6 order's slowdown at d=51 (1.25 and 2.30 against 0.58 ns/class in your tune lines) may be this same kind of effect. I don't know.
-- **Small spills, partly in hot code.** ptxas reports 52-68 bytes of spill stores in the grouped kernels (the other orders have none). In the SASS of all 16:
-  - the group loops reload one 4-byte value per group of 8 classes, and 4-6 accesses come once per batch;
-  - but the enumeration loop of the pooled fill (the default), one pass per step of the enumeration, has 9 (RR) or 11 (tower) spill loads and stores. A few values of the enumeration's state, such as the end of the lane's current run, are reloaded at every step and stored when they change.
-  - That adds latency to the fill phase: ~128 steps per batch, each waiting on a reload. By my estimate that is 1% of a batch's time if the reloads hit L1, several % if they miss. The phase timing's fill figure will show it.
-  - If the grouped order wins, this is the first thing to fix. A first try, not in this round's code, didn't do it: counting the classes once per deal instead of at each find left 9 spill accesses in that loop, and ptxas then spilled more overall (84 bytes). The next options are a smaller group or a register limit above 128 for these kernels, each with a cost of its own.
-- **Compile time.** Grouped kernels exist only for d ≥ 40 (16 kernels), which makes the build ~8 minutes instead of 5.5.
+**RR, d=47.** Three places take 65% of all stall samples:
+- the two RR table reads, 24%;
+- one local load in the bit-sliced g^u loop, 24%. It fetches the exponent plane `U[b]` ~25 instructions before its use. Earlier rounds assumed it hit L1; it doesn't.
+- the backward (marking) loop's local loads, 17%.
 
-**A check the other orders lack.** The first inverse of each group's backward step is multiplied back (J · J⁻¹ ≡ 1 mod M), and a mismatch stops the run as a consistency error.
+**Tower, d=44.** The same pattern:
+- the T read, 17%;
+- `U[b]`, 14%;
+- the backward loop, 12%;
+- instruction-cache misses (`no_instruction`), another 23%. The tower's per-class loops are ~20 KB of hot code.
 
-**In the tuner.** Every tower and RR variant at d ≥ 40 is now timed in three loop orders, labelled `r5-order`, `r6-order` (round 6's, previously unlabelled) and `grouped`.
-- Round 5's is now the default when nothing is tuned (d < 40, `--no-tune`). It won every one of your round-7 tune lines.
-- `COARSE_PIPE=0|1|2` fixes the order, as before.
-- The checkpoint records it. Round 7's binary continues a grouped checkpoint in its own pipelined order: the same results, tested.
+**The memory system is congested:**
+- local loads take 2,000-9,000 cycles to return;
+- local memory is ~70-80% of the DRAM bytes, and DRAM runs at 46-55% of peak;
+- the random table reads arrive at ~1.75-1.9 G/s (RR, classic tower), 1.33 G/s for the subfield tower at d=44.
 
-## 4. Table reads that bypass L1 (`COARSE_LDCG`)
+**The conclusion.**
+- Every load waits behind the batch arrays' traffic.
+- Hiding latency gained nothing: round 6's order read the tables a class ahead.
+- Cutting traffic gained a lot: the grouped order's g^u and marking.
 
-- **What changed.** The random reads of the big tables (tower T, RR's L) now go through L2 only (`__ldcg`).
-- **Why.** Each read fills an L1 sector that is never read again. A tower log reads T once per class and RR reads L twice, and each such fill can evict a batch-array line that will be read again.
-- **What it should buy.** A modest gain at best (estimate): the batch arrays' working set is 8x L1 either way, so a better L1 hit rate can only help a little. It can't make a table read slower: those miss L1 at these sizes regardless.
-- **The A/B.** `COARSE_LDCG=0` restores reads through L1. Section 10's step 3 compares the two.
+`randread.cu` (dev kit `tools/`) measures your card's ceiling for random 8-byte reads, alone and beside streaming traffic shaped like local memory. With it, section 8's numbers can be read against the hardware's limits.
 
-## 5. TP in global memory at d = 48 and 52 (`TP-global`, `COARSE_TOWER_TP`)
+## 3. Less local-memory traffic, and shorter waits
 
-- **The trade-off.** The subfield tower stages its small tables in shared memory: the byte tables, the inner logs LKn, and the projective-line logs TP.
-  - At d=52 (inner GF(2^13)) they total 62 KB, of which TP is 32 KB.
-  - Past 32 KB, a Turing SM must switch to its larger shared-memory carveout, which halves L1 from 64 to 32 KB. That is where the batch arrays are cached.
-  - With TP in global memory instead (cached in L1 and L2), the shared tables need 30 KB and L1 stays at 64 KB. But TP's two reads per class then go to L1 or L2 instead of shared memory.
-- **What decides it.** I can't tell which wins. So when staging TP takes the shared tables past 32 KB, which happens at d=48 and d=52 only, the tuner times both: `GF(2^13) r5-order TP-global`, and so on. The degree line then says `TP from global memory`.
-- **The checkpoint** records the choice (flag 16). Round 7 ignores the flag, with the same results.
-- **Forcing it.** `COARSE_TOWER_TP=shared|global` fixes the placement.
+### 3.1 g^u's exponent planes (all orders)
 
-## 6. Phase timing (`make coarse_sieve_prof`)
+- **The loads.** Four registers take the planes in turn, each reloaded right after its use. In the source that is three steps ahead.
+  - In the SASS, ptxas sinks the four loads to the end of the loop body. At d=53 that leaves 55, 163, 273 and 410 instructions between a plane's load and its use. Round 8 had ~25.
+- **Plus L1 prefetches** (`CCTLL.PF1`: no register, nothing waits for it) of the planes two groups ahead.
+  - ptxas sinks those too, next to the loads. That still puts each line ~550 instructions ahead of its load, which then hits L1, if the line survives there.
 
-- **What it is.** A diagnostic build (`-DCOARSE_PHASE_TIMING`); the production build has none of this code. Lane 0 of every warp adds the `clock64()` cycles of each phase of the batched kernel to six counters. Each degree, or a stop, then prints:
+### 3.2 Round 9's loop order (`r9-order`, `COARSE_PIPE=1`)
 
-      [phase timing d=47, warp-cycles per log and lane: fill 3700 (9.2%), g^u 3000 (7.4%), logs 24300 (60.1%), inversion 760 (1.9%), marking 8400 (20.8%), other 240 (0.6%); total 40400; 9709438 logs in 303420 warp batches, 31.99 of 32 per lane]
+**What changed.** Round 9's order replaces round 6's, which never won a tune.
+- **Forward step:** it stores w = v · t_k, the class's log times the product of the J before it, where round 5's stores v and t_k separately.
+- **Backward step:** it then needs only w and J: S = inv · w = v · J_k⁻¹.
+- **Cost:** one product moves from the backward loop to the forward one.
 
-  (Illustrative numbers.)
-- **The phases:**
-  - fill: the enumeration and the deal;
-  - g^u: the bit-sliced exponentiation;
-  - logs: the forward step, including the table reads;
-  - inversion;
-  - marking: the backward step;
-  - other: start-up and tail.
-- **How to read it.** These are wall-clock cycles of the warp, stalls included, per log of each lane, since a warp's cycles serve its 32 lanes at once. So a phase's number shows where the time goes, not how much work it does. Where a phase's share is far above its share of instructions, that phase waits on memory.
-- **Its own perturbation.** The timing needs a few registers. The tower kernels then spill ~40 bytes (none in the production build) and the grouped ones 80-110, so its numbers run a little pessimistic.
+**Local-memory accesses per class**, 9 against round 5's 12:
+- the fill: one store;
+- the bit-slice transposes: one load and one store;
+- the forward loop: two loads (x, u) and two stores (w, J);
+- the backward loop: two loads.
 
-## 7. The lock file and the watchdog
+**The irregular classes' gg:** carried with every class where irregular classes are common (even d, or 3 | d); elsewhere loaded only for an irregular class.
 
-**The lock** (`<checkpoint>.lock`). What counts is the `flock` on it, and the kernel drops that the moment its process ends.
-- **A leftover file is harmless.** Round 8 says so when it finds one: `note: K.ckpt.lock was left by an earlier run that did not exit normally (killed or crashed); harmless -- its lock ended with it`.
-- **A second SIGINT/SIGTERM** now unlinks the file before the process dies (round 7 left it). The exit status is still that of a run killed by the signal, 130 for SIGINT.
-- **A race fixed.** A run that exits unlinks its lock file. A second run could open the file just before that, and a third create a new one just after; both could then lock "the" file. Round 8 re-checks after locking that the file at the path is the one it locked.
-- **Deleting a lock file, by hand or by `--fresh`, is never needed.** It would be harmful only while the run that holds it is still alive, such as a hung run not yet killed: a new run would then lock a new file at the same path, and if the old run came back to life, both could write the same checkpoint.
+**A new check in every order:** at the end of each backward pass inv · ΠJ must be 1. A wrong inversion now stops the run like a wrong log.
 
-**The watchdog.**
-- **When it fires.** If nothing progresses for `--watchdog-mins` minutes (default 30; `0` turns it off), it acts. Progress means a round of chunks, a tuner sample, a table-building launch or a checkpoint write.
-- **What it does.** It prints `watchdog: no progress for 30 minutes -- the GPU or its driver seems to hang; exiting with status 3.  The last checkpoint (out52.ckpt) is intact: the same command continues from it.`, removes the lock file and exits with status 3.
-- **Why 30 minutes is safe.** A chunk takes a second or so and a table build minutes, so a slow run is not a hang.
-- **It writes no checkpoint itself.** best[] lives on the GPU, and a hung driver would not give it back. The work lost is at most the checkpoint interval plus the watchdog's limit.
-- **For an unattended run**, e.g. on the T4:
+### 3.3 The grouped order, rewritten (`grouped`, `COARSE_PIPE=2`)
 
-      until ./coarse_sieve 136279841 52 out52 --load-survivors out51.survivors.txt; do
-          rc=$?; [ $rc -eq 3 ] || { echo "stopped with status $rc"; break; }
-          echo "watchdog restart"; sleep 60
-      done
+- **Rolled loops.** Round 8 unrolled each group's loops, so that the group's values were indexed by constants and lived in registers. That made eight copies of a class's code, which the instruction cache couldn't hold.
+  - Round 9 keeps the group's w, J (and gg) in registers but rolls the loops. A class writes its values to, and reads them back from, the right registers through a switch on its place in the group. That costs a few instructions per class and keeps one copy of the code.
+  - Per class: 5 local accesses (u: 3, x: 2).
+- **The fill's state, parked.** The grouped batch needs the registers the enumeration's state occupies. Round 8's ptxas spilled that state inside the fill loop, reloading it at every step (the +5,200 of section 1).
+  - Round 9 stores it to local memory before each batch and loads it back after: 8 accesses per 32 classes.
+  - ptxas -v, round 8 → round 9:
 
-  A hang like your WSL2 one, if it outlasts the process, would make this loop restart again and again, each time losing the work since the last checkpoint, so watch for repeated restarts.
-- **The startup line** shows the setting: `...; SIGTERM/SIGINT saves and exits (twice: exit now); watchdog 30 min`.
+    | grouped kernels | round 8 | round 9 |
+    |---|---|---|
+    | RR, d = 41-55 except 45 and 51 | 52 B | **0** |
+    | RR, d = 45 and 51 (they carry gg) | 52 B | 264 B stored, 116 loaded |
+    | tower, d = 40-54 | 68 B | 188 B stored, 116 loaded |
+    | cubic, d = 42, 48, 54 | — | 188 B stored, 116 loaded |
 
-## 8. Smaller changes
+  - In the tower and cubic kernels, 4 of the 16 group values still spill: about one 8-byte store and one load per class, outside the fill loop. Before the parking these kernels spilled 414 B. So at the tower degrees the grouped order now makes about as many local accesses per class as round 9's order; at RR it makes 5 against 9.
+- **Its four inversions per batch** stay. In round 8's d=47 profile they took 2,583 warp-cycles per log and lane, against 370 for round 5's one.
 
-- **Tune labels.** Every tower and RR candidate now carries its loop order: `r5-order`, `r6-order`, `grouped`. In round 7 the round-6 order had no label.
-- **The degree line names the order:** `round-5 loop order`, `round-6 loop order` or `grouped loop order`.
-- **Values are checked.** `COARSE_PIPE` accepts only 0, 1, 2, and `COARSE_TOWER_TP` only auto, shared, global.
-- **The checkpoint-format message** now says "rounds 6-8".
+### 3.4 Prefetches of the batch arrays (`COARSE_PREFETCH`, default on)
 
-## 9. Validation done here
+- **Where:**
+  - the forward loops prefetch the class two ahead, one class (~700-1,400 instructions) before its loads;
+  - the backward loops, four ahead, ~1,200 instructions before its loads: their values were written a whole forward pass earlier and are back in L2 or DRAM.
+- **The risk:** a line prefetched into L1 can be evicted again before its load, wasting the fetch. `COARSE_PREFETCH=0` turns off these and section 3.1's for the A/B.
 
-* **Host, `gf2_dlog_selftest`:** it and `gf2_dlog.h` are unchanged since round 7, where it gave ALL OK.
-* **Emulated program, `regress8.sh`: 156 checks, all PASS** (round 7 had 100). That is 83 of its own, plus the 73 of the checkpoint suite below; the unit tests also give ALL OK. Wherever outputs were compared, they are byte-identical. On top of round 7's suite:
-  - **Every loop order against the oracles:** 19-23 for tower + PH and tower + RR, the grouped order on 2 emulated GPUs, 24-29, 30-33, and the full range s ≤ floor(r/2) for 2-28 and 29-32. The full range includes heavy progressions.
-  - **Fault injection** stops the grouped order too.
-  - **Each new switch gives identical output:** `COARSE_LDCG=0`, `COARSE_TOWER_TP=global` (with the grouped order too), and the phase-timing build. Its phase lines appear in the documented format and their shares add up to 100%.
-  - **The tuner:** the candidates in their documented order at d = 18-26 (all 3 loop orders, the TP-global twins via a test hook), and every pick tested gives identical results.
-  - **The command line:** bad `--watchdog-mins` and `COARSE_PIPE` values refused, and the watchdog shown or off.
-  - **Selftest:** the batched kernel in 3 loop orders at d = 21-30 (on your GPU: the grouped order at 40-55).
-* **Checkpoints, `ckpt8_tests.sh`: 73 checks, all PASS.** Round 7's K1-K21, plus:
-  - K19b: round 7's real checkpoint resumed by round 8, its times carried;
-  - K22-K23: a resumed degree keeps the grouped order, or TP-global (the flag checked in the file), without re-tuning;
-  - K24: round 7's binary continues both kinds of round-8 checkpoint, with identical results;
-  - L1-L3, the lock: a leftover file noted and removed; `--fresh` with one; a hung run that `--watchdog-mins 0` keeps alive, that a first SIGINT can't stop, and that a second kills (status 130) without leaving its lock;
-  - W1-W3, the watchdog: status 3 after 2 s without progress, lock removed, checkpoint kept, and the same command continuing to identical results; without a checkpoint, it says the work is lost; a progressing run under a 4 s limit completes.
-* **nvcc 13.3, sm_75: warning-free, 106 kernels** (90 + the 16 grouped ones).
-  - The 90 round-7 kernels: 81 identical in registers, stack and spills; RR at d = 39, 49 and 53 uses 2-4 registers fewer. Overall: tower 127-128, RR 124-128, PH 132-252 registers, and no spills at all.
-  - A correction: round 7's handoff said it had no spills. In fact six RR kernels at d ≤ 31 spilled 4 bytes there. Round 8's don't.
-  - The 16 grouped kernels: 128 registers, stack ~1.25 KB (from ~1.7 KB: the prefix-product and gg arrays are gone), 52-68 bytes of spills, some of them in the fill's enumeration loop (section 3).
-  - The phase-timing build compiles too, with the small spills of section 6.
-* **All of the above ran on the final sources**, the files you have.
-* **The dev kit** (section 12), tested as you'd use it:
-  - unpacked into an empty directory, built as `setup.sh` does, the oracles checked against their checksums, then `FULL=0 tests/regress.sh`: 152 checks, all PASS, 31 minutes in all;
-  - its oracle generator, run in a second copy, made OA, OB, OJ and OBIG, all matching their checksums;
-  - the archive you have differs from the one tested only by README wording and the added `tools/sass_locals.py`.
-* **What I can't test here:** anything about speed. Every number in sections 3-5 is an estimate or a question for your hardware.
+## 4. The cubic tower (d = 54)
 
-## 10. Hardware test plan
+**The idea.**
+- GF(2^54) = K(w), with K = GF(2^18) and w³ = y′ ∈ K.
+- Write x = Y0 + Y1·w + Y2·w², a linear split by byte tables, and t = Y1 + Y2·w. Then r = t·x = (Y0Y1 + y′Y2²) + (Y1² + Y0Y2)·w: the w² terms cancel.
+- So x = r/t with r and t both *linear* in w. It is RR's rational reconstruction, over K instead of GF(2), and it never fails.
+- A linear a + b·w is b·(w + a/b). Its log is log b, a log in K, plus T3[log(a/b)], where T3 holds the logs of w + c for all c in K: 2^18 entries, 2 MB.
+- The logs in K come from the classic tower of K: tables of 2^9 entries, in shared memory.
 
-    make coarse_sieve coarse_sieve_prof gf2_dlog_selftest     # ~16 min for the two CUDA builds
+**Per class:**
+- seven byte-table lookups and two products in K;
+- four logs in K, six shared-memory lookups each;
+- one product mod 2^18 − 1;
+- two reads of T3.
+
+The quadratic tower at d=54 instead makes one DRAM read of its 1 GB T per class (plus the subfield's logs). The cubic tower makes no DRAM-random read at all, *if* L2 keeps T3. L2 is 4 MB on both your cards, but the batch arrays stream through it.
+
+**The tables.**
+- T3 is built by Pohlig-Hellman on GPU 0 at the start of the degree: 2^18 logs, under a second by my estimate, each verified on the device and a sample on the host. The line is `[cubic tower for d=54 over GF(2^18): T3 of 262144 logs (2 MB) by PH in Xs, verified]`.
+- Shared memory: 26 KB.
+
+**Code size.**
+- My first version had a 5,440-instruction forward loop: four inlined general tower logs, each with the subfield tower's loops. It would have thrashed the instruction cache.
+- The final one fixes d and the field's modulus at compile time and keeps only the classic path. Its forward loop is 1,236 instructions (tower 1,371, RR 727).
+- It also indexes T3 by log_y instead of log_kappa, which saves three products per class.
+
+**In the tuner.**
+- At d = 42, 48 and 54 the tuner times it in all three orders: `cubic GF(2^18) r5-order`, etc.
+- `COARSE_METHOD=cubic` forces it.
+
+**The checkpoint** records it as engine 4.
+- Round 9 resumes such a degree.
+- Rounds 6-8 refuse a checkpoint written in the middle of a cubic degree, and leave it alone. Round 8's message is misleading: "the checkpoint's engine is not possible here (less free VRAM?)".
+
+**Verification.**
+- t_cubic: every x at d = 12 and 18, and 3,000 random x at each 6 | d up to 54. Each log is checked against an independent host Pohlig-Hellman, and the sieve's compile-time version against the run-time one.
+- The emulated sieve against the oracles at d = 12, 18, 24 and 30, in all orders and fills.
+- The emulated selftest, with its degree limit raised to 54, runs the batched kernel at every 6 | d from 24 to 54, in the three orders and the four fills, T3 included (built in 1.9 s on the CPU at d=54): all ok.
+- On your GPU, the selftest does that by default (section 8).
+
+**What I can't tell:**
+- whether T3 stays in L2;
+- what the shared-memory bank conflicts of 31 lookups per class cost;
+- whether ~400 instructions per class are cheaper than the tower's DRAM read.
+
+The tune line at d=54 will say.
+
+## 5. Smaller changes
+
+- **Selftests:** `--selftest cubic`; the default selftest also checks the cubic tower beside the tower at every 6 | d.
+- **`COARSE_SYNC=poll`:** waits for each chunk by polling its event every millisecond (~0.1% of a chunk) instead of sleeping in the driver. It is for WSL2 (section 6).
+- **Labels:**
+  - `r9-order`, and `round-9 loop order` on the degree line;
+  - `COARSE_PIPE=1` now means round 9's order. Round 8's checkpoints of `r6-order` degrees resume in it, with the same results.
+- **The checkpoint-format message** says "rounds 6-9".
+- **The new environment switches are checked:** `COARSE_SYNC` takes only block or poll, and `COARSE_METHOD` now accepts `cubic`.
+- **A bug fixed before it shipped:** the cubic tower's check path read `T3[ir]` in the same expression as the call that sets `ir`. nvcc warned, and the order is unspecified in C++. It is fixed.
+
+## 6. Your questions
+
+**(a) No CPU on the T4, ~100% on WSL2: an artifact?**
+- **It is real CPU time, but WSL2's doing.** Both runs wait for each chunk on an event created with `cudaEventBlockingSync`. On native Linux (the T4) the host thread sleeps in the driver until the GPU signals; under WSL2 the same wait evidently spins.
+  - The GPU's work is the same either way, so it costs no speed: your 2070 SUPER's passes run at the tuner's rate.
+  - What it does cost: one busy core for days, and its power.
+- **NVIDIA's WSL user guide** lists its known limitations (unified memory, pinned memory, NVML queries), but nothing about blocking waits. So this is my inference, not documented behaviour.
+- **To test it:** run d=44 with `COARSE_SYNC=poll` and watch `top`. If the CPU drops to a few % and the done line's time doesn't move, polling is the better mode under WSL2, and I'll make it that platform's default.
+- **ncu on the T4** wouldn't show this. ncu profiles the GPU kernels, which are the same Turing kernels as on your 2070 SUPER.
+- **For the T4's pass/tune gap** (section 1), log its clocks during a run:
+
+      nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_throttle_reasons.active --format=csv -l 60 > t4_clocks.csv &
+
+  A falling `clocks.sm`, with a power or thermal reason, would confirm it.
+
+**(b) Sending files while I work.**
+- **It is possible.** In a session like this one, a message you send while I'm working is queued and handed to me at my next step, between tool calls. It doesn't stop the work, and I can use what it brings for the rest of the round.
+- **What I'd suggest:**
+  - Put whatever could change the plan in the first message, as you did this round; I make the big decisions early.
+  - Send mid-work anything I've asked for, or a correction, with a line on what it is. If I'm inside a long step, such as a 45-minute test run, it waits until that step ends.
+- In round 8 the exports were requested in the handoff, so this round's kickoff was exactly the right time.
+
+**(c) Multi-GPU (`--gpus N`).**
+- **How it works.**
+  - Each GPU holds its own best[] (545 MB) and its own copy of the degree's tables, built once and copied.
+  - The pass deals the chunks in rounds of N, neighbouring chunks in the scrambled order, and waits for the round's slowest GPU.
+  - The tuner runs on GPU 0 only, and its choice applies to all.
+  - At the end, and for each checkpoint, the copies of best[] are merged by minimum on the host. Since that merged copy is what's saved, a run can resume on a different number of GPUs.
+- **Benefits:** near-linear throughput for identical GPUs, with no peer access needed (any PCIe topology, cloud VMs with 2-8 T4s).
+- **Drawbacks:**
+  - **A mixed pair runs at the slower card's pace.** A 2070 SUPER with a T4 would do ~2 chunks per T4 chunk-time, ~1.15x a 2070 SUPER alone, where dynamic dealing could give ~1.57x.
+  - **VRAM is not pooled:** every GPU needs best[] plus the full tables, ~3 GB at d=55.
+  - **One tune for all GPUs:** a different model might prefer another variant.
+- **Round 9 compatibility:** yes.
+  - Everything round 9 adds is per device: the parking, the prefetch flag, the cubic tower's tables (uploaded to each GPU), the run counter.
+  - The emulated 2-GPU runs match the oracles for every engine and order: the cubic tower, RR grouped, the fills. A checkpoint written on 1 GPU resumes on 2 and the other way around.
+- **What the emulator can't test:** real concurrency, i.e. that the per-device launches overlap.
+- **For your setup** (two machines, one GPU each), separate degrees per machine with the merge recipe of round 7's handoff, section 6, remain the better use.
+
+**(d) Missing information, and artifacts.**
+- **I had what I needed:** the dev kit rebuilt the workspace exactly, and the d=51 notes were enough to reconstruct the line.
+- **What would help next time:**
+  - the full d=53 tune line (all candidates);
+  - its done line when it finishes;
+  - `nvidia-smi` logs from the T4.
+- **Artifacts:** the project doc and the dev kit are the right carriers between rounds. A per-degree run log as a project doc, with each degree's command, tune line, done line and dates, would replace the scrollback that lost d=51. I can start one in round 10 if you'd like.
+
+## 7. Validation done here
+
+* **Unit tests:** `t_arith`, `t_rot`, `t_bs`, `t_tower`, `t_pair` ALL OK. New, `t_cubic`: ALL OK, 285,838 logs, 0 wrong, and the compile-time and run-time versions agree on every one.
+* **Emulated program, `tests/regress.sh`: 207 checks, all PASS** (round 8 had 156): 120 of its own, plus the 87 of the checkpoint suite. Wherever outputs were compared, they are byte-identical. On top of round 8's suite:
+  - **The cubic tower against the oracles** wherever a degree has 6 | d:
+    - scratch 2-22 (d = 12, 18), in all three orders and with fill 1;
+    - 24-29 (d=24), in all three orders, with fill 0, and on 2 emulated GPUs;
+    - 30-33 (d=30);
+    - the full range s ≤ floor(r/2), 2-28 and 29-32.
+
+    At d=24 it equals every inner subfield of the quadratic tower. The phase-timing build and `COARSE_LDCG=0` give the same results with it, and fault injection stops it.
+  - **Round 9's order** in place of round 6's: 19-23 for tower + PH and tower + RR, 24-29 for RR, and fault injection.
+  - **The grouped order** with every fill (the parked state), and the new switches: `COARSE_PREFETCH=0`; `COARSE_SYNC=poll` (bad values refused); `COARSE_METHOD=cubic` at degrees without 6 | d, which keeps the usual engines.
+  - **The tuner:**
+    - the candidates in their documented order, the cubic tower's included: 9 at d=18, 12 at d=24;
+    - the picks that choose it, with identical results;
+    - `COARSE_PIPE`, `COARSE_TOWER_SUBN` and `COARSE_METHOD=cubic` narrowing the list.
+  - **Selftests:** `--selftest cubic`, and the default one checking the cubic tower beside the tower.
+  - **Checkpoints, 87 checks** (round 8: 73):
+    - K25: a cubic degree, forced or tuned, stopped and resumed by round 9, and refused by round 8 with the file left alone;
+    - K26-K27: round 8's checkpoints under round 9 (its r6-order as round 9's order, its grouped order as round 9's) and round 9's under round 8;
+    - K21 and K24 now resume round-9 checkpoints under rounds 6 and 7.
+  - The full run took 54 minutes, with another job on the second core.
+* **Added after that run:** the cubic selftest with its degree limit at 54 (section 4), as one more check in `regress.sh`. It passes, run on its own (7 s) here and in the kit test below.
+* **The dev kit** (section 10), tested as you'd use it:
+  - unpacked into an empty directory, `FULL=0 ./setup.sh` built every binary and made OA, OB, OJ and OBIG, all matching their checksums (31 minutes);
+  - then `FULL=0 tests/regress.sh`: 201 checks (the full run's 207 without the six full-range ones), all PASS, in 38 minutes.
+* **nvcc 13.3.73 (your version, from pip), sm_75: warning-free, 116 kernels** (round 8's 106, 9 cubic ones, the T3 builder). The tower, RR and cubic kernels use ≤ 128 registers; the PH ones 140-254, as before.
+  - Non-grouped kernels: no spills.
+  - Grouped kernels: as in section 3.3's table.
+  - The phase-timing build compiles warning-free too. Its non-grouped kernels have no spills either (round 8's spilled ~40 B in the tower kernels); its grouped ones spill 12-368 B.
+* **What I can't test here:** anything about speed. Every number in sections 3-4 that isn't a count of instructions or bytes is an estimate or a question for your hardware.
+
+## 8. Hardware test plan
+
+    make coarse_sieve coarse_sieve_prof gf2_dlog_selftest     # ~12 min for the two CUDA builds
     ./gf2_dlog_selftest
-    ./coarse_sieve --selftest; ./coarse_sieve --selftest tower; ./coarse_sieve --selftest ph; ./coarse_sieve --selftest rr
+    g++ -O2 -march=native -std=c++17 -o t_cubic t_cubic.cpp && ./t_cubic       # ~10 s, ends "ALL OK"
+    for e in "" tower ph rr cubic; do ./coarse_sieve --selftest $e; done
+    nvcc -O3 -arch=native -o randread randread.cu && ./randread                # < 1 min
 
-At d ≥ 40 the tower and RR lines should now say `batched: N classes (3 loop orders) and M (4 fills), ok`.
+At d ≥ 40 the selftest's lines should say `batched: N classes (3 loop orders) and M (4 fills), ok`, the cubic ones at 6 | d too: `[d=54 cubic logs, 2 MB tables: ... 0 wrong; batched: ... ok; pairs: ..., ok; over GF(2^18), ...]`. Please send `randread`'s output.
 
-1. **The grouped kernels against your files** (~15 min). This is what makes them safe to tune:
+1. **The new code against your files** (~30 min): round 9's order and the rewritten grouped order at d = 40-45, and the cubic tower at d=42. `COARSE_METHOD` keeps each degree on its usual engine, since `--no-tune` would otherwise use PH at odd d.
 
        for d in 40 41 42 43 44 45; do
-         COARSE_PIPE=2 ./coarse_sieve 136279841 $d g_$d --load-survivors out$((d-1)).survivors.txt --no-checkpoint
-         cmp g_$d.found.cert out$d.found.cert && cmp g_$d.survivors.txt out$d.survivors.txt && echo "d=$d grouped identical"
+         m=$([ $((d % 2)) = 1 ] && echo rr || echo tower)
+         for o in 1 2; do
+           COARSE_METHOD=$m COARSE_PIPE=$o ./coarse_sieve 136279841 $d p${o}_$d \
+               --load-survivors out$((d-1)).survivors.txt --no-checkpoint --no-tune
+           cmp p${o}_$d.found.cert out$d.found.cert && cmp p${o}_$d.survivors.txt out$d.survivors.txt \
+               && echo "d=$d order $o identical"
+         done
+       done
+       for o in 0 1 2; do
+         COARSE_METHOD=cubic COARSE_PIPE=$o ./coarse_sieve 136279841 42 c${o}_42 \
+             --load-survivors out41.survivors.txt --no-checkpoint --no-tune
+         cmp c${o}_42.found.cert out42.found.cert && cmp c${o}_42.survivors.txt out42.survivors.txt \
+             && echo "d=42 cubic order $o identical"
        done
 
-   - Their done lines are also the first pass timings of the grouped order, against round 7's r5-order times (10.3, 26.9, 39.6, 108.4, 150.3, 433.8 s).
-   - If anything differs, please send the log, and use `COARSE_PIPE=0` until I've fixed it.
-2. **The tuned default** at one tower and one RR degree: `./coarse_sieve 136279841 44 r8_44 --load-survivors out43.survivors.txt`, the same for 45, and `cmp` with your out44/out45. Please send the tune lines: they hold the A/B of the three orders.
-3. **Reads past L1, A/B:** the same two runs with `COARSE_LDCG=0` in front. The done lines against step 2's give the effect.
-4. **Phase timing** (~10 min). `COARSE_METHOD=rr` matters here: with `--no-tune`, d=47 would otherwise use PH.
+   - The done lines double as pass timings, against round 8's (r5-order: 150.09 s at d=44; grouped: 428.06 s at d=45, and so on).
+   - If anything differs, please send the log, and keep round 8's binary for production until I've fixed it.
+2. **The tune lines, with and without the prefetches** (~10 min). `COARSE_TEST_STOP_AFTER_CHUNKS=1` stops right after the tuner and the first chunk:
+
+       for pf in 1 0; do
+         for d in 44 45 47 48; do
+           COARSE_PREFETCH=$pf COARSE_TEST_STOP_AFTER_CHUNKS=1 ./coarse_sieve 136279841 $d t$d \
+               --load-survivors out$((d-1)).survivors.txt --no-checkpoint 2>&1 | grep "tune d="
+         done
+       done
+
+   - Eight lines, holding every candidate's ns/class:
+     - d=44 and 45 against round 8's tune lines (0.377 for GF(2^11) r5-order, 0.534 for RR grouped). The same order in both rounds isolates the g^u loads; r9-order and the rewritten grouped order are new.
+     - d=47 for RR;
+     - d=48 for the cubic tower against the quadratic ones.
+     - The `pf 0` lines against the `pf 1` lines: what the prefetches do, candidate by candidate.
+3. **Phase timing** (~12 min), as in round 8, plus the cubic tower:
 
        for o in 0 1 2; do
          COARSE_METHOD=rr COARSE_PIPE=$o COARSE_TEST_STOP_AFTER_CHUNKS=3000 ./coarse_sieve_prof 136279841 47 pt47 \
              --load-survivors out46.survivors.txt --no-checkpoint --no-tune
+         COARSE_METHOD=cubic COARSE_PIPE=$o COARSE_TEST_STOP_AFTER_CHUNKS=600 ./coarse_sieve_prof 136279841 48 pt48 \
+             --load-survivors out47.survivors.txt --no-checkpoint --no-tune
        done
-       for o in 0 1 2; do
-         COARSE_PIPE=$o COARSE_TEST_STOP_AFTER_CHUNKS=600 ./coarse_sieve_prof 136279841 44 pt44 \
-             --load-survivors out43.survivors.txt --no-checkpoint --no-tune
-       done
+       COARSE_PREFETCH=0 COARSE_METHOD=rr COARSE_PIPE=2 COARSE_TEST_STOP_AFTER_CHUNKS=3000 ./coarse_sieve_prof 136279841 47 pt47 \
+           --load-survivors out46.survivors.txt --no-checkpoint --no-tune
 
-   Please send the six `[phase timing ...]` lines. The first 3,000 (or 600) positions of the scrambled pass are a fair sample of the degree.
-5. **The two ncu exports and `nvcc --version`** (section 2).
-6. **Optional, the watchdog on hardware** (~1 min). `COARSE_TEST_WATCHDOG_SECS=20 COARSE_TEST_HANG_AFTER_CHUNKS=200 ./coarse_sieve 136279841 44 wd --load-survivors out43.survivors.txt --checkpoint-mins 0.05` should:
-   - exit with status 3 after ~20 s without progress (`echo $?`);
-   - leave no `wd.ckpt.lock`.
+   Please send the seven `[phase timing ...]` lines.
+4. **WSL2's CPU** (section 6a): d=44 once with `COARSE_SYNC=poll`. Watch `top` and compare the done line.
+5. **The T4's clocks** (section 6a): the `nvidia-smi` log during its next long run.
+6. **Production.**
+   - **d=53, while it runs:** steps 1-3 need the GPU, so they can't run alongside it, but the run can pause. Ctrl-C saves a checkpoint and exits; the same command continues later, with either binary.
+     - Under round 9 the degree keeps its tuned engine and order, RR grouped, now in round 9's grouped order. That combination was tested from a round-8 checkpoint (K26).
+     - Switching is worth it only if step 2 shows round 9's grouped order faster at d=45 or 47.
+   - **d=54**, after d=53: `./coarse_sieve 136279841 54 out54 --load-survivors out53.survivors.txt`.
+     - Its tuner will compare 12 or more candidates: GF(2^9), GF(2^3), the classic tower and the cubic tower, each in three orders, with TP-global twins where they apply.
+     - Please send the tune line.
+     - If step 1 or 2 showed a problem, run d=54 with round 8's binary instead.
+   - **d=55** (RR, 2 GB table) from d=54's survivors.
+     - Or in parallel on the T4 from d=53's survivors, with round 7's merge recipe.
+     - On the T4 I'd expect ~1.0 ns/class, about a week and ~$20 at d=52's rate: an estimate.
 
-   The same command without the two variables then continues from wd.ckpt.
-7. **Production.**
-   - **On the T4:** time d=44 from out43 first and `cmp` with your out44 files. That checks the machine and gives its speed factor. Then d=52 with the wrapper of section 7.
-   - **What d=52's tuner will compare:** twelve candidates. GF(2^13) in the three orders, each with TP in shared and in global memory; then GF(2^2) and the classic tower, each in the three orders.
-   - **On your card,** d=53 can run at the same time (RR; the two-machine merge recipe is in round 7's handoff, section 6).
+## 9. Projections
 
-## 11. Projections
-
-The degrees left, on your RTX 2070 SUPER, calibrated by the ones you've run. None of round 8's experiments is in these numbers; your tune lines will say whether any of them pays. On a T4, multiply by ~1.4-1.8 (estimate; your d=44 timing there will replace it).
+On your RTX 2070 SUPER. The ranges cover what round 9's changes might do; your tune lines will narrow them.
 
 | d | engine | classes | time |
 |---|---|---|---|
-| 44 | tower GF(2^11) | 4.0e11 | 150 s (measured, round 7) |
-| 45 | RR | 7.8e11 | 434 s (measured, round 7) |
-| 51 | RR | 4.4e13 | ~7.0 h (your run's own estimate, round 7) |
-| 52 | tower GF(2^13) | 8.7e13 | 8.5-11 h (est.) |
-| 53 | RR | 1.7e14 | ~27 h (est., at d=51's 0.58 ns/class) |
-| 54 | tower GF(2^9) | 3.3e14 | 1.7-2.1 days (est.) |
-| 55 | RR, 2 GB table | 6.6e14 | ~4.6 days (est., at 0.6 ns/class) |
+| 53 | RR grouped (round 8) | 1.70e14 | ~26.8 h (tune 0.564 ns/class; running) |
+| 54 | tower or cubic tower | 3.34e14 | 1.7-2.5 days (0.45-0.65 ns/class) |
+| 55 | RR, 2 GB table | 6.55e14 | 3.4-4.6 days (0.45-0.60 ns/class) |
 
-- **RR** I now scale by the class count alone. Its ns/class barely grew from d=45 to d=51 (0.55 → 0.58), though its table grew 8x.
-- **The tower at d = 52 and 54** (T tables of 512 MB and 1 GB) hasn't been timed at such sizes since round 5's d=50, so its rate there is the least certain number in this table. The T4's tune line at d=52 will show it.
+- **RR's rate** has stayed flat as its table grew: 0.550 ns/class at d=45 (64 MB), 0.584 at d=51 (512 MB), 0.564 tuned at d=53 (1 GB). So d=55's 2 GB table should not change it much.
+- **d=54** is the least certain: the quadratic tower's 1 GB T has never been timed on your card, and the cubic tower has never run at all.
 
-## 12. Continuing in a new conversation
+## 10. Continuing in a new conversation
 
-`coarse_sieve_devkit_r8.tar.gz` has what a fresh workspace needs to carry on:
-- the current sources, and those of rounds 5-7;
-- the emulated build and the two suites;
-- the seed and the oracles' checksums, with a generator for the oracles from round 5's independent sieves;
-- the nvcc check build and the analysis tools, among them `sass_locals.py`, which maps a kernel's local-memory accesses loop by loop (section 3's spill check).
+`coarse_sieve_devkit_r9.tar.gz` carries on from round 8's kit:
+- the sources of rounds 5-9;
+- the emulated build and the two suites, now for round 9;
+- the seed and the oracles' checksums, with the oracle generator;
+- the nvcc check build;
+- the tools, now with `randread.cu`.
 
-Its README says how to use it: `./setup.sh` (~45 min, mostly one oracle), then `bash tests/regress.sh` (~35 min).
+Its README says how to use it: `./setup.sh` (~45 min, mostly one oracle), then `bash tests/regress.sh` (~50 min).
 
-To start round 9 in a new conversation in this project, attach:
+To start round 10 in a new conversation in this project, attach:
 - the dev kit;
 - this handoff (also the project doc `claude/coarse_sieve_handoff.md`);
 - your logs and results, as you have been doing.
 
 ## Appendix: earlier rounds, for reference
+
+**Round 8 (2026-10-28).**
+- What changed: the watchdog and the lock-file notes; the grouped loop order and TP-global as tuner candidates; table reads past L1; round 5's order as the untuned default; the phase-timing build.
+- Your results: the grouped order lost at tower degrees and tied at RR (picked at d=45 and d=53); `COARSE_LDCG` had no effect; d=52 on the T4 in 61,535 s.
 
 **Round 7 (2026-10-26).** Full batches (the warps pool the classes they find), the cheaper even-d tie-break, the time of all runs in checkpoints, lockstep warps in the emulator. Your results: pass = tune rate; d=44 150 s, d=45 434 s; the d=51 production run matched the known ranges.
 
@@ -303,5 +437,7 @@ To start round 9 in a new conversation in this project, attach:
 **Round 1 (2026-10-18).** LFSR stepping in the bucketed path (~1000x), other fixes.
 
 Sources:
-- [NVIDIA Nsight Compute CLI documentation](https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html) (`--page source`, `--print-source`, for section 2's exports)
+- [NVIDIA, CUDA on WSL User Guide](https://docs.nvidia.com/cuda/wsl-user-guide/index.html) (section 6a: its known limitations, none about blocking waits)
+- [NVIDIA forums, "CPU spins while waiting for GPU to finish computation"](https://forums.developer.nvidia.com/t/cpu-spins-while-waiting-for-gpu-to-finish-computation/241672/5) (the spin, yield and blocking-sync modes)
+- [NVIDIA Nsight Compute CLI documentation](https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html) (the per-instruction exports of section 2)
 - [Brent, Larvala, Zimmermann, *A fast algorithm for testing reducibility of trinomials mod 2* (Math. Comp. 2003)](https://maths-people.anu.edu.au/~brent/pd/rpb199.pdf)

@@ -1,4 +1,4 @@
-// coarse_sieve.cu  (round 8)
+// coarse_sieve.cu  (round 9)
 // GPU coarse sieve for the least-degree irreducible factors of the
 // trinomials x^r + x^s + 1 over GF(2), all s in [1, floor(r/2)], factor
 // degrees d <= 55.
@@ -37,12 +37,12 @@
 //     --watchdog-mins <N>     exit with status 3 when nothing progresses for N
 //                             minutes, e.g. a hung GPU (default 30; 0: off;
 //                             see WATCHDOG)
-//   coarse_sieve --selftest [tower|ph|rr]
+//   coarse_sieve --selftest [tower|ph|rr|cubic]
 //
 // Build:  nvcc -O3 -arch=native -std=c++17 -Xcompiler -march=native -I.
-//              -o coarse_sieve coarse_sieve.cu
-//         (needs gf2_wide_field.h, gf2_wide_setup.h, gf2_dlog.h; the ~110
-//         kernel instantiations take several minutes to compile).  Add
+//              -o coarse_sieve coarse_sieve.cu -Xcompiler -pthread
+//         (needs gf2_wide_field.h, gf2_wide_setup.h, gf2_dlog.h; the 116
+//         kernel instantiations take ~6 minutes to compile).  Add
 //         -DCOARSE_PHASE_TIMING for a diagnostic build that reports where
 //         the batched kernel's time goes (see PHASE TIMING).
 //
@@ -73,7 +73,7 @@
 // classes -- from u's longest runs of ones instead of all d rotations of
 // ~u: the same roles, without a d-step loop inside the enumeration.)
 //
-// The Zech log of each canonical class comes from one of three engines
+// The Zech log of each canonical class comes from one of four engines
 // (gf2_dlog.h), whose tables have ~2^(d/2) entries rather than 2^d:
 //   tower (even d = 2m)  GF(2^d) = K(w) with K = GF(2^m): e = b (c + w), so
 //          log e = (2^m + 1) log_h(b) + T[log_h(c)], T of 2^m logs.  The logs
@@ -91,6 +91,12 @@
 //          <= d/2 (by PH; 1.47M at d=49) by multiplicativity, and cached in
 //          coarse_rr_d<d>.tbl when that took over two minutes.  RR is the
 //          only engine at d=49 (2^49 - 1 = 127 * 4432676798593).
+//   cubic tower (round 9; 6 | d = 3n)  GF(2^d) = K(w), K = GF(2^n), w^3 in
+//          K: x = r/t with r, t LINEAR in w (RR over K), so log x is four
+//          logs in K (the classic tower of K: tables of 2^(n/2) entries, in
+//          shared memory) and two reads of T3, the 2^n logs of w + c -- 2 MB
+//          at d=54, held in L2, where the quadratic tower reads a 1 GB T in
+//          DRAM.  A tuner candidate at d = 42, 48, 54 (gf2_dlog.h).
 // The batched kernel enumerates the Lyndon words of its range of u with
 // FKM -- every lane of a warp its own runs, the canonical classes found
 // dealt out to the lanes in turn (round 7) -- and handles them 32 per
@@ -122,19 +128,22 @@
 // TUNING
 // For d >= 40 (COARSE_TUNE_MIN) each degree first runs its candidate
 // variants on one dense sample of ~2^26 classes on GPU 0 -- the subfield
-// towers over the two largest proper divisors of m and the classic tower
-// at even d, PH and RR at odd d; the tower and RR ones in each loop order:
-// round 5's ("r5-order", the default since round 8), round 6's ("r6-order",
-// the table reads one class ahead) and, round 8, the grouped one
-// ("grouped": the logs, inversion and marking in groups of 8 held in
-// registers; logs_batch_grouped); and at d = 48 and 52, where it decides
-// the L1 size, the subfield tower with its table TP in global memory too
-// ("TP-global"; tower_tp_choice) -- and sieves with the fastest; the
-// "[tune ...]" line reports ns per class for each.  All variants compute
-// identical results.  --no-tune (COARSE_TUNE=0) turns this off.  The choice
-// is stored in checkpoints, so a resumed degree keeps it without re-timing.
+// towers over the two largest proper divisors of m, the classic tower and
+// (round 9, 6 | d) the cubic tower at even d, PH and RR at odd d; the
+// tower, cubic and RR ones in each loop order: round 5's ("r5-order", the
+// default since round 8), round 9's ("r9-order": a class's log times the
+// prefix product stored as one value, 9-10 local-memory accesses per class
+// instead of 12; it replaced round 6's) and the grouped one ("grouped":
+// w and J of a group of 8 classes held in registers, one inversion per
+// group; round 8, rewritten with rolled loops in round 9 --
+// logs_batch_grouped); and at d = 48 and 52, where it decides the L1 size,
+// the subfield tower with its table TP in global memory too ("TP-global";
+// tower_tp_choice) -- and sieves with the fastest; the "[tune ...]" line
+// reports ns per class for each.  All variants compute identical results.
+// --no-tune (COARSE_TUNE=0) turns this off.  The choice is stored in
+// checkpoints, so a resumed degree keeps it without re-timing.
 //
-// CHECKPOINTS (format v4, rounds 6-8)
+// CHECKPOINTS (format v4, rounds 6-9)
 // Every run saves to <out_prefix>.ckpt (or --checkpoint <file>) every 15
 // minutes, at a chunk boundary, and on SIGTERM or SIGINT: the first signal
 // saves and exits after the chunk in flight (seconds), a second exits at
@@ -160,7 +169,11 @@
 // rebuild of a resumed run is not counted there -- with this run's own
 // time beside it.  Round 6's and 7's binaries read round 8's checkpoints
 // (they take the grouped order for their own pipelined one and ignore the
-// TP flag: the same results), and round 8 reads theirs.
+// TP flag: the same results), and round 8 reads theirs.  Round 9 reads
+// them all (loop order 1, round 6's there, is round 9's order here: the
+// same results), and rounds 6-8 read round 9's -- except in the middle of
+// a degree sieved with the cubic tower (engine tag 4), which they refuse
+// ("the checkpoint's engine is not possible here"); round 9 continues it.
 //
 // WATCHDOG (round 8)
 // If no chunk, tuner sample, table-building launch or checkpoint write
@@ -180,7 +193,9 @@
 // degree's tables: tower 8 * 2^(d/2) bytes for T (1 GB at d=54); PH within
 // the free memory (fewer giant steps the more fits); RR 8 * 2^(d/2+1)
 // (2 GB at d=55) and, while building it at d=49, a baby-step table of half
-// an 8 GB card for a minute or so.
+// an 8 GB card for a minute or so; the cubic tower 8 * 2^(d/3) (2 MB at
+// d=54) and 26 KB of shared memory, plus PH tables of 64 MB while T3 is
+// built (under a second).
 //
 // SELFTEST
 // --selftest checks the pass order (chunk_at: a permutation, spread out),
@@ -191,24 +206,31 @@
 // independent direct computations), and every engine at every d = 21..55:
 // log(g^u) == u on 2^20 exponents, and the batched kernel's enumeration and
 // logs on a stretch dense in classes -- RR at odd d <= 47, once (d=41) with
-// its factor-base logs forced through a many-giant-step plan like d=49's.
-// "tower" / "ph" / "rr" force that engine wherever it applies.
+// its factor-base logs forced through a many-giant-step plan like d=49's;
+// the cubic tower (round 9) at every 6 | d beside the tower.
+// "tower" / "ph" / "rr" / "cubic" force that engine wherever it applies.
 // gf2_dlog_selftest.cpp is the host-side counterpart.
 //
 // TEST HOOKS (environment)
-//   COARSE_METHOD=auto|tower|ph|rr   engine choice (rr: RR at odd d)
+//   COARSE_METHOD=auto|tower|ph|rr|cubic   engine choice (rr: RR at odd
+//                         d; cubic: the cubic tower at 6 | d, round 9)
 //   COARSE_TOWER_SUBN=n   inner subfield GF(2^n) of the tower (0: classic)
 //   COARSE_LOGS_MAX_MB=n  cap on the VRAM of the degree's tables
 //   COARSE_LOGS_CHUNK_LOG2=k   chunks of at most 2^k u values (a resume
 //                         must use the same k)
 //   COARSE_TUNE=0, COARSE_TUNE_MIN=d, COARSE_TUNE_PICK=i (take candidate i)
 //   COARSE_PIPE=0|1|2     fix the loop order instead of tuning it (0: round
-//                         5's, the default; 1: round 6's, the table reads
-//                         one class ahead; 2: grouped, round 8 -- tower and
-//                         RR at d >= 40 on the GPU, other degrees fall back
-//                         to 0)
+//                         5's, the default; 1: round 9's (round 6's before
+//                         round 9); 2: grouped -- tower, cubic and RR at
+//                         d >= 40 on the GPU, other degrees fall back to 0)
 //   COARSE_LDCG=0         the random table reads (tower T, RR L) through L1,
 //                         as before round 8 (default 1: past L1, __ldcg)
+//   COARSE_PREFETCH=0     no L1 prefetches of the local arrays (round 9:
+//                         g^u's exponent planes two groups ahead, the batch
+//                         arrays two classes ahead forward, four backward)
+//   COARSE_SYNC=poll      wait for each chunk by polling its event every
+//                         millisecond (round 9; default block: sleep in the
+//                         driver -- which under WSL2 seems to spin a core)
 //   COARSE_TOWER_TP=shared|global   fix where the subfield tower's TP lives
 //                         (default auto: shared memory if it fits; the tuner
 //                         also times global at d = 48, 52)
@@ -243,7 +265,11 @@
 // time of all runs in checkpoints, and lockstep warps in the emulation;
 // round 8 the watchdog and the lock-file notes, the grouped loop order and
 // TP-global as tuner candidates, table reads past L1, round 5's order as
-// the untuned default, and the phase-timing build.
+// the untuned default, and the phase-timing build; round 9 the cubic tower
+// (d = 54), round 9's loop order (replacing round 6's), the grouped order
+// with rolled loops and the fill's state parked across its batches, g^u's
+// exponent planes loaded three steps ahead, and the inversion's check
+// (inv * prod J == 1).
 
 // the CPU emulation (make emul-coarse_sieve) runs the lanes of each warp in
 // lockstep, for the batched kernel's warp intrinsics (cuda_emul.h)
@@ -385,8 +411,9 @@ GF2_HD u64 d_minpoly_seeded(fw seed, int d, u64 q, fw *P) {
     return mask;
 }
 
-// logs-path engines (also the checkpoint's engine tags)
-enum { LM_NONE = 0, LM_TOWER = 1, LM_PH = 2, LM_RR = 3 };
+// logs-path engines (also the checkpoint's engine tags); LM_CUBIC (round
+// 9): the cubic tower, 6 | d (gf2_dlog.h, "cubic tower logs")
+enum { LM_NONE = 0, LM_TOWER = 1, LM_PH = 2, LM_RR = 3, LM_CUBIC = 4 };
 
 // ---------------------------------------------------------------------------
 // THE LOGS PATH: no 2^d tables.  See METHOD in the header comment and
@@ -415,14 +442,17 @@ struct LogsParams {
     u64 rmod;                      // r mod M (the partner's s0 = r - s0)
     int pair;                      // 1: one Zech log per reciprocal pair
     int pipe;                      // the loop order: 0 round 5's (round 8's
-                                   // default), 1 round 6's (table reads one
-                                   // class ahead), 2 grouped (round 8: its
-                                   // own kernel, logs_batch_grouped)
+                                   // default), 1 round 9's (w = v * prefix
+                                   // product; round 6's before), 2 grouped
+                                   // (its own kernel, logs_batch_grouped)
     int fill;                      // round 7: the batches' fill (FILL_*)
     unsigned long long *runctr;    // FILL_POOL: the launch's next run (zeroed
                                    // before each launch)
     int ldcg;                      // round 8: the random table reads (tower T,
                                    // RR L) bypass L1 (__ldcg)
+    int prefetch;                  // round 9: L1 prefetches of the local
+                                   // arrays ahead of their loads (g^u's
+                                   // planes, the batch arrays)
     unsigned long long *prof;      // round 8, -DCOARSE_PHASE_TIMING builds:
                                    // per-phase warp-cycles (PT_*), or null
     u64 lam_m1;                    // lambda(M) - 1: j^-1 = j^(lambda-1) mod M
@@ -440,6 +470,7 @@ struct LogsParams {
 GF2_HD u64 logs_dlog(u64 x, const LogsParams &L) {
     return L.method == LM_TOWER ? tower_log(x, L.M, L.tw)
          : L.method == LM_RR    ? rr_log(x, L.q, L.d, L.M, L.rr)
+         : L.method == LM_CUBIC ? cubic_log(x, L.M, L.tw)
                                 : ph_log(x, L.M, L.d, L.qlow, L.ph);
 }
 
@@ -745,45 +776,62 @@ __device__ __forceinline__ u64 logs_ld(const u64 *p, int cg) {
 #endif
 }
 
-// Stage A of a class's log (tower, RR): the table reads -- the tower's
-// coordinates, inner logs and T[l]; RR's split and L[r], L[t].  Stage B
-// (logs_stage_b: logs_stage_v, logs_fwd_tail) combines them and does the
-// rest.
+// Stage A of a class's log (tower, RR, cubic): the table reads -- the
+// tower's coordinates, inner logs and T[l]; RR's split and L[r], L[t]; the
+// cubic tower's K-logs and its two reads of T3.  Stage V (logs_stage_v)
+// combines them: tower h1*lb + tv, RR tv - tv2... see there.
 template <int D, int METHOD>
 __device__ __forceinline__ void logs_stage_a(u64 x, const LogsParams &L,
                                              const TowerDev &tw, u64 &lb,
-                                             u64 &tv, bool &inK) {
+                                             u64 &tv, u64 &tv2, bool &inK) {
     if constexpr (METHOD == LM_TOWER) {
         u64 l;
         const u64 pk = tower_coords(x, tw);
         inK = !tower_split(pk, tw, &lb, &l);
         if (inK) { lb = tower_klog_cold(pk & tw.MK, tw); tv = 0; }  // x in K*
         else tv = logs_ld(tw.T + l, L.ldcg);
+        tv2 = 0;
+    } else if constexpr (METHOD == LM_CUBIC) {  // round 9: x = r/t over K
+        u64 ir, it;                             // (T3 slots; MK + 1 holds 0)
+        lb = cubic_parts<D>(x, tw, &ir, &it);
+        tv = logs_ld(tw.cb.T3 + ir, L.ldcg);
+        tv2 = logs_ld(tw.cb.T3 + it, L.ldcg);
+        inK = false;
     } else {                                    // RR: x = r/t, two reads
         u64 rr_r;
         u32 rr_t;
         rr_split<D>(x, &rr_r, &rr_t);
-        lb = logs_ld(L.rr.L + rr_r, L.ldcg);
-        tv = logs_ld(L.rr.L + rr_t, L.ldcg);
+        lb = 0;
+        tv = logs_ld(L.rr.L + rr_r, L.ldcg);
+        tv2 = logs_ld(L.rr.L + rr_t, L.ldcg);
         inK = false;
     }
 }
 
+// v = the class's log from stage A's values: tower h1*lb + tv (h1*lb alone
+// for x in K*); RR tv - tv2 (log r - log t); cubic lb + tv - tv2 (lb the
+// K-part of log r - log t, tv and tv2 the T3 entries of r and t)
 template <int METHOD>
-__device__ __forceinline__ u64 logs_stage_v(u64 lb, u64 tv, bool inK, u64 M,
-                                            const TowerDev &tw) {
+__device__ __forceinline__ u64 logs_stage_v(u64 lb, u64 tv, u64 tv2, bool inK,
+                                            u64 M, const TowerDev &tw) {
     if constexpr (METHOD == LM_TOWER) {
         const u64 h1 = tw.MK + 2;               // log_g(h) = 2^m + 1
         const u64 v = inK ? h1 * lb : h1 * lb + tv;
         return v >= M ? v - M : v;
+    } else if constexpr (METHOD == LM_CUBIC) {
+        u64 s = lb + tv;                        // < 2M
+        if (s >= M) s -= M;
+        return s >= tv2 ? s - tv2 : s + M - tv2;
     } else {
-        return lb >= tv ? lb - tv : lb + M - tv;    // RR: log r - log t
+        (void)lb;
+        return tv >= tv2 ? tv - tv2 : tv + M - tv2;    // RR: log r - log t
     }
 }
 
-// the rest of a class's forward step once its log v is known: the fault
-// hook, the spot check, the irregular lift; sets vb[k], xb[k], ub[k] = J
-// and multiplies J into acc
+// The rest of a class's forward step once its log v is known (round 5's
+// order): the fault hook, the spot check, the irregular lift; sets vb[k],
+// xb[k], ub[k] = J and multiplies J into acc (the caller sets tb[k], the
+// prefix product before the class)
 template <int D>
 __device__ __forceinline__ void logs_fwd_tail(const LogsParams &L, int k,
                                               u64 u, u64 v, u64 j, u32 mask,
@@ -816,23 +864,104 @@ __device__ __forceinline__ void logs_fwd_tail(const LogsParams &L, int k,
     any = true;
 }
 
-// stage B of a class (tower, RR): j, the divisibility mask, the log from
-// stage A's reads, and the rest (logs_fwd_tail)
-template <int D, int METHOD>
-__device__ __forceinline__ void logs_stage_b(const LogsParams &L,
-                                             const TowerDev &tw, int k, u64 u,
-                                             u64 lb, u64 tv, bool inK,
-                                             bool verify, const fw *gpow2,
-                                             u64 (&ub)[LB], u64 (&vb)[LB],
-                                             u64 (&tb)[LB], u64 (&xb)[LB],
-                                             u64 &acc, bool &any,
-                                             unsigned long long *err) {
-    tb[k] = acc;
-    const u64 j = gf2f_mulmod_m(u, L.rmodinv, D, L.M);
-    const u32 mask = logs_divmask<D>(u, L);
-    const u64 v = logs_stage_v<METHOD>(lb, tv, inK, L.M, tw);
-    logs_fwd_tail<D>(L, k, u, v, j, mask, verify, gpow2, ub, vb, xb, acc, any, err);
+// Round 9's order (L.pipe = 1), the same with two values stored where round
+// 5's stores three.  Montgomery's backward step for class k takes
+// jinv = inv * t_k (t_k the prefix product before k), s0 = v * jinv and
+// inv <- inv * J, with v, J, t_k and gg loaded back from the batch arrays.
+// Here the forward step keeps w = v * t_k in vb[k] (vg * t_k for an irregular
+// class) and nothing in tb: the backward step's s0 = inv * w directly -- one
+// multiply moves from the backward step to the forward one -- and it loads w
+// and J (and gg where irregular classes are common, logs_carry_gg).  In the
+// round-7 profiles these arrays are 64-80% of the L1 traffic, most of it
+// missing L1 and much of it L2; a class makes 9 local accesses instead of
+// 12 (10 instead of 12 with gg).
+template <int D>
+__device__ __forceinline__ void logs_fwd_tail9(const LogsParams &L, int k,
+                                               u64 u, u64 v, u64 j, u32 mask,
+                                               bool verify, const fw *gpow2,
+                                               u64 (&ub)[LB], u64 (&vb)[LB],
+                                               u64 (&xb)[LB], u64 &acc,
+                                               bool &any,
+                                               unsigned long long *err) {
+    const u64 M = L.M;
+    if (L.fault && u % L.fault == 1) v ^= 1;        // fault injection (tests)
+    if (k == 0 && verify && v < M && logs_verify_bad(v, u, L.qlow, D, gpow2))
+        v = ~0ULL;                                  // spot check failed
+    if (v >= M) { (*err)++; vb[k] = VB_SKIP; return; }     // inconsistent log
+    u64 J = j, w;
+    if (mask) {                                     // gcd(u, M) > 1
+        u64 vg = 0, gg = 0;
+        const int st = logs_irreg_lift(u, j, v, mask, L, &J, &vg, &gg);
+        if (st) {                       // 1: no s, for u or its partner
+            if (st == 2) (*err)++;      // (impossible; see the lift)
+            vb[k] = VB_SKIP;
+            return;
+        }
+        w = VB_IRREG | gf2f_mulmod_m(vg, acc, D, M);    // vg * t_k
+        xb[k] = gg;
+    } else {
+        w = gf2f_mulmod_m(v, acc, D, M);                // v * t_k
+    }
+    vb[k] = w;
+    ub[k] = J;
+    acc = gf2f_mulmod_m(acc, J, D, M);
+    any = true;
 }
+
+// Whether the backward steps of round 9's orders carry gg with every class
+// (irregular classes common: 3 | 2^D - 1 for even D, 7 | 2^D - 1 for 3 | D)
+// or load it for an irregular class alone (rare: a dependent load, in ~0.1-
+// 0.5% of the classes at d = 41..55 otherwise).
+template <int D> __device__ __forceinline__ constexpr bool logs_carry_gg() {
+    return D % 2 == 0 || D % 3 == 0;
+}
+
+// A class's marks, from S = v J^-1 mod M (regular; modulus M) or
+// S = vg J^-1 mod M (irregular: modulus n = M/gg), and its partner's
+// (round 6: s == r - s0, the same modulus)
+template <int D>
+__device__ __forceinline__ void logs_mark_pair(const LogsParams &L, bool irreg,
+                                               u64 S, u64 J, u64 gg,
+                                               bool paired, const fw *gpow2,
+                                               ull *best, Heavy *heavy,
+                                               unsigned *nheavy,
+                                               unsigned *overflow, fw *P,
+                                               unsigned long long *err) {
+    const u64 M = L.M;
+    // the partner (round 6): root g^-j, Z(-u) = Z(u) - u, so it solves
+    // -j s == v - u, i.e. s == r - s0 (mod n): same modulus, no new log
+    if (!irreg) {
+        logs_mark(S == 0 ? M : S, M, J, L, gpow2, best, heavy, nheavy,
+                  overflow, P, err);
+        if (paired) {
+            const u64 sp = L.rmod >= S ? L.rmod - S : L.rmod + M - S;
+            logs_mark(sp == 0 ? M : sp, M, M - J, L, gpow2, best, heavy,
+                      nheavy, overflow, P, err);
+        }
+    } else {                                        // modulus n = M/gg
+        const u64 nn = M * inv_2adic(gg);
+        const u64 s0 = mod_divisor_m(S, nn, gg, D, M);  // vg * jg^-1 mod n
+        const u64 j = gg * mod_divisor_m(J, nn, gg, D, M);
+        if ((s0 == 0 ? nn : s0) <= L.smax)
+            logs_mark(s0 == 0 ? nn : s0, nn, j, L, gpow2, best, heavy,
+                      nheavy, overflow, P, err);
+        if (paired) {
+            const u64 rn = mod_divisor_m(L.rmod, nn, gg, D, M);
+            const u64 sp = rn >= s0 ? rn - s0 : rn + nn - s0;
+            if ((sp == 0 ? nn : sp) <= L.smax)
+                logs_mark(sp == 0 ? nn : sp, nn, M - j, L, gpow2, best,
+                          heavy, nheavy, overflow, P, err);
+        }
+    }
+}
+
+// Round 9 (L.prefetch, COARSE_PREFETCH): L1 prefetches of the batch arrays ahead
+// of their loads -- two classes ahead in the forward loops (each class's
+// log takes ~600-1300 instructions), LOGS_PF_BACK in the backward ones
+// (~100-200 per class), whose loads made 12-17% of the round-7 stall
+// samples: the values were written a whole forward pass earlier, and are
+// back in L2 or DRAM.
+#define LOGS_PF_BACK 4
 
 template <int D, int METHOD>
 __device__ __forceinline__ void logs_batch(const LogsParams &L,
@@ -850,7 +979,7 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
     {
         u32 U[D];
         bs_load<D>(ub, U);
-        bs_pow_g<D>(U, X);                      // g^u
+        bs_pow_g<D>(U, X, L.prefetch != 0);     // g^u
     }
     if (!L.check) X[0] = ~X[0];                 // x = g^u + 1
     PT(PT_GU);
@@ -875,275 +1004,245 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
         bs_store<D>(X, vb);                     // x = g^u + 1; logs below
     }
     if (L.check) {                              // selftest: log(g^u) == u?
-        // (tower and RR: through the sieve's stages, in its loop order)
         if constexpr (METHOD == LM_PH) {
             for (int k = 0; k < n; k++) if (vb[k] != ub[k]) (*err)++;
-        } else {
-            u64 a_lb = 0, a_tv = 0;
-            bool a_inK = false;
-            if (L.pipe) logs_stage_a<D, METHOD>(vb[0], L, tw, a_lb, a_tv, a_inK);
+        } else {                                // (through the sieve's stages)
             for (int k = 0; k < n; k++) {
-                u64 lb = a_lb, tv = a_tv;
-                bool inK = a_inK;
-                if (!L.pipe) logs_stage_a<D, METHOD>(vb[k], L, tw, lb, tv, inK);
-                else if (k + 1 < n)
-                    logs_stage_a<D, METHOD>(vb[k + 1], L, tw, a_lb, a_tv, a_inK);
-                if (logs_stage_v<METHOD>(lb, tv, inK, M, tw) != ub[k]) (*err)++;
+                u64 lb = 0, tv = 0, tv2 = 0;
+                bool inK = false;
+                logs_stage_a<D, METHOD>(vb[k], L, tw, lb, tv, tv2, inK);
+                if (logs_stage_v<METHOD>(lb, tv, tv2, inK, M, tw) != ub[k]) (*err)++;
             }
         }
         return;
     }
-    // forward: tb[k] = product of the batch members before k; ub[k] <- J,
-    // the class's member (j itself for a regular class); vb[k] <- v,
-    // VB_IRREG | vg, or VB_SKIP.  An in-order GPU stalls a warp at the first
-    // use of a pending load, so the loads are issued early:
-    //   L.pipe (round 6, tower and RR): stage A -- the log's table reads --
-    //          runs one class ahead, so each class's DRAM reads have a whole
-    //          iteration (class k-1's stage B, class k+1's stage A) to
-    //          arrive; x runs two classes ahead (a local-memory read);
-    //   otherwise (round 5; round 8's default): each iteration loads the
-    //          next class's x and u first, and issues its own T read before
-    //          the work that does not depend on it (j, the divisibility mask).
-    //   (The grouped order, L.pipe = 2, is logs_batch_grouped below.)
+    // forward: ub[k] <- J, the class's member of the batch product (j itself
+    // for a regular class); round 5 (L.pipe = 0): tb[k] = the product of the
+    // members before k, vb[k] <- v, VB_IRREG | vg, or VB_SKIP; round 9
+    // (L.pipe = 1): vb[k] <- w = v * tb[k] (see logs_fwd_tail9), tb unused.
+    // An in-order GPU stalls a warp at the first use of a pending load, so
+    // each iteration loads the next class's x and u first, and issues its
+    // own table reads before the work that does not depend on them (j, the
+    // divisibility mask).  (Round 6's order, the reads one class ahead, gave
+    // nothing on the 2070 SUPER and was replaced by round 9's; the grouped
+    // order, L.pipe = 2, is logs_batch_grouped below.)
+    const bool r9 = L.pipe == 1;
     u64 acc = 1;
-    bool any = false, piped = false;
-    if constexpr (METHOD != LM_PH) {
-        if (L.pipe) {
-            piped = true;
-            // two sets of stage-A results, A and B, alternate between the
-            // classes, so a class's reads are first used in its own stage B,
-            // after the next class's stage A.  (A rolled loop would have to
-            // copy them at its top -- and a copy of a pending load waits.)
-            u64 lbA = 0, tvA = 0, lbB = 0, tvB = 0;
-            bool inA = false, inB = false;
-            logs_stage_a<D, METHOD>(vb[0], L, tw, lbA, tvA, inA);
-            u64 xn = n > 1 ? vb[1] : 0, un = ub[0];
-            for (int k = 0; k < n; k += 2) {
-                const u64 u0 = un;                  // class k: set A
-                if (k + 1 < n) {                    // class k+1's reads: set B
-                    const u64 x1 = xn;
-                    un = ub[k + 1];
-                    if (k + 2 < n) xn = vb[k + 2];
-                    logs_stage_a<D, METHOD>(x1, L, tw, lbB, tvB, inB);
-                }
-                logs_stage_b<D, METHOD>(L, tw, k, u0, lbA, tvA, inA, verify,
-                                        gpow2, ub, vb, tb, xb, acc, any, err);
-                if (k + 1 >= n) break;
-                const u64 u1 = un;                  // class k+1: set B
-                if (k + 2 < n) {                    // class k+2's reads: set A
-                    const u64 x2 = xn;
-                    un = ub[k + 2];
-                    if (k + 3 < n) xn = vb[k + 3];
-                    logs_stage_a<D, METHOD>(x2, L, tw, lbA, tvA, inA);
-                }
-                logs_stage_b<D, METHOD>(L, tw, k + 1, u1, lbB, tvB, inB, verify,
-                                        gpow2, ub, vb, tb, xb, acc, any, err);
-            }
-        }
-    }
-    if (!piped) {
+    bool any = false;
+    {
         u64 xn = vb[0], un = ub[0];
         for (int k = 0; k < n; k++) {
             const u64 x = xn, u = un;
             if (k + 1 < n) { xn = vb[k + 1]; un = ub[k + 1]; }
-            tb[k] = acc;
-            u64 v = x, lb = 0, tv = 0;              // PH: x is the log
+            if (L.prefetch && k + 2 < n) { pf_local(&vb[k + 2]); pf_local(&ub[k + 2]); }
+            if (!r9) tb[k] = acc;
+            u64 v = x, lb = 0, tv = 0, tv2 = 0;     // PH: x is the log
             bool inK = false;
             if constexpr (METHOD != LM_PH)
-                logs_stage_a<D, METHOD>(x, L, tw, lb, tv, inK);
+                logs_stage_a<D, METHOD>(x, L, tw, lb, tv, tv2, inK);
             const u64 j = gf2f_mulmod_m(u, L.rmodinv, D, M);
             const u32 mask = logs_divmask<D>(u, L);
             if constexpr (METHOD != LM_PH)
-                v = logs_stage_v<METHOD>(lb, tv, inK, M, tw);
-            logs_fwd_tail<D>(L, k, u, v, j, mask, verify, gpow2, ub, vb, xb,
-                             acc, any, err);
+                v = logs_stage_v<METHOD>(lb, tv, tv2, inK, M, tw);
+            if (r9)
+                logs_fwd_tail9<D>(L, k, u, v, j, mask, verify, gpow2, ub, vb,
+                                  xb, acc, any, err);
+            else
+                logs_fwd_tail<D>(L, k, u, v, j, mask, verify, gpow2, ub, vb,
+                                 xb, acc, any, err);
         }
     }
     PT(PT_LOGS);
     if (!any) return;
     u64 inv = gf2f_powmod_m(acc, L.lam_m1, D, M);   // (prod J)^-1
     PT(PT_INV);
-    // backward: J^-1 = inv * tb[k], then inv <- inv * J (Montgomery)
-    u64 vn = vb[n - 1], Jn = ub[n - 1], tn = tb[n - 1], gn = xb[n - 1];
-    for (int k = n - 1; k >= 0; k--) {
-        const u64 vv = vn, J = Jn, t = tn, gg = gn;
-        if (k > 0) { vn = vb[k - 1]; Jn = ub[k - 1]; tn = tb[k - 1]; gn = xb[k - 1]; }
-        if (vv == VB_SKIP) continue;
-        const u64 jinv = gf2f_mulmod_m(inv, t, D, M);
-        inv = gf2f_mulmod_m(inv, J, D, M);
-        const bool paired = (pairm >> k) & 1;
-        // the partner (round 6): root g^-j, Z(-u) = Z(u) - u, so it solves
-        // -j s == v - u, i.e. s == r - s0 (mod n): same modulus, no new log
-        if (!(vv & VB_IRREG)) {
-            const u64 s0 = gf2f_mulmod_m(vv, jinv, D, M);
-            logs_mark(s0 == 0 ? M : s0, M, J, L, gpow2, best, heavy, nheavy,
-                      overflow, P, err);
-            if (paired) {
-                const u64 sp = L.rmod >= s0 ? L.rmod - s0 : L.rmod + M - s0;
-                logs_mark(sp == 0 ? M : sp, M, M - J, L, gpow2, best, heavy,
-                          nheavy, overflow, P, err);
+    // backward (Montgomery): from (J_0 .. J_k)^-1, class k's inverse, then
+    // inv <- inv * J_k; at the end inv == 1, which round 9 checks (a wrong
+    // inversion stops the run like a wrong log)
+    if (r9) {
+        constexpr bool kGG = logs_carry_gg<D>();
+        u64 wn = vb[n - 1], Jn = ub[n - 1], gn = kGG ? xb[n - 1] : 1;
+        for (int k = n - 1; k >= 0; k--) {
+            const u64 w = wn, J = Jn, g = gn;
+            if (k > 0) {
+                wn = vb[k - 1]; Jn = ub[k - 1];
+                if (kGG) gn = xb[k - 1];
             }
-        } else {                                    // modulus n = M/gg
-            const u64 nn = M * inv_2adic(gg);
+            if (L.prefetch && k >= LOGS_PF_BACK) {    // (a short loop: further ahead)
+                pf_local(&vb[k - LOGS_PF_BACK]); pf_local(&ub[k - LOGS_PF_BACK]);
+                if (kGG) pf_local(&xb[k - LOGS_PF_BACK]);
+            }
+            if (w == VB_SKIP) continue;
+            const u64 S = gf2f_mulmod_m(inv, w & ~VB_IRREG, D, M);  // v J^-1
+            inv = gf2f_mulmod_m(inv, J, D, M);
+            const bool irr = (w & VB_IRREG) != 0;
+            logs_mark_pair<D>(L, irr, S, J, irr ? (kGG ? g : xb[k]) : 1,
+                              (pairm >> k) & 1, gpow2, best, heavy, nheavy,
+                              overflow, P, err);
+        }
+    } else {
+        u64 vn = vb[n - 1], Jn = ub[n - 1], tn = tb[n - 1], gn = xb[n - 1];
+        for (int k = n - 1; k >= 0; k--) {
+            const u64 vv = vn, J = Jn, t = tn, gg = gn;
+            if (k > 0) { vn = vb[k - 1]; Jn = ub[k - 1]; tn = tb[k - 1]; gn = xb[k - 1]; }
+            if (L.prefetch && k >= LOGS_PF_BACK) {
+                pf_local(&vb[k - LOGS_PF_BACK]); pf_local(&ub[k - LOGS_PF_BACK]);
+                pf_local(&tb[k - LOGS_PF_BACK]); pf_local(&xb[k - LOGS_PF_BACK]);
+            }
+            if (vv == VB_SKIP) continue;
+            const u64 jinv = gf2f_mulmod_m(inv, t, D, M);
+            inv = gf2f_mulmod_m(inv, J, D, M);
             const u64 S = gf2f_mulmod_m(vv & ~VB_IRREG, jinv, D, M);
-            const u64 s0 = mod_divisor_m(S, nn, gg, D, M);  // vg * jg^-1 mod n
-            const u64 j = gg * mod_divisor_m(J, nn, gg, D, M);
-            if ((s0 == 0 ? nn : s0) <= L.smax)
-                logs_mark(s0 == 0 ? nn : s0, nn, j, L, gpow2, best, heavy,
-                          nheavy, overflow, P, err);
-            if (paired) {
-                const u64 rn = mod_divisor_m(L.rmod, nn, gg, D, M);
-                const u64 sp = rn >= s0 ? rn - s0 : rn + nn - s0;
-                if ((sp == 0 ? nn : sp) <= L.smax)
-                    logs_mark(sp == 0 ? nn : sp, nn, M - j, L, gpow2, best,
-                              heavy, nheavy, overflow, P, err);
-            }
+            logs_mark_pair<D>(L, (vv & VB_IRREG) != 0, S, J, gg,
+                              (pairm >> k) & 1, gpow2, best, heavy, nheavy,
+                              overflow, P, err);
         }
     }
+    if (inv != 1) (*err)++;                     // inv * prod J == 1
     PT(PT_MARK);
 }
 
-// The grouped loop order (round 8, L.pipe = 2; tower and RR, d >= 40 on the
-// GPU): the batch's logs, inversion and marking go in groups of LG = 8
-// classes, each group with its own inversion, so that everything a class
-// carries from its log to its marking -- v, J, the prefix product, gg --
-// stays in registers (the loops over a group are unrolled, so the arrays are
-// indexed by constants).  The round-5/6 orders keep those in the batch
-// arrays in local memory: per class three stores in the forward step and
-// four loads in the backward one, against a working set of ~1 KB per thread
-// (512 KB per SM) that L1 (64 KB) cannot hold -- in the round-7 ncu profile
-// of RR at d=47, local memory is 64% of the L1 traffic and 90% of its loads
-// miss L1.  Here only u and x = g^u + 1 pass through local memory (written
-// once, read once).  The price: four modular inversions per batch instead
-// of one (by my count ~5-8% more instructions, depending on the exponent
-// lambda(M) - 1), and eight unrolled copies of a class's code (~13 KB each
-// in SASS, its hot part ~3 KB: the loop no longer fits L0's 16 KB but
-// should fit L1's 46 KB at odd d, where irregular classes are rare).
-// Results are identical; the tuner times it against the other orders.  Also
-// a check the other orders lack: each group's first inverse in the backward
-// step is multiplied back (J * J^-1 == 1 mod M), one multiply per group.
+// The grouped loop order, round 9 (L.pipe = 2; tower, RR and the cubic tower
+// at d >= 40 on the GPU).  Round 8's grouped order kept everything a class
+// carries from its log to its marking in registers, in groups of LG = 8
+// classes with one inversion each -- and unrolled the group's loops to index
+// them by constants.  Eight copies of a class's code (105-178 KB of SASS)
+// cost it the instruction cache, and the pressure spilled the enumeration's
+// state: it won by 1-3% at the RR degrees and lost at the towers.  Round 9
+// keeps the group's w, J (and gg) in registers but its loops rolled: a class
+// is written to, and read back from, its registers through a switch on its
+// place in the group (grp_put / grp_get), which costs a few instructions and
+// keeps one copy of the code.  So a class makes 5 local accesses (u: 3, x: 2)
+// against round 5's 12, for four inversions per batch instead of one (~45-66
+// instructions per class at d = 47-55, by the exponent lambda(M) - 1).
+// Also checked: each group's inverse, inv * prod J == 1 after its marking.
 #define LG 8
+
+template <bool G3>
+__device__ __forceinline__ void grp_put(int i, u64 w, u64 J, u64 g,
+                                        u64 (&W)[LG], u64 (&Jg)[LG],
+                                        u64 (&Gg)[LG]) {
+    switch (i) {
+#define GRP_PUT(s) case s: W[s] = w; Jg[s] = J; if (G3) Gg[s] = g; break;
+    GRP_PUT(0) GRP_PUT(1) GRP_PUT(2) GRP_PUT(3)
+    GRP_PUT(4) GRP_PUT(5) GRP_PUT(6) GRP_PUT(7)
+#undef GRP_PUT
+    default: break;
+    }
+}
+
+template <bool G3>
+__device__ __forceinline__ void grp_get(int i, u64 &w, u64 &J, u64 &g,
+                                        const u64 (&W)[LG], const u64 (&Jg)[LG],
+                                        const u64 (&Gg)[LG]) {
+    switch (i) {
+#define GRP_GET(s) case s: w = W[s]; J = Jg[s]; g = G3 ? Gg[s] : 1; break;
+    GRP_GET(0) GRP_GET(1) GRP_GET(2) GRP_GET(3)
+    GRP_GET(4) GRP_GET(5) GRP_GET(6) GRP_GET(7)
+#undef GRP_GET
+    default: w = VB_SKIP; J = 1; g = 1; break;
+    }
+}
+
 template <int D, int METHOD>
 __device__ __forceinline__ void logs_batch_grouped(const LogsParams &L,
                                                    const TowerDev &tw,
                                                    const fw *gpow2, u64 (&ub)[LB],
-                                                   u64 (&vb)[LB], int n, u32 pairm,
+                                                   u64 (&vb)[LB], u64 (&xb)[LB],
+                                                   int n, u32 pairm,
                                                    bool verify, ull *best,
                                                    Heavy *heavy, unsigned *nheavy,
                                                    unsigned *overflow, fw *P,
                                                    unsigned long long *err PT_PARAM) {
-    static_assert(METHOD != LM_PH, "the grouped order is for tower and RR");
+    static_assert(METHOD != LM_PH, "the grouped order is for tower, RR, cubic");
     const u64 M = L.M;
     for (int k = n; k < LB; k++) ub[k] = 1;     // padding; results unused
     u32 X[D];
     {
         u32 U[D];
         bs_load<D>(ub, U);
-        bs_pow_g<D>(U, X);                      // g^u
+        bs_pow_g<D>(U, X, L.prefetch != 0);     // g^u
     }
     if (!L.check) X[0] = ~X[0];                 // x = g^u + 1
     PT(PT_GU);
     bs_store<D>(X, vb);
     if (L.check) {                              // selftest: log(g^u) == u?
         for (int k = 0; k < n; k++) {
-            u64 lb = 0, tv = 0;
+            u64 lb = 0, tv = 0, tv2 = 0;
             bool inK = false;
-            logs_stage_a<D, METHOD>(vb[k], L, tw, lb, tv, inK);
-            if (logs_stage_v<METHOD>(lb, tv, inK, M, tw) != ub[k]) (*err)++;
+            logs_stage_a<D, METHOD>(vb[k], L, tw, lb, tv, tv2, inK);
+            if (logs_stage_v<METHOD>(lb, tv, tv2, inK, M, tw) != ub[k]) (*err)++;
         }
         return;
     }
+    constexpr bool kGG = logs_carry_gg<D>();
+    u64 xn = vb[0], un = ub[0];                 // one class ahead, across groups
+#if defined(__CUDA_ARCH__)
+#pragma unroll 1
+#endif
     for (int g0 = 0; g0 < n; g0 += LG) {
-        u64 Vg[LG], Jg[LG], Tg[LG], Gg[LG];
+        const int ng = n - g0 < LG ? n - g0 : LG;
+        u64 Wg[LG], Jg[LG], Gg[LG];             // constant indices only
+        GF2D_UNROLL
+        for (int s = 0; s < LG; s++) { Wg[s] = VB_SKIP; Jg[s] = 1; Gg[s] = 1; }
         u64 acc = 1;
         bool any = false;
-        // forward: as logs_batch's round-5 order, into the group's registers
-        GF2D_UNROLL
-        for (int i = 0; i < LG; i++) {
-            Vg[i] = VB_SKIP;
-            Jg[i] = 1;
-            Tg[i] = 1;
-            Gg[i] = 1;
+#if defined(__CUDA_ARCH__)
+#pragma unroll 1
+#endif
+        for (int i = 0; i < ng; i++) {
             const int k = g0 + i;
-            if (k < n) {
-                const u64 x = vb[k], u = ub[k];
-                Tg[i] = acc;
-                u64 lb = 0, tv = 0;
-                bool inK = false;
-                logs_stage_a<D, METHOD>(x, L, tw, lb, tv, inK);
-                const u64 j = gf2f_mulmod_m(u, L.rmodinv, D, M);
-                const u32 mask = logs_divmask<D>(u, L);
-                u64 v = logs_stage_v<METHOD>(lb, tv, inK, M, tw);
-                // (logs_fwd_tail, with the batch's first class -- g0 = 0,
-                // i = 0 -- spot-checked)
-                if (L.fault && u % L.fault == 1) v ^= 1;    // fault injection (tests)
-                if (i == 0 && g0 == 0 && verify && v < M &&
-                    logs_verify_bad(v, u, L.qlow, D, gpow2))
-                    v = ~0ULL;                              // spot check failed
-                if (v >= M) { (*err)++; continue; }         // inconsistent log
-                u64 J = j;
-                if (mask) {                                 // gcd(u, M) > 1
-                    u64 vg = 0, gg = 0;
-                    const int st = logs_irreg_lift(u, j, v, mask, L, &J, &vg, &gg);
-                    if (st) {                   // 1: no s, for u or its partner
-                        if (st == 2) (*err)++;  // (impossible; see the lift)
-                        continue;
-                    }
-                    Vg[i] = VB_IRREG | vg;
-                    Gg[i] = gg;
-                } else {
-                    Vg[i] = v;
+            const u64 x = xn, u = un;
+            if (k + 1 < n) { xn = vb[k + 1]; un = ub[k + 1]; }
+            if (L.prefetch && k + 2 < n) { pf_local(&vb[k + 2]); pf_local(&ub[k + 2]); }
+            u64 lb = 0, tv = 0, tv2 = 0;
+            bool inK = false;
+            logs_stage_a<D, METHOD>(x, L, tw, lb, tv, tv2, inK);
+            const u64 j = gf2f_mulmod_m(u, L.rmodinv, D, M);
+            const u32 mask = logs_divmask<D>(u, L);
+            u64 v = logs_stage_v<METHOD>(lb, tv, tv2, inK, M, tw);
+            if (L.fault && u % L.fault == 1) v ^= 1;        // fault injection
+            if (k == 0 && verify && v < M && logs_verify_bad(v, u, L.qlow, D, gpow2))
+                v = ~0ULL;                                  // spot check failed
+            u64 w = VB_SKIP, J = 1, gg = 1;
+            if (v >= M) {
+                (*err)++;                                   // inconsistent log
+            } else if (mask) {                              // gcd(u, M) > 1
+                u64 vg = 0, Jl = j;
+                const int st = logs_irreg_lift(u, j, v, mask, L, &Jl, &vg, &gg);
+                if (st == 2) (*err)++;          // (impossible; see the lift)
+                if (!st) {
+                    J = Jl;
+                    w = VB_IRREG | gf2f_mulmod_m(vg, acc, D, M);
+                    if (!kGG) xb[k] = gg;       // (rare: not in the registers)
                 }
-                Jg[i] = J;
-                acc = gf2f_mulmod_m(acc, J, D, M);
-                any = true;
+            } else {
+                J = j;
+                w = gf2f_mulmod_m(v, acc, D, M);
             }
+            if (w != VB_SKIP) { acc = gf2f_mulmod_m(acc, J, D, M); any = true; }
+            grp_put<kGG>(i, w, J, gg, Wg, Jg, Gg);
         }
         PT(PT_LOGS);
         if (!any) continue;
         u64 inv = gf2f_powmod_m(acc, L.lam_m1, D, M);   // (prod J)^-1
         PT(PT_INV);
-        bool first = true;
-        // backward: as logs_batch's, from the group's registers
-        GF2D_UNROLL
-        for (int i = LG - 1; i >= 0; i--) {
-            const u64 vv = Vg[i], J = Jg[i];
-            if (vv == VB_SKIP) continue;
+#if defined(__CUDA_ARCH__)
+#pragma unroll 1
+#endif
+        for (int i = ng - 1; i >= 0; i--) {
+            u64 w = VB_SKIP, J = 1, g = 1;
+            grp_get<kGG>(i, w, J, g, Wg, Jg, Gg);
+            if (w == VB_SKIP) continue;
             const int k = g0 + i;
-            const u64 jinv = gf2f_mulmod_m(inv, Tg[i], D, M);
+            const u64 S = gf2f_mulmod_m(inv, w & ~VB_IRREG, D, M);  // v J^-1
             inv = gf2f_mulmod_m(inv, J, D, M);
-            if (first) {                        // the inversion, checked
-                if (gf2f_mulmod_m(jinv, J, D, M) != 1) (*err)++;
-                first = false;
-            }
-            const bool paired = (pairm >> k) & 1;
-            if (!(vv & VB_IRREG)) {
-                const u64 s0 = gf2f_mulmod_m(vv, jinv, D, M);
-                logs_mark(s0 == 0 ? M : s0, M, J, L, gpow2, best, heavy, nheavy,
-                          overflow, P, err);
-                if (paired) {
-                    const u64 sp = L.rmod >= s0 ? L.rmod - s0 : L.rmod + M - s0;
-                    logs_mark(sp == 0 ? M : sp, M, M - J, L, gpow2, best, heavy,
-                              nheavy, overflow, P, err);
-                }
-            } else {                                // modulus n = M/gg
-                const u64 gg = Gg[i];
-                const u64 nn = M * inv_2adic(gg);
-                const u64 S = gf2f_mulmod_m(vv & ~VB_IRREG, jinv, D, M);
-                const u64 s0 = mod_divisor_m(S, nn, gg, D, M);  // vg * jg^-1 mod n
-                const u64 j = gg * mod_divisor_m(J, nn, gg, D, M);
-                if ((s0 == 0 ? nn : s0) <= L.smax)
-                    logs_mark(s0 == 0 ? nn : s0, nn, j, L, gpow2, best, heavy,
-                              nheavy, overflow, P, err);
-                if (paired) {
-                    const u64 rn = mod_divisor_m(L.rmod, nn, gg, D, M);
-                    const u64 sp = rn >= s0 ? rn - s0 : rn + nn - s0;
-                    if ((sp == 0 ? nn : sp) <= L.smax)
-                        logs_mark(sp == 0 ? nn : sp, nn, M - j, L, gpow2, best,
-                                  heavy, nheavy, overflow, P, err);
-                }
-            }
+            const bool irr = (w & VB_IRREG) != 0;
+            logs_mark_pair<D>(L, irr, S, J, irr ? (kGG ? g : xb[k]) : 1,
+                              (pairm >> k) & 1, gpow2, best, heavy, nheavy,
+                              overflow, P, err);
         }
+        if (inv != 1) (*err)++;                 // inv * prod J == 1
         PT(PT_MARK);
     }
 }
@@ -1173,7 +1272,31 @@ __device__ __forceinline__ void tower_stage_shared(TowerDev &t,
         }
     }
 }
+
+// The cubic tower's (round 9): its byte tables, and the classic tower of
+// K_n -- byte tables, LK (2^(n/2) u32), T (2^(n/2) + 1 u64) -- 26 KB at
+// d=54 (cubic_shm_bytes); T3 stays in global memory (L2).
+__device__ __forceinline__ void cubic_stage_shared(TowerDev &t,
+                                                   unsigned char *shm) {
+    u64 *bt = (u64 *)shm;                       // 8-byte entries first
+    const int n3 = t.cb.nb * 256, nk = t.nb * 256, nT = (int)t.MK + 1;
+    for (int i = threadIdx.x; i < n3; i += blockDim.x) bt[i] = t.cb.btab[i];
+    for (int i = threadIdx.x; i < nk; i += blockDim.x) bt[n3 + i] = t.btab[i];
+    for (int i = threadIdx.x; i < nT; i += blockDim.x) bt[n3 + nk + i] = t.T[i];
+    u32 *lk = (u32 *)(bt + n3 + nk + nT);
+    for (int i = threadIdx.x; i < nT; i += blockDim.x) lk[i] = t.LK[i];
+    t.cb.btab = bt;
+    t.btab = bt + n3;
+    t.T = bt + n3 + nk;
+    t.LK = lk;
+}
 #endif
+
+// the shared bytes cubic_stage_shared needs
+static inline u32 cubic_shm_bytes(const TowerDev &t) {
+    return (u32)(((size_t)t.cb.nb * 256 + (size_t)t.nb * 256 + t.MK + 1) * 8 +
+                 (t.MK + 1) * 4);
+}
 
 // warp-synchronous helpers (round 7): the real intrinsics under nvcc, the
 // lockstep-warp emulation of cuda_emul.h otherwise
@@ -1237,6 +1360,14 @@ GF2_HD u64 logs_run_at(u64 rr, u64 k, u64 nruns, bool rot) {
 //          A lane whose class finds no room keeps it for the next round.
 //          FILL_POOL also takes each run from the launch's counter, so
 //          lanes and warps run out of work together at the end.
+// Round 9, the grouped order's kernels: the fill's state crosses the batch
+// parked in local memory -- one store and one load of each value per batch
+// of 32 classes -- instead of in registers, which the grouped batch needs
+// for its groups (ptxas spilled the state instead, inside the fill loop,
+// reloading and storing it at every enumeration step).  volatile, so the
+// values do not stay in registers across the batch.
+struct FillPark { u64 rr, kr, w, whi, pw, surv, pnb; u32 flags; };
+
 template <int D, int METHOD, int GROUP = 0>
 __global__ void __launch_bounds__(METHOD == LM_PH ? 128 : 512, 1)
 k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
@@ -1250,6 +1381,11 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
     if (METHOD == LM_TOWER && tw.shm_bytes) {
         extern __shared__ __align__(16) unsigned char logs_shm[];
         tower_stage_shared(tw, logs_shm);
+        __syncthreads();
+    }
+    if (METHOD == LM_CUBIC && tw.cb.shm_bytes) {
+        extern __shared__ __align__(16) unsigned char logs_shm[];
+        cubic_stage_shared(tw, logs_shm);
         __syncthreads();
     }
 #endif
@@ -1327,20 +1463,32 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
                 if (total == 32u * LB) break;   // every lane has LB
             }
             PT(PT_FILL);
+            const bool last = total < 32u * LB; // this is the last round
             if (n) {
                 if (lane == 0) PT_COUNT(PT_BATCH, 1);
                 PT_COUNT(PT_ENTRY, n);
-                if constexpr (GROUP)            // round 8: the grouped order
-                    logs_batch_grouped<D, METHOD>(L, tw, gpow2, ub, vb, n, pairm,
-                                                  (nb++ & 7) == 0, best, heavy,
-                                                  nheavy, overflow, P,
-                                                  &my_err PT_ARG);
-                else
+                const bool vf = (nb++ & 7) == 0;
+                if constexpr (GROUP) {          // round 8: the grouped order
+                    volatile FillPark fp;       // (round 9: parked, see above)
+                    fp.rr = rr; fp.kr = kr; fp.w = w; fp.whi = whi; fp.pw = pw;
+                    fp.surv = my_surv; fp.pnb = (u64)(u32)p | (u64)nb << 32;
+                    fp.flags = (u32)have | (u32)pend << 1 | (u32)live << 2;
+                    logs_batch_grouped<D, METHOD>(L, tw, gpow2, ub, vb, xb, n, pairm,
+                                                  vf, best, heavy, nheavy, overflow,
+                                                  P, &my_err PT_ARG);
+                    rr = fp.rr; kr = fp.kr; w = fp.w; whi = fp.whi; pw = fp.pw;
+                    my_surv = fp.surv;
+                    const u64 pnb = fp.pnb;
+                    p = (int)(u32)pnb; nb = (unsigned)(pnb >> 32);
+                    const u32 fl = fp.flags;
+                    have = fl & 1; pend = (fl >> 1) & 1; live = (fl >> 2) & 1;
+                } else {
                     logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
-                                          (nb++ & 7) == 0, best, heavy, nheavy,
-                                          overflow, P, &my_err PT_ARG);
+                                          vf, best, heavy, nheavy, overflow, P,
+                                          &my_err PT_ARG);
+                }
             }
-            if (total < 32u * LB) break;        // that was the last round
+            if (last) break;                    // that was the last round
         }
     } else {
         // ---- per-lane fill (round 6; FILL_ROT rotates the runs) ----
@@ -1371,14 +1519,25 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
             if (n == 0) break;
             if ((threadIdx.x & 31u) == 0) PT_COUNT(PT_BATCH, 1);
             PT_COUNT(PT_ENTRY, n);
-            if constexpr (GROUP)
-                logs_batch_grouped<D, METHOD>(L, tw, gpow2, ub, vb, n, pairm,
-                                              (nb++ & 7) == 0, best, heavy,
-                                              nheavy, overflow, P, &my_err PT_ARG);
-            else
+            const bool vf = (nb++ & 7) == 0;
+            if constexpr (GROUP) {              // (round 9: parked, see above)
+                volatile FillPark fp;
+                fp.rr = rr; fp.kr = kr; fp.w = w; fp.whi = whi;
+                fp.surv = my_surv; fp.pnb = (u64)(u32)p | (u64)nb << 32;
+                fp.flags = (u32)have;
+                logs_batch_grouped<D, METHOD>(L, tw, gpow2, ub, vb, xb, n, pairm,
+                                              vf, best, heavy, nheavy, overflow,
+                                              P, &my_err PT_ARG);
+                rr = fp.rr; kr = fp.kr; w = fp.w; whi = fp.whi;
+                my_surv = fp.surv;
+                const u64 pnb = fp.pnb;
+                p = (int)(u32)pnb; nb = (unsigned)(pnb >> 32);
+                have = (fp.flags & 1) != 0;
+            } else {
                 logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
-                                      (nb++ & 7) == 0, best, heavy, nheavy,
-                                      overflow, P, &my_err PT_ARG);
+                                      vf, best, heavy, nheavy, overflow, P,
+                                      &my_err PT_ARG);
+            }
         }
     }
     if (my_surv) atomicAdd(nsurv, my_surv);
@@ -1510,6 +1669,8 @@ struct GpuCtx {
     uint16_t *d_LKn = nullptr;
     PHSlot *d_slots[4] = {nullptr, nullptr, nullptr, nullptr};
     u64 *d_rrL = nullptr;                // RR: logs of all small polynomials
+    u64 *d_cbtab = nullptr, *d_T3 = nullptr;  // round 9: the cubic tower's
+                                         // byte tables and T3 (its K-tower: d_btab, d_LK, d_T)
     unsigned long long *d_prof = nullptr;   // -DCOARSE_PHASE_TIMING (round 8)
 };
 static std::vector<GpuCtx> g_gpus;
@@ -1532,7 +1693,7 @@ static void gather_best(ull *out, u64 n) {
 }
 
 // engine choice (COARSE_METHOD, --selftest [engine])
-enum { FM_AUTO = 0, FM_TOWER = 1, FM_PH = 2, FM_RR = 3 };
+enum { FM_AUTO = 0, FM_TOWER = 1, FM_PH = 2, FM_RR = 3, FM_CUBIC = 4 };
 static int g_force_method = FM_AUTO;
 static bool g_logs_selfcheck = false;    // selftest: verify every log on device
 static bool g_tune = true;               // --no-tune / COARSE_TUNE=0
@@ -1544,6 +1705,8 @@ static int g_pipe = 0;                   // the loop order (COARSE_PIPE): 0 roun
                                          // 6's, 2 grouped (round 8)
 static int g_fill = FILL_POOL;           // COARSE_FILL=0..3 (round 7)
 static int g_ldcg = 1;                   // COARSE_LDCG=0: table reads via L1
+static int g_pf = 1;                     // COARSE_PREFETCH=0: no L1 prefetches
+static bool g_sync_poll = false;         // COARSE_SYNC=poll: poll chunk events
 static bool g_pipe_fixed = false;        // COARSE_PIPE set: the tuner keeps it
 
 #define GPU_MEM_RESERVE (256ull << 20)  // headroom for allocator/context overhead
@@ -1932,7 +2095,7 @@ static int ckpt_resume(const char *path, u64 r, u64 smax, int d_lo, int d_hi,
         CkptInfo c;
         if (!ckpt_peek(g.c_str(), c, &f)) {
             fprintf(stderr, "checkpoint %s: not a readable checkpoint (format "
-                    "v4, rounds 6-8)\n", g.c_str());
+                    "v4, rounds 6-9)\n", g.c_str());
             continue;
         }
         if (!checked) {                          // the newest readable one
@@ -2189,22 +2352,39 @@ struct LogsPlan {
     size_t rr_bytes = 0;                        //   base logs; the RR table
     int tp_global = 0;                          // round 8: the subfield tower's
                                                 //   TP read from global memory
+    // round 9: the cubic tower (6 | d), a tuner candidate or COARSE_METHOD=
+    // cubic; its T3 is built by PH (plan ph_t3)
+    bool cubic_ok = false;
+    size_t cubic_bytes = 0;
+    PHHost ph_t3;
 };
 
 // The batched kernel for (d, method), or nullptr: tower at even d >= 4, PH
-// at odd d (and d=2), RR at odd d >= 5.  One instantiation per degree, since
-// the bit-sliced code needs d at compile time.  group (round 8): the kernel
-// of the grouped loop order (L.pipe = 2), tower and RR at d >= GROUPED_MIN_D
-// -- the tuned degrees on the GPU (each such kernel adds compile time), every
+// at odd d (and d=2), RR at odd d >= 5, the cubic tower (round 9) at
+// 6 | d >= CUBIC_MIN_D.  One instantiation per degree, since the bit-sliced
+// code needs d at compile time.  group (round 8): the kernel of the grouped
+// loop order (L.pipe = 2), tower, cubic and RR at d >= GROUPED_MIN_D -- the
+// tuned degrees on the GPU (each such kernel adds compile time), every
 // degree in the emulated build (the tests).
 typedef void (*LogsBatchFn)(LogsParams, const fw *, u64, u64, u64, ull *,
                             Heavy *, unsigned *, unsigned *,
                             unsigned long long *, unsigned long long *);
 #if defined(__CUDACC__)
 #define GROUPED_MIN_D 40
+#define CUBIC_MIN_D 24          // round 9: the cubic tower's kernels, 6 | d
 #else
 #define GROUPED_MIN_D 5
+#define CUBIC_MIN_D 12
 #endif
+// the cubic tower's kernel at d (6 | d, d >= CUBIC_MIN_D), else nullptr
+template <int D> static LogsBatchFn cubic_batch_fn(bool group) {
+    if constexpr (D % 6 == 0 && D >= CUBIC_MIN_D)
+        return !group ? k_logs_batch<D, LM_CUBIC, 0>
+             : D >= GROUPED_MIN_D ? k_logs_batch<D, LM_CUBIC, (D >= GROUPED_MIN_D)>
+                                  : nullptr;
+    else
+        return nullptr;
+}
 static LogsBatchFn logs_batch_fn(int d, int method, bool group = false) {
 #define LBF_G(D, MT) (!group ? k_logs_batch<D, MT, 0>                           \
                      : D >= GROUPED_MIN_D ? k_logs_batch<D, MT, (D >= GROUPED_MIN_D)> \
@@ -2212,7 +2392,8 @@ static LogsBatchFn logs_batch_fn(int d, int method, bool group = false) {
 #define LBF_PH(D) case D: return method == LM_PH && !group ? k_logs_batch<D, LM_PH> : nullptr;
 #define LBF_PR(D) case D: return method == LM_PH ? (group ? nullptr : k_logs_batch<D, LM_PH>) \
                                : method == LM_RR ? LBF_G(D, LM_RR) : nullptr;
-#define LBF_TW(D) case D: return method == LM_TOWER ? LBF_G(D, LM_TOWER) : nullptr;
+#define LBF_TW(D) case D: return method == LM_TOWER ? LBF_G(D, LM_TOWER)          \
+                               : method == LM_CUBIC ? cubic_batch_fn<D>(group) : nullptr;
     switch (d) {
     LBF_PH(2)  LBF_PH(3)  LBF_TW(4)  LBF_PR(5)  LBF_TW(6)  LBF_PR(7)
     LBF_TW(8)  LBF_PR(9)  LBF_TW(10) LBF_PR(11) LBF_TW(12) LBF_PR(13)
@@ -2264,6 +2445,7 @@ static bool logs_plan(int d, u64 q, int want, size_t budget, LogsPlan &pl) {
     if (want == FM_TOWER && (d & 1)) want = FM_AUTO;
     if (want == FM_PH && !(d & 1) && d >= 4) want = FM_AUTO;
     if (want == FM_RR && (!(d & 1) || d < 5)) want = FM_AUTO;
+    if (want == FM_CUBIC && !logs_batch_fn(d, LM_CUBIC)) want = FM_AUTO;
     const bool tower_ok = d >= 4 && !(d & 1) && d <= 54;
     if (tower_ok) {
         // T (8 B per K-element) and the byte tables, plus LK (4 B per
@@ -2272,12 +2454,34 @@ static bool logs_plan(int d, u64 q, int want, size_t budget, LogsPlan &pl) {
         const int n = tower_sub_choice(d / 2, g_tower_sub, &tp);
         size_t need = ((size_t)8 << (d / 2)) + ((size_t)((d + 7) / 8) << 11) + 65536;
         need += n ? ((size_t)2 << n) + 4 * (size_t)tp : (size_t)4 << (d / 2);
+        // round 9: the cubic tower at 6 | d: T3 (8 B per element of
+        // GF(2^(d/3))), the byte tables, its K-tower; while T3 is built, PH
+        // tables (freed before the sieve)
+        if (logs_batch_fn(d, LM_CUBIC)) {
+            const size_t cb = ((size_t)8 << (d / 3)) + ((size_t)((d + 7) / 8) << 11) + 65536;
+            const size_t phb = budget > cb ? std::min(budget - cb, (size_t)64 << 20) : 0;
+            if (cb <= budget && ph_plan_host(d, q, phb, pl.ph_t3, kPHCostScalar, 64, false)) {
+                pl.cubic_ok = true;
+                pl.cubic_bytes = cb;
+            }
+        }
+        if (want == FM_CUBIC) {
+            if (!pl.cubic_ok) return false;
+            pl.method = LM_CUBIC;
+            pl.bytes = pl.cubic_bytes;
+            return true;
+        }
         if (need <= budget) {
             pl.method = LM_TOWER;
             pl.bytes = need;
             return true;
         }
-        return false;                           // (the only engine at even d)
+        if (pl.cubic_ok && want == FM_AUTO) {   // (little VRAM: d=54's T alone
+            pl.method = LM_CUBIC;               //  is 1 GB, its T3 2 MB)
+            pl.bytes = pl.cubic_bytes;
+            return true;
+        }
+        return false;
     }
     pl.ph_ok = ph_plan_host(d, q, budget, pl.ph, kPHCostBitsliced);
     // RR (round 5): the table of 2^(dh+1) logs, and a PH plan for the
@@ -2334,6 +2538,7 @@ static LogsParams logs_params_base(int d, u64 r, u64 smax, u64 q, int method) {
     L.pipe = g_pipe;
     L.fill = g_fill;
     L.ldcg = g_ldcg;
+    L.prefetch = g_pf;
     L.smax = smax;
     // Carmichael lambda(M) = lcm of phi(p^k) over p^k || M: the exponent of
     // the unit group, so j^(lambda-1) = j^-1 for gcd(j, M) = 1.  It is much
@@ -2371,12 +2576,43 @@ static u64 logs_run_for(u64 work) {             // ~2^16 threads per launch
 
 // Build this device's tables and fill L's device pointers.  The tower's T
 // is computed on the first device and copied to the others via `Th`.
+// Round 9: the cubic tower of the current degree, host side -- the
+// structure (cubic_build_host) and T3 (cubic_build_T3, on GPU 0) -- built
+// once per degree for the tuner, the pass and the devices
+static int g_cubic_d = 0;
+static CubicHost g_cubic;
+static std::vector<u64> g_cubic_T3;
+
 static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
                               const TowerHost &W, std::vector<u64> &Th,
                               LogsParams &L,
                               const std::vector<u64> *rrL = nullptr) {
     const u64 M = L.M;
     int blocks, threads;
+    if (pl.method == LM_CUBIC) {                // round 9: tables from the host
+        const CubicHost &C = g_cubic;
+        if (g_cubic_d != d || g_cubic_T3.size() != C.MK + 2) {
+            fprintf(stderr, "d=%d: cubic tower tables missing -- internal error\n", d);
+            exit(1);
+        }
+        auto up = [](u64 **dp, const std::vector<u64> &h) {
+            CUCHK(cudaMalloc(dp, h.size() * sizeof(u64)));
+            CUCHK(cudaMemcpy(*dp, h.data(), h.size() * sizeof(u64), cudaMemcpyHostToDevice));
+        };
+        up(&G.d_cbtab, C.btab);
+        up(&G.d_T3, g_cubic_T3);
+        up(&G.d_btab, C.kt.btab);
+        up(&G.d_T, C.kT);
+        CUCHK(cudaMalloc(&G.d_LK, C.kt.LK.size() * sizeof(u32)));
+        CUCHK(cudaMemcpy(G.d_LK, C.kt.LK.data(), C.kt.LK.size() * sizeof(u32),
+                         cudaMemcpyHostToDevice));
+        L.tw = cubic_dev(C, G.d_cbtab, G.d_T3, G.d_btab, G.d_LK, G.d_T);
+        int optin = 48 << 10;
+        cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, G.dev);
+        const u32 shm = cubic_shm_bytes(L.tw);
+        L.tw.cb.shm_bytes = shm <= (u32)optin ? shm : 0;
+        return;
+    }
     if (pl.method == LM_RR) {                   // the table built by the host
         if (!rrL || rrL->size() != ((size_t)2 << (d / 2))) {
             fprintf(stderr, "d=%d: RR table missing -- internal error\n", d);
@@ -2476,8 +2712,9 @@ static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
 static void logs_free_device(GpuCtx &G) {
     cudaFree(G.d_btab); cudaFree(G.d_LK); cudaFree(G.d_T);
     cudaFree(G.d_LKn); cudaFree(G.d_TP); cudaFree(G.d_rrL);
+    cudaFree(G.d_cbtab); cudaFree(G.d_T3);
     G.d_btab = G.d_T = nullptr; G.d_LK = G.d_TP = nullptr; G.d_LKn = nullptr;
-    G.d_rrL = nullptr;
+    G.d_rrL = nullptr; G.d_cbtab = G.d_T3 = nullptr;
     for (int i = 0; i < 4; i++) {
         cudaFree(G.d_slots[i]);
         G.d_slots[i] = nullptr;
@@ -2496,7 +2733,7 @@ static void logs_batch_dims(LogsBatchFn kfn, u64 nruns, int method,
                             const LogsParams &L, int &blocks, int &threads,
                             size_t &shm) {
     threads = method == LM_PH ? 128 : 512;
-    shm = method == LM_TOWER ? L.tw.shm_bytes : 0;
+    shm = method == LM_TOWER ? L.tw.shm_bytes : method == LM_CUBIC ? L.tw.cb.shm_bytes : 0;
     if (shm > ((size_t)48 << 10))
         CUCHK(cudaFuncSetAttribute(kfn, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                    (int)shm));
@@ -2717,6 +2954,122 @@ static bool rr_build_table(int d, u64 q, u64 r, const LogsPlan &pl,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// The cubic tower's T3 (round 9): T3[l] = log(w + y'^l) for l < 2^n - 1,
+// T3[2^n - 1] = log w and T3[2^n] = 0 (see cubic_parts), the 2^n - 1 logs
+// by Pohlig-Hellman on GPU 0 (plan pl.ph_t3; 2^18 logs at d=54, well under
+// a second by my estimate), each verified on the device (g^log == w + y'^l)
+// and a sample on the host.
+__global__ void k_cubic_T3(LogsParams L, const fw *gpow2, u64 w, u64 yp,
+                           u64 *out, u64 lo, u64 hi, unsigned long long *nerr) {
+    unsigned long long bad = 0;
+    const u64 stride = (u64)gridDim.x * blockDim.x;
+    for (u64 l = lo + (u64)blockIdx.x * blockDim.x + threadIdx.x; l < hi; l += stride) {
+        const u64 e = w ^ gf2f_pow(yp, l, L.qlow, L.d);
+        const u64 v = ph_log(e, L.M, L.d, L.qlow, L.ph);
+        if (v >= L.M || gf2f_antilog(v, L.qlow, L.d, gpow2) != e) { bad++; out[l] = 0; }
+        else out[l] = v;
+    }
+    if (bad) atomicAdd(nerr, bad);
+}
+
+static bool cubic_build_T3(int d, u64 q, u64 r, const LogsPlan &pl,
+                           const CubicHost &C, std::vector<u64> &T3) {
+    const double t0 = now_s();
+    GpuCtx &G = g_gpus[0];
+    CUCHK(cudaSetDevice(G.dev));
+    LogsPlan pf = pl;
+    pf.method = LM_PH;
+    pf.ph = pl.ph_t3;
+    LogsParams Lp = logs_params_base(d, r, 1, q, LM_PH);
+    TowerHost W;
+    std::vector<u64> Th;
+    logs_setup_device(G, d, q, pf, W, Th, Lp);
+    fw gpow2[64];
+    gpow2[0] = 2;
+    for (int t = 1; t < d; t++) gpow2[t] = gf_sqr(gpow2[t - 1], q, d);
+    fw *dgp;
+    u64 *dout;
+    unsigned long long *dnerr, zero = 0, nerr = 0;
+    const u64 n = C.MK;                          // entries by PH; T3[MK] = log w
+    CUCHK(cudaMalloc(&dgp, d * sizeof(fw)));
+    CUCHK(cudaMemcpy(dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
+    CUCHK(cudaMalloc(&dout, (n + 1) * sizeof(u64)));
+    CUCHK(cudaMalloc(&dnerr, 8));
+    CUCHK(cudaMemcpy(dnerr, &zero, 8, cudaMemcpyHostToDevice));
+    int nsm = 1, per = 1, dev = 0;
+    cudaGetDevice(&dev);
+    cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, dev);
+    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per, k_cubic_T3, 128, 0)
+            != cudaSuccess || per < 1) per = 1;
+    const int blocks = nsm * per, threads = 128;
+    u64 lo = 0, slice = (u64)blocks * threads;   // grown to ~0.1 s per launch
+    while (lo < n) {
+        const u64 hi = std::min(n, lo + slice);
+        const double ts = now_s();
+        k_cubic_T3<<<blocks, threads>>>(Lp, dgp, C.w, C.yp, dout, lo, hi, dnerr);
+        CUCHK(cudaDeviceSynchronize());
+        CUCHK(cudaGetLastError());
+        wd_progress();
+        const double dt = now_s() - ts;
+        lo = hi;
+        if (dt < 0.05 && slice < ((u64)1 << 30)) slice *= 2;
+        else if (dt > 0.2 && slice > (u64)blocks * threads) slice /= 2;
+        if (ckpt_stop_requested()) {
+            fprintf(stderr, "  [cubic tower for d=%d: stopped while building T3]\n", d);
+            ckpt_stop_and_exit();
+        }
+    }
+    T3.assign(n + 2, 0);                         // T3[MK + 1] = 0: a factor in K
+    CUCHK(cudaMemcpy(T3.data(), dout, n * sizeof(u64), cudaMemcpyDeviceToHost));
+    CUCHK(cudaMemcpy(&nerr, dnerr, 8, cudaMemcpyDeviceToHost));
+    cudaFree(dgp); cudaFree(dout); cudaFree(dnerr);
+    logs_free_device(G);
+    T3[n] = C.logw;
+    if (nerr) {
+        fprintf(stderr, "d=%d: %llu T3 logs failed verification -- internal or "
+                "hardware error\n", d, nerr);
+        return false;
+    }
+    // a host sample, independent of the device code (bit-serial arithmetic)
+    u64 z = 0x2545F4914F6CDD1DULL ^ (u64)d;
+    for (int i = 0; i < 256; i++) {
+        z ^= z << 13; z ^= z >> 7; z ^= z << 17;
+        const u64 l = z % (n + 1);
+        const u64 e = l == n ? C.w : C.w ^ gf_pow(C.yp, l, q, d);
+        if (gf_pow(2, T3[l], q, d) != e) {
+            fprintf(stderr, "d=%d: T3 failed its host spot check -- internal "
+                    "error\n", d);
+            return false;
+        }
+    }
+    fprintf(stderr, "  [cubic tower for d=%d over GF(2^%d): T3 of %" PRIu64 " logs "
+            "(%.0f MB) by PH in %.1fs, verified]\n", d, C.n, n + 1,
+            (n + 2) * 8.0 / 1048576.0, now_s() - t0);
+    return true;
+}
+
+// the cubic tower of degree d in g_cubic / g_cubic_T3 (once per degree)
+static bool cubic_prepare(int d, u64 q, u64 r, const LogsPlan &pl) {
+    if (g_cubic_d == d && g_cubic_T3.size() == g_cubic.MK + 2) return true;
+    g_cubic_d = 0;
+    g_cubic_T3.clear();
+    if (!pl.cubic_ok || !cubic_build_host(d, q, g_cubic)) {
+        fprintf(stderr, "d=%d: cubic tower construction failed -- internal error\n", d);
+        return false;
+    }
+    if (!cubic_build_T3(d, q, r, pl, g_cubic, g_cubic_T3)) return false;
+    g_cubic_d = d;
+    return true;
+}
+
+static void cubic_release() {
+    g_cubic_d = 0;
+    g_cubic = CubicHost();
+    g_cubic_T3.clear();
+    g_cubic_T3.shrink_to_fit();
+}
+
 // selftest: check log(g^u) == u for u in [0, min(M, 2^24)) on device 0
 static void logs_selfcheck(int d, const LogsParams &L) {
     GpuCtx &G = g_gpus[0];
@@ -2733,7 +3086,8 @@ static void logs_selfcheck(int d, const LogsParams &L) {
     CUCHK(cudaMemcpy(&bad, dbad, 8, cudaMemcpyDeviceToHost));
     cudaFree(dbad);
     fprintf(stderr, "  [d=%d %s logs: %" PRIu64 " checked, %llu wrong]\n", d,
-            L.method == LM_TOWER ? "tower" : L.method == LM_RR ? "RR" : "PH",
+            L.method == LM_TOWER ? "tower" : L.method == LM_RR ? "RR"
+            : L.method == LM_CUBIC ? "cubic" : "PH",
             hi, bad);
     if (bad) { fprintf(stderr, "logs selfcheck FAILED at d=%d\n", d); exit(1); }
 }
@@ -2900,10 +3254,13 @@ static u64 logs_wide_selftest(u64 r, int want) {
         // logs forced through a many-giant-step plan (d=49's case)
         const bool rr_here = (d & 1) && d <= dmax_rr;
         const bool rr_bsgs = d == d_rr_bsgs && (d & 1);
-        for (int eng : {(int)FM_TOWER, (int)FM_PH, (int)FM_RR, FM_RR + 100}) {
-            if (want != FM_AUTO && want != eng % 100) continue;
+        for (int eng : {(int)FM_TOWER, (int)FM_CUBIC, (int)FM_PH, (int)FM_RR, FM_RR + 100}) {
+            // (the cubic tower, round 9, with the towers: "tower" or "cubic")
+            if (want != FM_AUTO && want != eng % 100 &&
+                !(eng == FM_CUBIC && want == FM_TOWER)) continue;
+            if (eng == FM_CUBIC && !logs_batch_fn(d, LM_CUBIC)) continue;   // 6 | d
             if (eng == FM_TOWER && (d & 1)) continue;          // even d only
-            if (eng != FM_TOWER && !(d & 1)) continue;         // odd d only
+            if (eng != FM_TOWER && eng != FM_CUBIC && !(d & 1)) continue;   // odd d only
             if (eng == FM_RR && !rr_here) continue;
             if (eng == FM_RR + 100 && !rr_bsgs) continue;
             if (eng == FM_RR + 100) setenv("COARSE_RR_FB_BUDGET_MB", "4", 1);
@@ -2916,7 +3273,7 @@ static u64 logs_wide_selftest(u64 r, int want) {
                             "(expected only for d=49)]\n", d);
                 else
                     fprintf(stderr, "  [d=%d %s logs: no feasible plan]\n", d,
-                            eng == FM_TOWER ? "tower" : "RR   ");
+                            eng == FM_TOWER ? "tower" : eng == FM_CUBIC ? "cubic" : "RR   ");
                 if (!(eng == FM_PH && d == 49)) fails++;
                 continue;
             }
@@ -2927,6 +3284,11 @@ static u64 logs_wide_selftest(u64 r, int want) {
             TowerHost W;
             if (pl.method == LM_TOWER && !tower_build_host(d, q, W, g_tower_sub)) {
                 fprintf(stderr, "  d=%d: tower construction failed\n", d);
+                fails++;
+                cudaFree(G.dgp); G.dgp = nullptr;
+                continue;
+            }
+            if (pl.method == LM_CUBIC && !cubic_prepare(d, q, r, pl)) {
                 fails++;
                 cudaFree(G.dgp); G.dgp = nullptr;
                 continue;
@@ -2965,7 +3327,7 @@ static u64 logs_wide_selftest(u64 r, int want) {
             int norders = 1;
             if (pl.method != LM_PH) {           // and in the other loop orders
                 LogsParams L2 = L;
-                L2.pipe = L.pipe == 1 ? 0 : 1;
+                L2.pipe = L.pipe == 1 ? 0 : 1;      // round 5's <-> round 9's
                 u64 ncls2 = 0;
                 bfail += logs_batch_check(G, d, pl, L2, blo, blo + ((u64)1 << lb),
                                           &ncls2);
@@ -3011,11 +3373,13 @@ static u64 logs_wide_selftest(u64 r, int want) {
             CUCHK(cudaMemcpy(pb, dpb, sizeof pb, cudaMemcpyDeviceToHost));
             const u64 pfail = pb[0] + (pb[1] < npair / 8 ? 1 : 0);
             logs_free_device(G);
+            cubic_release();
             cudaFree(G.dgp); G.dgp = nullptr;
             fprintf(stderr, "  [d=%d %-5s logs, %4.0f MB tables: %" PRIu64
                     " checked, %llu wrong; batched: %" PRIu64 " classes%s and %"
                     PRIu64 " (4 fills), %s; pairs: %llu, %s", d,
-                    pl.method == LM_TOWER ? "tower" : pl.method == LM_RR ? "RR" : "PH",
+                    pl.method == LM_TOWER ? "tower" : pl.method == LM_RR ? "RR"
+                    : pl.method == LM_CUBIC ? "cubic" : "PH",
                     pl.bytes / 1048576.0, nlog, bad, ncls,
                     norders == 3 ? " (3 loop orders)" : norders == 2 ? " (both loop orders)" : "",
                     ntyp,
@@ -3024,6 +3388,8 @@ static u64 logs_wide_selftest(u64 r, int want) {
                 fprintf(stderr, "; over GF(2^%d)", W.sub_n);
             else if (pl.method == LM_TOWER)
                 fprintf(stderr, "; classic");
+            else if (pl.method == LM_CUBIC)
+                fprintf(stderr, "; over GF(2^%d)", d / 3);
             else if (pl.method == LM_RR)
                 fprintf(stderr, "; factor-base logs with up to %" PRIu64 " giant "
                         "step%s%s", rr_giant, rr_giant == 1 ? "" : "s",
@@ -3062,12 +3428,13 @@ static u64 logs_wide_selftest(u64 r, int want) {
 struct TuneCand { int method, sub_n, pipe; double ns; int tpg; };
 
 static void tune_name(const TuneCand &c, char *b, size_t n) {
-    char base[24];
+    char base[32];
     if (c.method == LM_TOWER && c.sub_n) snprintf(base, sizeof base, "GF(2^%d)", c.sub_n);
     else if (c.method == LM_TOWER) snprintf(base, sizeof base, "classic");
+    else if (c.method == LM_CUBIC) snprintf(base, sizeof base, "cubic GF(2^%d)", c.sub_n);
     else snprintf(base, sizeof base, "%s", c.method == LM_RR ? "RR" : "PH");
     snprintf(b, n, "%s%s%s", base,
-             c.method == LM_PH ? "" : c.pipe == 0 ? " r5-order" : c.pipe == 2 ? " grouped" : " r6-order",
+             c.method == LM_PH ? "" : c.pipe == 0 ? " r5-order" : c.pipe == 2 ? " grouped" : " r9-order",
              c.tpg ? " TP-global" : "");
 }
 
@@ -3103,7 +3470,9 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
     GpuCtx &G = g_gpus[0];
     CUCHK(cudaSetDevice(G.dev));
     std::vector<TuneCand> cand;                 // the first is the default
-    if (pl.method == LM_TOWER) {
+    if (pl.method == LM_CUBIC) {                // forced (or the tower did not fit)
+        cand.push_back({LM_CUBIC, d / 3, g_pipe, 0, 0});
+    } else if (pl.method == LM_TOWER) {
         u64 tp;
         const int sub_auto = tower_sub_choice(d / 2, g_tower_sub, &tp);
         cand.push_back({LM_TOWER, sub_auto, g_pipe, 0, g_tower_tp > 0});
@@ -3125,6 +3494,10 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
                 if (need <= budget) cand.push_back({LM_TOWER, n, g_pipe, 0, g_tower_tp > 0});
             }
         }
+        // round 9: the cubic tower at 6 | d (unless the engine or the
+        // tower's subfield is fixed)
+        if (pl.cubic_ok && g_force_method == FM_AUTO && g_tower_sub < 0)
+            cand.push_back({LM_CUBIC, d / 3, g_pipe, 0, 0});
     } else {
         cand.push_back({pl.method, 0, g_pipe, 0, 0});
         const int other = pl.method == LM_PH ? LM_RR : LM_PH;
@@ -3146,8 +3519,8 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
         }
         cand.swap(both);
     }
-    // each tower/RR variant in every loop order -- round 5's (the default),
-    // round 6's, and (round 8) the grouped one where its kernel exists --
+    // each tower/cubic/RR variant in every loop order -- round 5's (the
+    // default), round 9's, and the grouped one where its kernel exists --
     // unless COARSE_PIPE fixes the order; a variant's orders one after
     // another, as they need no new tables
     if (!g_pipe_fixed) {
@@ -3197,6 +3570,7 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
             cur_m = cur_sub = cur_tpg = -1;
             if (c.method == LM_RR && rrL.empty() && !rr_build_table(d, q, r, pl, rrL))
                 continue;
+            if (c.method == LM_CUBIC && !cubic_prepare(d, q, r, pl)) continue;
             TowerHost W;
             if (c.method == LM_TOWER && !tower_build_host(d, q, W, c.sub_n)) continue;
             LogsPlan pc = pl;
@@ -3284,11 +3658,13 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
     if (cand[best].ns < 0) best = 0;            // nothing ran: keep the default
     pl.method = cand[best].method;
     pl.bytes = pl.method == LM_RR ? pl.rr_bytes
-             : pl.method == LM_PH ? pl.ph.table_bytes : pl.bytes;
+             : pl.method == LM_PH ? pl.ph.table_bytes
+             : pl.method == LM_CUBIC ? pl.cubic_bytes : pl.bytes;
     sub_use = cand[best].sub_n;
     pipe_use = cand[best].pipe;
     tp_use = cand[best].tpg;
     if (pl.method != LM_RR) { rrL.clear(); rrL.shrink_to_fit(); }
+    if (pl.method != LM_CUBIC) cubic_release();
     char nm[64];
     fprintf(stderr, "  [tune d=%d on GPU 0, %llu classes, %.1fs:", d, cls,
             now_s() - t0);
@@ -3387,14 +3763,17 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         // the degree's engine and subfield, as recorded: no re-tuning
         if (rs->method != pl.method) {
             const bool ok = rs->method == LM_RR ? pl.rr_ok
-                          : rs->method == LM_PH ? pl.ph_ok : false;
+                          : rs->method == LM_PH ? pl.ph_ok
+                          : rs->method == LM_CUBIC ? pl.cubic_ok
+                          : rs->method == LM_TOWER ? d % 2 == 0 : false;
             if (!ok) {
                 fprintf(stderr, "d=%d: the checkpoint's engine is not possible "
                         "here (less free VRAM?); cannot resume\n", d);
                 exit(1);
             }
             pl.method = rs->method;
-            pl.bytes = pl.method == LM_RR ? pl.rr_bytes : pl.ph.table_bytes;
+            pl.bytes = pl.method == LM_RR ? pl.rr_bytes
+                     : pl.method == LM_CUBIC ? pl.cubic_bytes : pl.ph.table_bytes;
         }
         if (pl.method == LM_TOWER) sub_use = rs->sub;
         pipe_use = rs->pipe;
@@ -3417,17 +3796,20 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         exit(1);
     }
     const char *mname = pl.method == LM_TOWER ? "tower"
+                      : pl.method == LM_CUBIC ? "cubic tower"
                       : pl.method == LM_RR ? "RR" : "PH";
     if (pl.method == LM_RR && rrL.empty() && !rr_build_table(d, q, r, pl, rrL)) {
         fprintf(stderr, "d=%d: RR table construction failed\n", d);
         exit(1);
     }
+    if (pl.method == LM_CUBIC && !cubic_prepare(d, q, r, pl)) exit(1);
     TowerHost W;
     if (pl.method == LM_TOWER && !tower_build_host(d, q, W, sub_use)) {
         fprintf(stderr, "d=%d: tower construction failed -- internal error\n", d);
         exit(1);
     }
-    const int sub_rec = pl.method == LM_TOWER ? (W.sub_k ? W.sub_n : 0) : -1;
+    const int sub_rec = pl.method == LM_TOWER ? (W.sub_k ? W.sub_n : 0)
+                      : pl.method == LM_CUBIC ? d / 3 : -1;
     std::vector<LogsParams> Lg;
     unsigned long long zero64 = 0;
     for (int g = 0; g < NG; g++) {
@@ -3454,15 +3836,18 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         logs_setup_device(G, d, q, pl, W, Th, Lg.back(), &rrL);
     }
     rrL.clear(); rrL.shrink_to_fit();
+    cubic_release();                            // (on the devices now)
     char inner[96] = "";                        // the inner tower, if any
     if (pl.method == LM_TOWER && W.sub_k)
         snprintf(inner, sizeof inner, " over GF(2^%d)", W.sub_n);
     else if (pl.method == LM_TOWER)
         snprintf(inner, sizeof inner, ", classic");
+    else if (pl.method == LM_CUBIC)
+        snprintf(inner, sizeof inner, " over GF(2^%d)", d / 3);
     if (pl.method != LM_PH)
         snprintf(inner + strlen(inner), sizeof inner - strlen(inner), "%s",
                  pipe_use == 0 ? ", round-5 loop order"
-                 : pipe_use == 2 ? ", grouped loop order" : ", round-6 loop order");
+                 : pipe_use == 2 ? ", grouped loop order" : ", round-9 loop order");
     if (pl.method == LM_TOWER && pl.tp_global && Lg[0].tw.sub_k && !Lg[0].tw.shm_tp)
         snprintf(inner + strlen(inner), sizeof inner - strlen(inner),
                  ", TP from global memory");
@@ -3481,7 +3866,9 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
 
     // One blocking-sync event per device: the host thread sleeps in the
     // driver until its chunk is done and wakes at once -- no polling delay
-    // between chunks and no busy-waiting CPU core.
+    // between chunks and no busy-waiting CPU core.  (Under WSL2 the wait
+    // appears to spin a core anyway; COARSE_SYNC=poll, round 9, polls the
+    // event every millisecond instead: ~0.1% of a chunk.)
     std::vector<cudaEvent_t> ev(NG);
     for (int g = 0; g < NG; g++) {
         CUCHK(cudaSetDevice(g_gpus[g].dev));
@@ -3553,7 +3940,13 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         }
         for (int g = 0; g < used; g++) {        // a chunk is seconds at most
             CUCHK(cudaSetDevice(g_gpus[g].dev));
-            CUCHK(cudaEventSynchronize(ev[g]));
+            if (g_sync_poll) {
+                cudaError_t qe;
+                while ((qe = cudaEventQuery(ev[g])) == cudaErrorNotReady) usleep(1000);
+                CUCHK(qe);
+            } else {
+                CUCHK(cudaEventSynchronize(ev[g]));
+            }
         }
         classes_run = 0;
         for (int g = 0; g < NG; g++) {
@@ -3812,9 +4205,9 @@ static int selftest_main(const char *engine) {
     g_gpus.assign(1, GpuCtx());
     g_force_method = !engine ? FM_AUTO : !strcmp(engine, "tower") ? FM_TOWER
                    : !strcmp(engine, "ph") ? FM_PH : !strcmp(engine, "rr") ? FM_RR
-                   : -1;
+                   : !strcmp(engine, "cubic") ? FM_CUBIC : -1;
     if (g_force_method < 0) {
-        fprintf(stderr, "--selftest %s: expected tower, ph or rr\n", engine);
+        fprintf(stderr, "--selftest %s: expected tower, cubic, ph or rr\n", engine);
         return 1;
     }
     g_logs_selfcheck = true;
@@ -3823,6 +4216,7 @@ static int selftest_main(const char *engine) {
     printf("selftest: r=%" PRIu64 " degrees 2..%d s<=%" PRIu64 " (GPU vs "
            "in-process CPU reference), engines: %s\n", r, depth, smax,
            g_force_method == FM_TOWER ? "tower at even d"
+           : g_force_method == FM_CUBIC ? "cubic tower at 6 | d"
            : g_force_method == FM_PH ? "PH at odd d"
            : g_force_method == FM_RR ? "RR at odd d >= 5" : "automatic");
     // the pass order: a permutation of the chunks for every geometry, whose
@@ -3925,13 +4319,24 @@ int main(int argc, char **argv) {
         const long o = strtol(e, &end, 10);
         if (end == e || *end || o < 0 || o > 2) {
             fprintf(stderr, "COARSE_PIPE=%s: expected 0 (round 5's loop order, "
-                    "the default), 1 (round 6's) or 2 (grouped)\n", e);
+                    "the default), 1 (round 9's) or 2 (grouped)\n", e);
             return 1;
         }
         g_pipe = (int)o;
         g_pipe_fixed = true;
     }
     if (const char *e = getenv("COARSE_LDCG")) g_ldcg = atoi(e) != 0;
+    if (const char *e = getenv("COARSE_PREFETCH")) g_pf = atoi(e) != 0;
+    if (const char *e = getenv("COARSE_SYNC")) {
+        if (!strcmp(e, "poll")) {
+            g_sync_poll = true;
+            fprintf(stderr, "COARSE_SYNC=poll: chunks are waited for by polling their "
+                    "events every millisecond\n");
+        } else if (strcmp(e, "block")) {
+            fprintf(stderr, "COARSE_SYNC=%s: expected block (the default) or poll\n", e);
+            return 1;
+        }
+    }
     if (const char *e = getenv("COARSE_TEST_TP_CHOICE")) g_test_tp_choice = atoi(e) != 0;
     if (const char *e = getenv("COARSE_TOWER_TP")) {
         if (!strcmp(e, "global")) g_tower_tp = 1;
@@ -3955,8 +4360,9 @@ int main(int argc, char **argv) {
         if (!strcmp(e, "tower")) g_force_method = FM_TOWER;
         else if (!strcmp(e, "ph")) g_force_method = FM_PH;
         else if (!strcmp(e, "rr")) g_force_method = FM_RR;
+        else if (!strcmp(e, "cubic")) g_force_method = FM_CUBIC;
         else if (strcmp(e, "auto")) {
-            fprintf(stderr, "COARSE_METHOD=%s: expected auto, tower, ph or rr\n", e);
+            fprintf(stderr, "COARSE_METHOD=%s: expected auto, tower, cubic, ph or rr\n", e);
             return 1;
         }
     }

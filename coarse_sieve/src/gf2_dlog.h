@@ -627,26 +627,74 @@ GF2_HD void bs_mulx_sel(u32 (&g)[D], u32 sel) {
         if ((QL >> s) & 1) g[s] ^= top;
 }
 
+// one step of g^u: G = G^2, then G = G * x in the slots selected by sel
+template <int D>
+GF2_HD void bs_step_g(u32 (&G)[D], u32 sel) {
+    u32 R[D];
+    bs_sqr<D>(G, R);
+    GF2D_UNROLL
+    for (int k = 0; k < D; k++) G[k] = R[k];
+    bs_mulx_sel<D>(G, sel);
+}
+
+// Round 9: a hint to bring the cache line of a thread's local-memory
+// address (a local array element) into L1 ahead of its load -- CCTLL.PF1:
+// no register, nothing waits for it.  A no-op on the host.
+GF2_HD void pf_local(const void *p) {
+#if defined(__CUDA_ARCH__)
+    asm volatile("{\n\t.reg .u64 a;\n\tcvta.to.local.u64 a, %0;\n\t"
+                 "prefetch.local.L1 [a];\n\t}" :: "l"(p));
+#else
+    (void)p;
+#endif
+}
+
 // G = g^u per slot, g = x; U holds the exponents as planes (bit k of U[b] =
 // bit b of u_k), every u_k < 2^(D-1).  Left to right: square, then multiply
 // by x where the bit is set -- a plane shift, so no general multiplies.
 // The loop over b stays rolled on purpose: unrolled it would be ~15k
 // instructions of straight-line code per kernel, far beyond the instruction
-// cache; rolled, U[b] is one local-memory (L1) load per ~4D instructions.
+// cache; rolled, U[b] lives in local memory (the batched kernels' U).
+// Round 9: the planes are loaded three steps ahead.  Round 8's version
+// loaded U[b] ~25 instructions before its use, and the round-7 ncu exports
+// put 24% (RR, d=47) and 14% (tower, d=44) of all the kernels' stall samples
+// on that one wait: the load misses L1 (the batch arrays evict it) and
+// queues behind the DRAM traffic.  Four registers in turn, each reloaded
+// right after its use (a copy of a pending load would wait for it), so a
+// plane has three steps (~300 instructions) to arrive -- in the source:
+// ptxas sinks the four loads to the end of the loop body, which leaves the
+// first plane of each group ~55 instructions (sm_75, d=53).  So with pf
+// (the sieve's default, COARSE_PREFETCH) each group also prefetches into
+// L1 the planes of the group after next -- ptxas sinks those too, next to
+// the loads, which puts them one group (~470 instructions) ahead of the
+// loads of those planes.
 template <int D>
-GF2_HD void bs_pow_g(const u32 (&U)[D], u32 (&G)[D]) {
+GF2_HD void bs_pow_g(const u32 (&U)[D], u32 (&G)[D], bool pf = false) {
     GF2D_UNROLL
     for (int k = 0; k < D; k++) G[k] = 0;
     G[0] = ~0u;                                  // 1 in every slot
+    // the D-1 exponent bits, padded at the top to a multiple of four with
+    // zero bits (steps that only square the 1 they start from), so that one
+    // loop body of four steps does them all
+    constexpr int N = D - 1, NP = (N + 3) / 4 * 4;
+    u32 s0 = NP - 1 < N ? U[NP - 1 < N ? NP - 1 : 0] : 0u;
+    u32 s1 = NP - 2 < N ? U[NP - 2 < N ? NP - 2 : 0] : 0u;
+    u32 s2 = NP - 3 < N ? U[NP - 3 < N ? NP - 3 : 0] : 0u;
+    u32 s3 = U[NP - 4];
 #if defined(__CUDA_ARCH__)
 #pragma unroll 1
 #endif
-    for (int b = D - 2; b >= 0; b--) {
-        u32 R[D];
-        bs_sqr<D>(G, R);
-        GF2D_UNROLL
-        for (int k = 0; k < D; k++) G[k] = R[k];
-        bs_mulx_sel<D>(G, U[b]);
+    for (int b = NP - 1; b >= 3; b -= 4) {
+        if (pf && b >= 11) {                    // the group after next
+            pf_local(&U[b - 8]); pf_local(&U[b - 9]);
+            pf_local(&U[b - 10]); pf_local(&U[b - 11]);
+        }
+        // each register is reloaded with the plane four steps on (plane 0,
+        // unused, in the last group)
+        bs_step_g<D>(G, s0); s0 = U[b - 4 >= 0 ? b - 4 : 0];
+        bs_step_g<D>(G, s1); s1 = U[b - 5 >= 0 ? b - 5 : 0];
+        bs_step_g<D>(G, s2); s2 = U[b - 6 >= 0 ? b - 6 : 0];
+        bs_step_g<D>(G, s3); s3 = U[b - 7 >= 0 ? b - 7 : 0];
     }
 }
 
@@ -750,6 +798,20 @@ GF2_HD void bs_store(const u32 (&P)[D], u64 *v) {
 //          Y' = (y'_0, ..., y'_(j-1), 1, 0, ..., 0) has digits
 //          l_i = log_hn(y'_i), or 2^n - 1 for y'_i = 0, at bits n*i of the
 //          index, after the 2^n + ... + 2^(n(j-1)) entries for smaller j.
+//
+// The cubic tower (round 9; see "cubic tower logs" below) keeps its own
+// fields in TowerDev::cb, and uses the rest of its TowerDev as the classic
+// tower of K = GF(2^(d/3)).
+struct CubicDev {
+    int n, nb;            // n = d/3 (even); nb = ceil(d/8) byte tables
+    u64 MK, H;            // 2^n - 1; H = (2^d - 1)/(2^n - 1): kappa = g^H
+    u64 c;                // phi(y) = kappa^c: Lk(Y) = c log_y(Y) mod MK
+    u64 qlow;             // K_n = GF(2)[y]/(y^n + qlow)
+    const u64 *btab;      // [nb][256]: x -> Y0 | Y1 << n | Y2 << 2n
+    const u64 *T3;        // [MK + 1]: log(w + kappa^l); T3[MK] = log w
+    u32 shm_bytes;        // device: btab and the K-tower's tables staged
+};
+
 struct TowerDev {
     int m, nb;            // nb = ceil(d/8) byte tables
     u64 MK;               // 2^m - 1 (also the coordinate mask)
@@ -766,6 +828,8 @@ struct TowerDev {
     u32 tp_n;             // number of TP entries
     u32 shm_bytes;        // device: stage btab, LKn (and TP if shm_tp) in
     int shm_tp;           //   shared memory (0: read them from global)
+    CubicDev cb;          // round 9: the cubic tower's own fields (cb.n = 0:
+                          //   not a cubic tower)
 };
 
 GF2_HD u64 tower_coords(u64 x, const TowerDev &t) {
@@ -829,6 +893,155 @@ GF2_HD u64 tower_log(u64 x, u64 M, const TowerDev &t) {
         return h1 * tower_klog(pk & t.MK, t);
     const u64 v = h1 * lb + t.T[l];             // h1*lb < M, T < M
     return v >= M ? v - M : v;
+}
+
+// ---------------------------------------------------------------------------
+// Cubic tower logs (round 9), for d = 3n with n even (6 | d; d = 54 is the
+// one that matters).  GF(2^d) = K(w) with K = GF(2^n) and [GF(2^d):K] = 3:
+// w^3 = y' for y' a root, in K, of the modulus q_n = y^n + qlow of the field
+// K_n = GF(2)[y]/(q_n) -- so phi: K_n -> K, y -> y', is an isomorphism and
+// "times y'" is a shift in K_n.  K* = <kappa>, kappa = g^H with
+// H = (2^d - 1)/(2^n - 1), and y' = kappa^c.  (w = g^(cH/3): 3 | H as n is
+// even, and w^3 = y' is no cube in K, so w is cubic over K.)
+// Every x != 0 is x = Y0 + Y1 w + Y2 w^2 with Yi = phi of n-bit polynomials
+// (a GF(2)-linear split, byte tables), and with
+//     t = Y1 + Y2 w,     r = t x = (Y0 Y1 + y Y2^2) + (Y1^2 + Y0 Y2) w
+// (the w^2 terms cancel, w^3 = y'), x = r/t with r and t LINEAR in w: the
+// rational reconstruction of RR, over K instead of GF(2).  (x in K*: r = Y0,
+// t = 1.)  With ly(Y) = log_y(Y) in K_n, phi(Y) = y'^ly(Y) = kappa^(c ly(Y)),
+// so a linear a + b w with b != 0 is phi(b) (w + y'^(ly(a) - ly(b))) and
+//     log(a + b w) = H (c ly(b) mod MK) + T3[(ly(a) - ly(b)) mod MK]
+//     log(a)       = H (c ly(a) mod MK)                       (b = 0)
+// where T3[l] = log(w + y'^l) for l < MK, T3[MK] = log w (a = 0), and
+// T3[MK + 1] = 0, the slot of a factor in K (b = 0): every class reads T3
+// twice, without branches.  T3 has 2^n + 1 entries -- 2 MB at d=54, a
+// table L2 keeps, against the 1 GB T of the quadratic tower (a DRAM read
+// per class); the ly come from the classic tower of K_n (tables of 2^(n/2)
+// entries, in shared memory), four per class, and the K-parts of log r and
+// log t need ONE product by c: H ((c (ly(lead r) - ly(lead t))) mod MK).
+// Verified for every x at d = 6, 12, 18 by a prototype, by t_cubic, and in
+// the selftests (log(g^u) == u) at every 6 | d <= 54.
+//
+// Two versions: cubic_parts<D>, the sieve's (n, the moduli and every loop
+// bound compile-time constants, branch-free; ~400 instructions where a
+// version on the general tower code took ~4700 -- four inlined tower logs,
+// each with the subfield tower's loops -- and blew the instruction cache),
+// and cubic_parts_rt, the checks' (runtime d, the general tower_log of K_n).
+
+// p * QL for a compile-time QL: one shift and XOR per tap
+template <u64 QL>
+GF2_HD u64 gf2c_mul_low(u64 p) {
+    u64 t = 0;
+    GF2D_UNROLL
+    for (int s = 0; s <= gf2_deg(QL); s++)
+        if ((QL >> s) & 1) t ^= p << s;
+    return t;
+}
+
+// p (degree <= 2N-1) mod y^N + gf2_qlow(N): two folds when 2 deg(qlow) <= N
+template <int N>
+GF2_HD u64 gf2c_reduce(u64 p) {
+    constexpr u64 QL = gf2_qlow(N), mask = ((u64)1 << N) - 1;
+    static_assert(2 * gf2_deg(QL) <= N && N <= 31, "gf2c_reduce: two folds");
+    const u64 t = gf2c_mul_low<QL>(p >> N);         // degree <= N - 1 + deg QL
+    return (p & mask) ^ (t & mask) ^ gf2c_mul_low<QL>(t >> N);
+}
+
+// ly(Y) = log_y(Y) in K_N, Y != 0, by the classic tower of K_N (t: its
+// byte tables, LK and T): tower_log's arithmetic with only the classic path
+// and every constant known.  Y = 0 returns a value that is never used.
+template <int N>
+GF2_HD u64 cubic_ly(u64 Y, const TowerDev &t) {
+    constexpr int m = N / 2, nb = (N + 7) / 8;
+    constexpr u64 MKk = ((u64)1 << m) - 1, MKn = ((u64)1 << N) - 1;
+    constexpr u64 h1 = MKk + 2;                     // log_y(h) = 2^m + 1
+    u64 pk = 0;
+    GF2D_UNROLL
+    for (int k = 0; k < nb; k++) pk ^= t.btab[k * 256 + ((Y >> (8 * k)) & 255)];
+    const u64 ac = pk & MKk, bc = pk >> m;          // Y = a + b z over GF(2^m)
+    const u64 la = t.LK[ac], lb = t.LK[bc];         // (LK[0]: unused)
+    const u64 l = ac ? (la >= lb ? la - lb : la + MKk - lb) : MKk;
+    const u64 v = bc ? h1 * lb + t.T[l] : h1 * la;  // b = 0: Y in GF(2^m)
+    return v >= MKn ? v - MKn : v;
+}
+
+// Stage A of a cubic log: returns the K-part H (c (ly(lead r) - ly(lead t))
+// mod MK) of log r - log t, and the T3 slots of r and t (MK + 1 for a
+// factor in K)
+template <int D>
+GF2_HD u64 cubic_parts(u64 x, const TowerDev &t, u64 *ir, u64 *it) {
+    constexpr int N = D / 3, nb = (D + 7) / 8;
+    constexpr u64 MK = ((u64)1 << N) - 1;
+    constexpr u64 H = ((u64)1 << (2 * N)) + ((u64)1 << N) + 1;    // M / MK
+    static_assert(D % 6 == 0 && D >= 12 && D <= 54, "cubic_parts: 6 | D <= 54");
+    const CubicDev &C = t.cb;
+    u64 pk = 0;
+    GF2D_UNROLL
+    for (int k = 0; k < nb; k++) pk ^= C.btab[k * 256 + ((x >> (8 * k)) & 255)];
+    const u64 Y0 = pk & MK, Y1 = (pk >> N) & MK, Y2 = pk >> (2 * N);
+    const bool inK = !(Y1 | Y2);
+    // r = r0 + r1 w = t x, t = t0 + t1 w = Y1 + Y2 w; x in K*: r = Y0, t = 1
+    u64 r0 = gf2c_reduce<N>(gf2f_clmul32((u32)Y0, (u32)Y1) ^
+                            (gf2f_spread32((u32)Y2) << 1));        // + y Y2^2
+    const u64 r1 = gf2c_reduce<N>(gf2f_spread32((u32)Y1) ^
+                                  gf2f_clmul32((u32)Y0, (u32)Y2));
+    if (inK) r0 = Y0;                               // (r1 = 0 then)
+    const u64 t0 = inK ? 1 : Y1, t1 = Y2;
+    // four independent K-logs (one of a zero coefficient is never used)
+    const u64 l0 = cubic_ly<N>(r0, t), l1 = cubic_ly<N>(r1, t);
+    const u64 m0 = cubic_ly<N>(t0, t), m1 = cubic_ly<N>(t1, t);
+    const u64 lr = r1 ? l1 : l0, lt = t1 ? m1 : m0; // the leading coefficients'
+    *ir = !r1 ? MK + 1 : !r0 ? MK : (l0 >= l1 ? l0 - l1 : l0 + MK - l1);
+    *it = !t1 ? MK + 1 : !t0 ? MK : (m0 >= m1 ? m0 - m1 : m0 + MK - m1);
+    u64 p = C.c * (lr >= lt ? lr - lt : lr + MK - lt);    // < 2^(2N)
+    p = (p & MK) + (p >> N);
+    p = (p & MK) + (p >> N);
+    if (p >= MK) p -= MK;
+    return H * p;                                   // < H MK = M
+}
+
+// The same with d at run time (the checks and selftests' logs_dlog, the
+// host): the general tower_log of K_n for ly
+GF2_HD u64 cubic_parts_rt(u64 x, const TowerDev &t, u64 *ir, u64 *it) {
+    const CubicDev &C = t.cb;
+    const int n = C.n;
+    const u64 MK = C.MK;
+    u64 pk = 0;
+    for (int k = 0; k < C.nb; k++) pk ^= C.btab[k * 256 + ((x >> (8 * k)) & 255)];
+    const u64 Y0 = pk & MK, Y1 = (pk >> n) & MK, Y2 = pk >> (2 * n);
+    u64 r0 = Y0, r1 = 0, t0 = 1, t1 = 0;            // x in K*: r = Y0, t = 1
+    if (Y1 | Y2) {
+        const u64 qn = ((u64)1 << n) | C.qlow;
+        const u64 s2 = gf2f_sqr(Y2, C.qlow, n);
+        const u64 ys2 = (s2 << 1) ^ (((s2 >> (n - 1)) & 1) ? qn : 0);     // y Y2^2
+        r0 = gf2f_reduce(0, gf2f_clmul32((u32)Y0, (u32)Y1), C.qlow, n) ^ ys2;
+        r1 = gf2f_sqr(Y1, C.qlow, n) ^
+             gf2f_reduce(0, gf2f_clmul32((u32)Y0, (u32)Y2), C.qlow, n);
+        t0 = Y1; t1 = Y2;
+    }
+    auto ly = [&](u64 Y) { return tower_log(Y, MK, t); };
+    const u64 lr = ly(r1 ? r1 : r0), lt = ly(t1 ? t1 : t0);
+    *ir = *it = MK + 1;
+    if (r1) {
+        const u64 la = r0 ? ly(r0) : 0;
+        *ir = r0 ? (la >= lr ? la - lr : la + MK - lr) : MK;
+    }
+    if (t1) {
+        const u64 la = t0 ? ly(t0) : 0;
+        *it = t0 ? (la >= lt ? la - lt : la + MK - lt) : MK;
+    }
+    const u64 p = mulmod_u64(C.c, lr >= lt ? lr - lt : lr + MK - lt, MK);
+    return C.H * p;
+}
+
+// the whole log (selftests, the table check): x != 0
+GF2_HD u64 cubic_log(u64 x, u64 M, const TowerDev &t) {
+    u64 ir, it;
+    u64 v = cubic_parts_rt(x, t, &ir, &it);     // (sets ir and it first)
+    v += t.cb.T3[ir];
+    if (v >= M) v -= M;
+    const u64 tt = t.cb.T3[it];
+    return v >= tt ? v - tt : v + M - tt;
 }
 
 // ---------------------------------------------------------------------------
@@ -1228,6 +1441,150 @@ static inline TowerDev tower_dev(const TowerHost &W, const u64 *btab,
     return t;
 }
 
+// ---- the cubic tower (round 9), host side ----
+struct CubicHost {
+    int d = 0, n = 0, nb = 0;
+    u64 M = 0, MK = 0, H = 0, c = 0, qlow = 0, logw = 0;
+    u64 w = 0, kappa = 0, yp = 0;        // elements of GF(2^d) (yp = y' =
+                                         // kappa^c), for T3
+    std::vector<u64> btab;               // [nb][256]: packed coordinates
+    TowerHost kt;                        // the classic tower of K_n ...
+    std::vector<u64> kT;                 // ... and its T (2^(n/2) + 1 logs)
+};
+
+// Everything but T3 (built on the device by Pohlig-Hellman, see
+// coarse_sieve.cu): y' and c, w, the coordinates x -> (Y0, Y1, Y2) and the
+// tower of K_n.  False for d without the structure (6 does not divide d,
+// or d < 12) or on any failed consistency check.
+static inline bool cubic_build_host(int d, u64 q, CubicHost &C) {
+    C = CubicHost();
+    if (d % 6 || d < 12 || d > 54) return false;
+    const int n = d / 3;
+    const u64 M = ((u64)1 << d) - 1, MK = ((u64)1 << n) - 1, H = M / MK;
+    if (H % 3) return false;
+    const u64 qn = find_primitive_poly(n);
+    if ((qn ^ ((u64)1 << n)) != gf2_qlow(n)) return false;
+    const u64 kappa = gf_pow(2, H, q, d);        // generates K*
+    auto qn_at = [&](u64 z) {                    // q_n(z) in GF(2^d), Horner
+        u64 acc = 0;
+        for (int i = n; i >= 0; i--) {
+            acc = gf_mul(acc, z, q, d);
+            if ((qn >> i) & 1) acc ^= 1;
+        }
+        return acc;
+    };
+    // y' = kappa^c, the first root of q_n among the powers of kappa (all n
+    // roots are generators of K*, as q_n is primitive)
+    u64 c = 0, z = 1;
+    for (u64 cc = 1; cc < MK; cc++) {
+        z = gf_mul(z, kappa, q, d);
+        if (gcd_u64(cc, MK) == 1 && !qn_at(z)) { c = cc; break; }
+    }
+    if (!c) return false;
+    const u64 yp = z;
+    const u64 logw = mulmod_u64(H / 3, c, M);
+    const u64 w = gf_pow(2, logw, q, d);
+    if (gf_mul(gf_mul(w, w, q, d), w, q, d) != yp) return false;
+    // basis yp^i w^j (i < n, j < 3) of GF(2^d) over GF(2), fully reduced,
+    // each vector labelled with its coordinate bit j*n + i
+    std::vector<u64> fv, lab;
+    std::vector<int> fpiv;
+    u64 wj = 1;
+    for (int j = 0; j < 3; j++, wj = gf_mul(wj, w, q, d)) {
+        u64 e = wj;
+        for (int i = 0; i < n; i++, e = gf_mul(e, yp, q, d)) {
+            fv.push_back(e);
+            lab.push_back((u64)1 << (j * n + i));
+        }
+    }
+    for (int r = 0; r < d; r++) {
+        int best = -1;
+        for (int t = r; t < d; t++)
+            if (fv[t] && (best < 0 || fv[t] > fv[best])) best = t;
+        if (best < 0) return false;              // not a basis
+        std::swap(fv[r], fv[best]); std::swap(lab[r], lab[best]);
+        const int p = 63 - __builtin_clzll(fv[r]);
+        for (int t = 0; t < d; t++)
+            if (t != r && (fv[t] >> p & 1)) { fv[t] ^= fv[r]; lab[t] ^= lab[r]; }
+        fpiv.push_back(p);
+    }
+    auto coord = [&](u64 e) {
+        u64 cc = 0, rr = 0;
+        for (int t = 0; t < d; t++)
+            if (e >> fpiv[t] & 1) { cc ^= lab[t]; rr ^= fv[t]; }
+        return rr == e ? cc : ~0ULL;
+    };
+    C.nb = (d + 7) / 8;
+    C.btab.assign((size_t)C.nb * 256, 0);
+    for (int kk = 0; kk < C.nb; kk++)
+        for (int byte = 0; byte < 256; byte++) {
+            const u64 cc = coord(((u64)byte << (8 * kk)) & M);
+            if (cc == ~0ULL) return false;
+            C.btab[(size_t)kk * 256 + byte] = cc;
+        }
+    // the coordinates reproduce x: x = phi(Y0) + phi(Y1) w + phi(Y2) w^2
+    {
+        auto phi = [&](u64 Y) {
+            u64 e = 0, zz = 1;
+            for (int i = 0; i < n; i++, zz = gf_mul(zz, yp, q, d)) if (Y >> i & 1) e ^= zz;
+            return e;
+        };
+        u64 s = 0x9E3779B97F4A7C15ULL ^ (u64)d;
+        for (int i = 0; i < 64; i++) {
+            s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+            const u64 x = s & M;
+            u64 pk = 0;
+            for (int kk = 0; kk < C.nb; kk++) pk ^= C.btab[(size_t)kk * 256 + ((x >> (8 * kk)) & 255)];
+            const u64 e = phi(pk & MK) ^ gf_mul(phi((pk >> n) & MK), w, q, d) ^
+                          gf_mul(phi(pk >> (2 * n)), gf_mul(w, w, q, d), q, d);
+            if (e != x) return false;
+        }
+    }
+    if (!tower_build_host(n, qn, C.kt, 0)) return false;    // classic
+    // its T, T[l] = log_y(h^l + y) and T[2^m - 1] = log_y(y) = 1 (h =
+    // y^(2^m + 1), m = n/2: tower_log's definitions with g = w = y), from a
+    // full log table of K_n (host only, 2^n entries)
+    {
+        std::vector<u32> lgn((size_t)MK + 1, 0xFFFFFFFFu);
+        u64 e = 1;
+        for (u64 i = 0; i < MK; i++) { lgn[e] = (u32)i; e = gf_mul(e, 2, qn, n); }
+        if (e != 1) return false;
+        const int mk = n / 2;
+        const u64 MKk = ((u64)1 << mk) - 1;
+        const u64 hk = gf_pow(2, MKk + 2, qn, n);
+        C.kT.assign((size_t)MKk + 1, 0);
+        u64 hl = 1;
+        for (u64 l = 0; l < MKk; l++, hl = gf_mul(hl, hk, qn, n)) {
+            const u32 lg = lgn[hl ^ 2];
+            if (lg == 0xFFFFFFFFu) return false;
+            C.kT[l] = lg;
+        }
+        C.kT[MKk] = 1;
+        // the K_n tower against the full table, on a sample
+        TowerDev kt = tower_dev(C.kt, C.kt.btab.data(), C.kt.LK.data(),
+                                C.kT.data(), nullptr, nullptr);
+        for (u64 x = 1; x <= MK; x += 1 + MK / 4096)
+            if (tower_log(x, MK, kt) != lgn[x]) return false;
+    }
+    C.d = d; C.n = n; C.M = M; C.MK = MK; C.H = H; C.c = c;
+    C.qlow = qn ^ ((u64)1 << n); C.logw = logw; C.w = w; C.kappa = kappa;
+    C.yp = yp;
+    return true;
+}
+
+// The cubic tower's TowerDev: the tower of K_n over the given pointers,
+// plus the cubic fields (T3 filled in later where it is built)
+static inline TowerDev cubic_dev(const CubicHost &C, const u64 *btab3,
+                                 const u64 *T3, const u64 *kbtab,
+                                 const u32 *kLK, const u64 *kT) {
+    TowerDev t = tower_dev(C.kt, kbtab, kLK, kT, nullptr, nullptr);
+    t.cb.n = C.n; t.cb.nb = C.nb;
+    t.cb.MK = C.MK; t.cb.H = C.H; t.cb.c = C.c; t.cb.qlow = C.qlow;
+    t.cb.btab = btab3; t.cb.T3 = T3;
+    t.cb.shm_bytes = 0;
+    return t;
+}
+
 struct PHPartHost { u64 P = 0, E = 0, K = 0, N = 0, G = 1, delta = 1, gamma = 1; int sbits = 1; };
 struct PHHost {
     int nparts = 0, chain = 0;
@@ -1319,9 +1676,12 @@ static bool ph_fit_tables(const u64 *P, int n, size_t budget, u64 max_giant,
 // part gets one exponent search, ~4M candidates at most).  False if none
 // fits (e.g. d=49: 2^49-1 = 127 * 4432676798593 would need ~8,000-33,000
 // giant steps per log with any table that fits on a card).
+// search_exponent = false (round 9: a plan for a few thousand logs, the
+// cubic tower's T3) takes E = M/P as it is: the search costs seconds per
+// distinct part, half a minute at d=48 (nine prime powers in 2^48 - 1).
 static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H,
                          const PHCostModel &cm = kPHCostScalar,
-                         u64 max_giant = 64) {
+                         u64 max_giant = 64, bool search_exponent = true) {
     const u64 M = ((u64)1 << d) - 1;
     std::vector<u64> primes = factor_u64(M), pp;   // prime powers p^k || M
     u64 rest = M;
@@ -1333,6 +1693,7 @@ static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H,
     const int n = (int)pp.size();
     std::vector<std::pair<u64, u64>> ecache;        // P -> best exponent
     auto exponent_for = [&](u64 P) {
+        if (!search_exponent) return M / P;
         for (auto &e : ecache) if (e.first == P) return e.second;
         u64 E = ph_best_exponent(d, M, P, primes, cm);
         ecache.push_back({P, E});

@@ -71,7 +71,7 @@ sieve_ref: sieve_ref.cpp gf2_small_field.h gf2_field_setup.h
 gf2_dlog_selftest: gf2_dlog_selftest.cpp gf2_dlog.h gf2_wide_field.h gf2_wide_setup.h
 	$(CXX) $(CXXFLAGS) -std=c++17 $(INC) -o $@ $<
 
-# (~110 kernel instantiations: expect several minutes; -pthread for the
+# (116 kernel instantiations: expect ~6 minutes; -pthread for the
 # watchdog thread, round 8)
 coarse_sieve: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h
 	$(NVCC) $(NVFLAGS) -std=c++17 $(INC) -o $@ $< -Xcompiler -pthread
