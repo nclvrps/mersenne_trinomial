@@ -1,0 +1,24 @@
+tests/bench.sh build/irred
+756839 100001 x5c73a5aee1619ac8 LOG
+   3.409773923 s  (/home/claude/r2/build/irred --no-ckpt 756839 100001)
+756839 100001 x5c73a5aee1619ac8 LOG
+   3.231240167 s  (/home/claude/r2/build/irred --no-ckpt --no-ec 756839 100001)
+756839 100001 x5c73a5aee1619ac8 LOG
+   3.891017357 s  (/home/claude/r2/build/irred --no-ckpt --isa avx2 756839 100001)
+756839 100001 x5c73a5aee1619ac8 LOG
+   8.730387246 s  (/home/claude/r2/build/irred --no-ckpt --isa generic 756839 100001)
+r = 136279841 :
+iter 20000/136279841 (  0.01%)  1.9 ms/iter  ETA 2.99 days  residue 3ddf923e79d51ff8  (verified to 0)
+iter 21000/136279841 (  0.02%)  1.91 ms/iter  ETA 3.01 days  residue 3028887f8fa16844  (verified to 0)
+r = 136279841 --no-ec:
+iter 20000/136279841 (  0.01%)  1.9 ms/iter  ETA 3.00 days  residue 3ddf923e79d51ff8
+iter 21000/136279841 (  0.02%)  1.84 ms/iter  ETA 2.91 days  residue 3028887f8fa16844
+r = 136279841 --threads 2:
+iter 40000/136279841 (  0.03%)  0.948 ms/iter  ETA 35.88 h  residue d5e21ebf4995acec  (verified to 0)
+iter 41000/136279841 (  0.03%)  0.945 ms/iter  ETA 35.75 h  residue 1e2656ad584e2e92  (verified to 0)
+r = 136279841 --threads 2 --nt:
+iter 22000/136279841 (  0.02%)  1.58 ms/iter  ETA 2.49 days  residue 43c19a41a8e34bd0  (verified to 0)
+iter 23000/136279841 (  0.02%)  1.71 ms/iter  ETA 2.70 days  residue 7e83701063b298e0  (verified to 0)
+r = 136279841 --nt:
+iter 10000/136279841 (  0.01%)  3.27 ms/iter  ETA 5.16 days  residue 9d928b892c08023a  (verified to 0)
+iter 11000/136279841 (  0.01%)  3.41 ms/iter  ETA 5.38 days  residue 6a751822f8190556  (verified to 0)

@@ -32,7 +32,7 @@ Nonetheless, if this test does confirm non-reducibility, it is desirable
 to take the time (eventually) to find a factor, for ease of verification.
 
 
-For r equal to any Mersenne prime exponent up to and including 74207281,
+For r equal to any Mersenne prime exponent up to 74207281,
 all of the irreducible trinomials have already been found by Brent et al.
 in 2016 and earlier.
 

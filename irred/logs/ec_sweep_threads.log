@@ -1,0 +1,2 @@
+r=1279 s=500 site=sq opts='--threads 2 --mt-min-words 1 --ec-block 8 --ec-window 4': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1275, harmless=4
+r=4423 s=1000 site=acc opts='--threads 2 --mt-min-words 1': injected=133 detected=133 right=133 wrong=0 

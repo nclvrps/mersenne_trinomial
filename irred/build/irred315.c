@@ -2165,7 +2165,7 @@ char *argv[];
 
     kn = 1;
     g = TRUE;
-    for (n = 2; n LE nm; n++) {	/* n EQ 1 never succeeds for trinomial, */
+    for (n = 2; n LE 1; n++) {	/* n EQ 1 never succeeds for trinomial, */
       nsv = n;			/* for n > 1 prob. of success about 1/(n+1) */
       kn = 2*kn + 1;		/* 2^n - 1 */
       for (j = kn >> WD; j GE 0; j--)

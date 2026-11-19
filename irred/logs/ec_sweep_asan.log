@@ -1,0 +1,4 @@
+r=1279 s=500 site=sq opts='--ec-block 8 --ec-window 4': injected=300 detected=300 right=300 wrong=0 | unchecked: silently wrong=300, harmless=0
+r=1279 s=500 site=acc opts='--ec-block 8 --ec-window 4': injected=60 detected=60 right=60 wrong=0 
+r=1279 s=500 site=chk opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0 
+r=1279 s=500 site=ver opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0 

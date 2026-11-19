@@ -1,0 +1,11 @@
+first part exit 2 (after 2592049)
+Resuming from irred_r6972593_s100001.ckpt (written 2026-11-19 00:46:29): 2592150/6972593 squarings done (37.18%) in 2.0 min
+Error checking: Gerbicz XOR chain, blocks of 165 squarings, windows of up to 165 blocks; map check passed
+Error checking: 263 windows verified
+All 6972593 squarings were error-checked
+6972593 100001 xe724e828890fa31e LOG
+Error checking cost: 27248 extra squarings (0.62%), 1.48 s in checks (0.72% of wall time)
+a1.err:4
+a2.err:6
+6972593 100001 xe724e828890fa31e LOG
+E2E PASS: xe724e828890fa31e, progress residues identical

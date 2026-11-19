@@ -1,2 +1,8 @@
-irred/irred
+build/irred
+build/irred014
+build/irred020
 build/irred315
+build/irred_asan
+build/irred_bug014
+build/irred_generic
+build/ref

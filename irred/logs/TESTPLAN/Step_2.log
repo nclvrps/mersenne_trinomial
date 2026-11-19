@@ -1,0 +1,320 @@
+# The test, as written with tail -1, produced no output.
+# Perhaps the irred program does not flush buffers when receiving a SIGTERM.
+# Or possibly it might be because I'm using Ubuntu 26.04,
+# which reimplemented the coreutils in Rust
+# and might not be fully compatible.
+
+$     for nt in "" --nt; do       for n in 1 2 3 4 6; do         echo "threads $n $nt";         timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000             --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1;       done;     done
+threads 1
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 2
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 3
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 4
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 6
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 1 --nt
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 2 --nt
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 3 --nt
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 4 --nt
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+threads 6 --nt
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+
+
+
+# Trying SIGINT instead also produced no output, and ended the shell loop
+
+$     for nt in "" --nt; do       for n in 1 2 3 4 6; do         echo "threads $n $nt";         timeout -s INT 9
+0 ../build/irred --no-ckpt --progress 2000             --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter' | tail -1;       done;     done
+threads 1
+
+
+
+# Removing "tail -1" worked.
+# On this Zen2 computer, --nt did indeed work better than not using it.
+# With --nt, there were no gains beyond using 2 threads.
+
+$     for nt in "" --nt; do       for n in 1 2 3 4 6; do         echo "threads $n $nt";         timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000             --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter';       done;     done
+threads 1
+iter 2000/136279841 (  0.00%)  2.46 ms/iter  ETA 3.88 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  2.4 ms/iter  ETA 3.78 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  2.43 ms/iter  ETA 3.83 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  2.41 ms/iter  ETA 3.80 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  2.41 ms/iter  ETA 3.80 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  2.38 ms/iter  ETA 3.75 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  2.4 ms/iter  ETA 3.79 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  2.39 ms/iter  ETA 3.77 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  2.4 ms/iter  ETA 3.78 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  2.41 ms/iter  ETA 3.80 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  2.38 ms/iter  ETA 3.76 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  2.4 ms/iter  ETA 3.78 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  2.4 ms/iter  ETA 3.79 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  2.4 ms/iter  ETA 3.79 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  2.4 ms/iter  ETA 3.78 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  2.39 ms/iter  ETA 3.77 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  2.4 ms/iter  ETA 3.79 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  2.4 ms/iter  ETA 3.78 days  residue f95dcc30a9978336  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 2
+iter 2000/136279841 (  0.00%)  1.86 ms/iter  ETA 2.94 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.86 ms/iter  ETA 2.93 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.87 ms/iter  ETA 2.96 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.86 ms/iter  ETA 2.93 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.86 ms/iter  ETA 2.93 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.86 ms/iter  ETA 2.93 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.85 ms/iter  ETA 2.92 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.86 ms/iter  ETA 2.93 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.87 ms/iter  ETA 2.96 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.9 ms/iter  ETA 3.00 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.87 ms/iter  ETA 2.95 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.87 ms/iter  ETA 2.95 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.86 ms/iter  ETA 2.93 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.87 ms/iter  ETA 2.95 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.86 ms/iter  ETA 2.93 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.86 ms/iter  ETA 2.93 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.87 ms/iter  ETA 2.95 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.86 ms/iter  ETA 2.94 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.85 ms/iter  ETA 2.92 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.86 ms/iter  ETA 2.94 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.87 ms/iter  ETA 2.94 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.86 ms/iter  ETA 2.94 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.86 ms/iter  ETA 2.93 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.87 ms/iter  ETA 2.94 days  residue ad8a4ffca2ad6200  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 3
+iter 2000/136279841 (  0.00%)  1.84 ms/iter  ETA 2.90 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.83 ms/iter  ETA 2.88 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.82 ms/iter  ETA 2.88 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.84 ms/iter  ETA 2.91 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.84 ms/iter  ETA 2.91 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.82 ms/iter  ETA 2.88 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.83 ms/iter  ETA 2.89 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.83 ms/iter  ETA 2.88 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.82 ms/iter  ETA 2.88 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.83 ms/iter  ETA 2.89 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.84 ms/iter  ETA 2.90 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.82 ms/iter  ETA 2.88 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.86 ms/iter  ETA 2.93 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.84 ms/iter  ETA 2.91 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.83 ms/iter  ETA 2.88 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.84 ms/iter  ETA 2.90 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.84 ms/iter  ETA 2.90 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.84 ms/iter  ETA 2.90 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.83 ms/iter  ETA 2.89 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.84 ms/iter  ETA 2.90 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.84 ms/iter  ETA 2.90 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.84 ms/iter  ETA 2.90 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.83 ms/iter  ETA 2.88 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.83 ms/iter  ETA 2.88 days  residue ad8a4ffca2ad6200  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 4
+iter 2000/136279841 (  0.00%)  1.72 ms/iter  ETA 2.71 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.72 ms/iter  ETA 2.71 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.7 ms/iter  ETA 2.69 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.7 ms/iter  ETA 2.68 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.71 ms/iter  ETA 2.70 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.73 ms/iter  ETA 2.72 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.74 ms/iter  ETA 2.75 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.73 ms/iter  ETA 2.72 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.72 ms/iter  ETA 2.72 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.76 ms/iter  ETA 2.78 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.69 ms/iter  ETA 2.67 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.72 ms/iter  ETA 2.72 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.74 ms/iter  ETA 2.74 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.72 ms/iter  ETA 2.71 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.69 ms/iter  ETA 2.66 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.68 ms/iter  ETA 2.65 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.72 ms/iter  ETA 2.71 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.72 ms/iter  ETA 2.70 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.74 ms/iter  ETA 2.74 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.74 ms/iter  ETA 2.75 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.71 ms/iter  ETA 2.69 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.7 ms/iter  ETA 2.68 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.78 ms/iter  ETA 2.80 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.76 ms/iter  ETA 2.77 days  residue ad8a4ffca2ad6200  (verified to 0)
+iter 50000/136279841 (  0.04%)  1.75 ms/iter  ETA 2.75 days  residue a5285e5b28565008  (verified to 0)
+iter 52000/136279841 (  0.04%)  1.73 ms/iter  ETA 2.73 days  residue 73ab032d8084d3e8  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 6
+iter 2000/136279841 (  0.00%)  1.71 ms/iter  ETA 2.69 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.7 ms/iter  ETA 2.68 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.71 ms/iter  ETA 2.70 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.78 ms/iter  ETA 2.80 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.77 ms/iter  ETA 2.80 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.7 ms/iter  ETA 2.69 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.72 ms/iter  ETA 2.72 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.71 ms/iter  ETA 2.70 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.71 ms/iter  ETA 2.69 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.72 ms/iter  ETA 2.71 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.81 ms/iter  ETA 2.85 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.8 ms/iter  ETA 2.83 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.73 ms/iter  ETA 2.74 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.7 ms/iter  ETA 2.68 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.68 ms/iter  ETA 2.65 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.71 ms/iter  ETA 2.70 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.69 ms/iter  ETA 2.66 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.69 ms/iter  ETA 2.67 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.69 ms/iter  ETA 2.67 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.87 ms/iter  ETA 2.95 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.76 ms/iter  ETA 2.77 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.73 ms/iter  ETA 2.73 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.69 ms/iter  ETA 2.66 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.69 ms/iter  ETA 2.67 days  residue ad8a4ffca2ad6200  (verified to 0)
+iter 50000/136279841 (  0.04%)  1.7 ms/iter  ETA 2.68 days  residue a5285e5b28565008  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 1 --nt
+iter 2000/136279841 (  0.00%)  1.84 ms/iter  ETA 2.90 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.77 ms/iter  ETA 2.79 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.8 ms/iter  ETA 2.84 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.79 ms/iter  ETA 2.83 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.78 ms/iter  ETA 2.80 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.77 ms/iter  ETA 2.80 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.77 ms/iter  ETA 2.80 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.77 ms/iter  ETA 2.79 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.78 ms/iter  ETA 2.81 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.78 ms/iter  ETA 2.81 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.79 ms/iter  ETA 2.82 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.78 ms/iter  ETA 2.80 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.84 ms/iter  ETA 2.91 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.78 ms/iter  ETA 2.81 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.76 ms/iter  ETA 2.78 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.78 ms/iter  ETA 2.80 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.77 ms/iter  ETA 2.79 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.8 ms/iter  ETA 2.83 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.79 ms/iter  ETA 2.83 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.77 ms/iter  ETA 2.80 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.77 ms/iter  ETA 2.79 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.77 ms/iter  ETA 2.80 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.77 ms/iter  ETA 2.80 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.79 ms/iter  ETA 2.82 days  residue ad8a4ffca2ad6200  (verified to 0)
+iter 50000/136279841 (  0.04%)  1.78 ms/iter  ETA 2.80 days  residue a5285e5b28565008  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 2 --nt
+iter 2000/136279841 (  0.00%)  1.52 ms/iter  ETA 2.40 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.53 ms/iter  ETA 2.41 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.52 ms/iter  ETA 2.40 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.53 ms/iter  ETA 2.41 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.52 ms/iter  ETA 2.40 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.52 ms/iter  ETA 2.40 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.52 ms/iter  ETA 2.40 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.52 ms/iter  ETA 2.39 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.52 ms/iter  ETA 2.39 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.53 ms/iter  ETA 2.42 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.53 ms/iter  ETA 2.42 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.52 ms/iter  ETA 2.40 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.52 ms/iter  ETA 2.39 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.52 ms/iter  ETA 2.39 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.52 ms/iter  ETA 2.40 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.52 ms/iter  ETA 2.40 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.53 ms/iter  ETA 2.42 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.53 ms/iter  ETA 2.41 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.52 ms/iter  ETA 2.40 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.53 ms/iter  ETA 2.42 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.53 ms/iter  ETA 2.41 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.52 ms/iter  ETA 2.40 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.53 ms/iter  ETA 2.41 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.55 ms/iter  ETA 2.44 days  residue ad8a4ffca2ad6200  (verified to 0)
+iter 50000/136279841 (  0.04%)  1.52 ms/iter  ETA 2.40 days  residue a5285e5b28565008  (verified to 0)
+iter 52000/136279841 (  0.04%)  1.53 ms/iter  ETA 2.40 days  residue 73ab032d8084d3e8  (verified to 0)
+iter 54000/136279841 (  0.04%)  1.52 ms/iter  ETA 2.39 days  residue d15e666b0520bc42  (verified to 0)
+iter 56000/136279841 (  0.04%)  1.52 ms/iter  ETA 2.40 days  residue e4f420c7b3b4c27e  (verified to 0)
+iter 58000/136279841 (  0.04%)  1.52 ms/iter  ETA 2.40 days  residue 596593d8e3ba9e3c  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 3 --nt
+iter 2000/136279841 (  0.00%)  1.5 ms/iter  ETA 2.36 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.49 ms/iter  ETA 2.35 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.49 ms/iter  ETA 2.35 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.49 ms/iter  ETA 2.35 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.49 ms/iter  ETA 2.35 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.49 ms/iter  ETA 2.35 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.49 ms/iter  ETA 2.35 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.49 ms/iter  ETA 2.35 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.49 ms/iter  ETA 2.35 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.5 ms/iter  ETA 2.37 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.49 ms/iter  ETA 2.35 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.49 ms/iter  ETA 2.36 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.49 ms/iter  ETA 2.35 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.49 ms/iter  ETA 2.36 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.49 ms/iter  ETA 2.35 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.49 ms/iter  ETA 2.35 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.49 ms/iter  ETA 2.36 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.49 ms/iter  ETA 2.35 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.49 ms/iter  ETA 2.35 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.49 ms/iter  ETA 2.34 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.49 ms/iter  ETA 2.35 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.49 ms/iter  ETA 2.35 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.5 ms/iter  ETA 2.36 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.49 ms/iter  ETA 2.35 days  residue ad8a4ffca2ad6200  (verified to 0)
+iter 50000/136279841 (  0.04%)  1.49 ms/iter  ETA 2.34 days  residue a5285e5b28565008  (verified to 0)
+iter 52000/136279841 (  0.04%)  1.53 ms/iter  ETA 2.41 days  residue 73ab032d8084d3e8  (verified to 0)
+iter 54000/136279841 (  0.04%)  1.56 ms/iter  ETA 2.46 days  residue d15e666b0520bc42  (verified to 0)
+iter 56000/136279841 (  0.04%)  1.51 ms/iter  ETA 2.38 days  residue e4f420c7b3b4c27e  (verified to 0)
+iter 58000/136279841 (  0.04%)  1.49 ms/iter  ETA 2.35 days  residue 596593d8e3ba9e3c  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 4 --nt
+iter 2000/136279841 (  0.00%)  1.52 ms/iter  ETA 2.39 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.49 ms/iter  ETA 2.35 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.62 ms/iter  ETA 2.55 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.56 ms/iter  ETA 2.46 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.51 ms/iter  ETA 2.39 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.51 ms/iter  ETA 2.39 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.51 ms/iter  ETA 2.38 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.51 ms/iter  ETA 2.37 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.5 ms/iter  ETA 2.37 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.5 ms/iter  ETA 2.36 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.51 ms/iter  ETA 2.38 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.5 ms/iter  ETA 2.36 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.5 ms/iter  ETA 2.36 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.5 ms/iter  ETA 2.36 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.5 ms/iter  ETA 2.36 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.51 ms/iter  ETA 2.37 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.5 ms/iter  ETA 2.36 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.5 ms/iter  ETA 2.36 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.51 ms/iter  ETA 2.37 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.5 ms/iter  ETA 2.36 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.5 ms/iter  ETA 2.37 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.49 ms/iter  ETA 2.34 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.49 ms/iter  ETA 2.35 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.5 ms/iter  ETA 2.37 days  residue ad8a4ffca2ad6200  (verified to 0)
+iter 50000/136279841 (  0.04%)  1.51 ms/iter  ETA 2.37 days  residue a5285e5b28565008  (verified to 0)
+iter 52000/136279841 (  0.04%)  1.49 ms/iter  ETA 2.35 days  residue 73ab032d8084d3e8  (verified to 0)
+iter 54000/136279841 (  0.04%)  1.51 ms/iter  ETA 2.38 days  residue d15e666b0520bc42  (verified to 0)
+iter 56000/136279841 (  0.04%)  1.5 ms/iter  ETA 2.37 days  residue e4f420c7b3b4c27e  (verified to 0)
+iter 58000/136279841 (  0.04%)  1.51 ms/iter  ETA 2.37 days  residue 596593d8e3ba9e3c  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'
+threads 6 --nt
+iter 2000/136279841 (  0.00%)  1.59 ms/iter  ETA 2.51 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.56 ms/iter  ETA 2.46 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.56 ms/iter  ETA 2.46 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.55 ms/iter  ETA 2.44 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.57 ms/iter  ETA 2.47 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.56 ms/iter  ETA 2.46 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.56 ms/iter  ETA 2.46 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.56 ms/iter  ETA 2.45 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.58 ms/iter  ETA 2.50 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.55 ms/iter  ETA 2.45 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.62 ms/iter  ETA 2.55 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.55 ms/iter  ETA 2.44 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.55 ms/iter  ETA 2.44 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.56 ms/iter  ETA 2.46 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.57 ms/iter  ETA 2.47 days  residue 97b488763a1f6c36  (verified to 0)
+iter 32000/136279841 (  0.02%)  1.56 ms/iter  ETA 2.45 days  residue c6972922de16e112  (verified to 0)
+iter 34000/136279841 (  0.02%)  1.58 ms/iter  ETA 2.49 days  residue 6ac793ada941294c  (verified to 0)
+iter 36000/136279841 (  0.03%)  1.55 ms/iter  ETA 2.45 days  residue f95dcc30a9978336  (verified to 0)
+iter 38000/136279841 (  0.03%)  1.57 ms/iter  ETA 2.47 days  residue a76b214b67a01204  (verified to 0)
+iter 40000/136279841 (  0.03%)  1.59 ms/iter  ETA 2.51 days  residue f03bbeff8d141eea  (verified to 0)
+iter 42000/136279841 (  0.03%)  1.57 ms/iter  ETA 2.47 days  residue b0bdffd2e05d647a  (verified to 0)
+iter 44000/136279841 (  0.03%)  1.55 ms/iter  ETA 2.45 days  residue 640c684670ea8536  (verified to 0)
+iter 46000/136279841 (  0.03%)  1.55 ms/iter  ETA 2.44 days  residue a48d5b130dd816ae  (verified to 0)
+iter 48000/136279841 (  0.04%)  1.56 ms/iter  ETA 2.47 days  residue ad8a4ffca2ad6200  (verified to 0)
+iter 50000/136279841 (  0.04%)  1.57 ms/iter  ETA 2.47 days  residue a5285e5b28565008  (verified to 0)
+iter 52000/136279841 (  0.04%)  1.54 ms/iter  ETA 2.42 days  residue 73ab032d8084d3e8  (verified to 0)
+iter 54000/136279841 (  0.04%)  1.56 ms/iter  ETA 2.46 days  residue d15e666b0520bc42  (verified to 0)
+iter 56000/136279841 (  0.04%)  1.55 ms/iter  ETA 2.45 days  residue e4f420c7b3b4c27e  (verified to 0)
+Terminated                 timeout -s TERM 90 ../build/irred --no-ckpt --progress 2000 --threads $n $nt 136279841 12338357 | grep --line-buffered '^iter'

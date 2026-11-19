@@ -1,0 +1,151 @@
+$ make
+mkdir -p build
+cc -O3 -march=native -fopenmp -Wall -Wextra -o build/irred irred/irred.c -lm
+cc -O3 -fopenmp -Wall -Wextra -o build/irred_generic irred/irred.c -lm
+cc -O1 -g -fopenmp -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -fno-omit-frame-pointer -o build/irred_asan irred/irred.c -lm
+cc -O2 -o build/ref tools/ref.c
+cp reference/irred315_orig.c build/irred.c
+cd build && patch -s -p0 < ../reference/irred315_compile.patch
+sed -i 's/for (n = 2; n LE nm; n++) {\t\/\* n EQ 1/for (n = 2; n LE 1; n++) {\t\/* n EQ 1/' build/irred.c
+grep -q 'for (n = 2; n LE 1; n++)' build/irred.c
+mv build/irred.c build/irred315.c
+cc -O1 -w -o build/irred315 build/irred315.c
+cc -O3 -march=native -w -o build/irred020 reference/irred_0.20.c -lm
+
+
+
+$ make selftest
+build/irred --selftest | tail -1
+selftest passed
+build/irred --selftest --isa avx2 | tail -1
+selftest passed
+build/irred --selftest --isa generic | tail -1
+selftest passed
+build/irred_generic --selftest | tail -1
+selftest passed
+build/irred_asan --selftest | tail -1
+selftest passed
+build/irred --selftest --threads 2 | tail -1
+selftest passed
+build/irred_asan --selftest --threads 3 | tail -1
+selftest passed
+
+
+
+$ build/irred --selftest
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.21, 20261119)
+Interleave: AVX2
+selftest CRC slice-by-8: ok
+selftest r=  607 s=  105 checked  : ok
+selftest r= 1279 s=  418 checked  : ok
+selftest r= 1279 s=  500 checked  : ok
+selftest r= 1279 s=  438 checked  : ok
+selftest r= 4423 s= 1000 checked  : ok
+selftest r= 4423 s= 3015 checked  : ok
+selftest r= 4423 s= 2247 checked  : ok
+selftest r= 4423 s= 2098 checked  : ok
+selftest r= 9689 s= 4187 checked  : ok
+selftest r=  607 s=  105 unchecked: ok
+selftest r= 1279 s=  418 unchecked: ok
+selftest r= 1279 s=  500 unchecked: ok
+selftest r= 1279 s=  438 unchecked: ok
+selftest r= 4423 s= 1000 unchecked: ok
+selftest r= 4423 s= 3015 unchecked: ok
+selftest r= 4423 s= 2247 unchecked: ok
+selftest r= 4423 s= 2098 unchecked: ok
+selftest r= 9689 s= 4187 unchecked: ok
+[ec-fault: flipped bit 60 of word 73 at sq #100]
+ERROR CHECK FAILED for squarings 1..1024 (32 blocks of 32): hardware or software fault; redoing them
+selftest fault sq:100 (r=9689 s=4187): ok (1 check failure, result right)
+[ec-fault: flipped bit 32 of word 1 at sq #4000]
+ERROR CHECK FAILED for squarings 3073..4096 (32 blocks of 32): hardware or software fault; redoing them
+selftest fault sq:4000 (r=4423 s=1000): ok (1 check failure, result right)
+[ec-fault: flipped bit 1 of word 31 at sq #4423]
+ERROR CHECK FAILED for squarings 4417..4423 (1 blocks of 7): hardware or software fault; redoing them
+selftest fault sq:4423 (r=4423 s=1000): ok (1 check failure, result right)
+[ec-fault: flipped bit 37 of word 49 at acc #3]
+ERROR CHECK FAILED for squarings 1..1024 (32 blocks of 32): hardware or software fault; redoing them
+selftest fault acc:3 (r=9689 s=4187): ok (1 check failure, result right)
+[ec-fault: flipped bit 46 of word 68 at chk #2]
+ERROR CHECK FAILED for squarings 1025..2048 (32 blocks of 32): hardware or software fault; redoing them
+selftest fault chk:2 (r=4423 s=1000): ok (1 check failure, result right)
+[ec-fault: flipped bit 46 of word 83 at ver #2]
+ERROR CHECK FAILED for squarings 2049..3072 (32 blocks of 32): hardware or software fault; redoing them
+The verified state at 2048 was damaged in memory; falling back to the last checkpoint
+No checkpoint to fall back on: restarting from the beginning
+selftest fault ver:2 (r=9689 s=4187): ok (1 check failure, result right)
+selftest linear bug: ok (Gerbicz chain cannot see it, map check catches it)
+selftest passed
+
+
+
+$ make test
+build/irred --selftest | tail -1
+selftest passed
+build/irred --selftest --isa avx2 | tail -1
+selftest passed
+build/irred --selftest --isa generic | tail -1
+selftest passed
+build/irred_generic --selftest | tail -1
+selftest passed
+build/irred_asan --selftest | tail -1
+selftest passed
+build/irred --selftest --threads 2 | tail -1
+selftest passed
+build/irred_asan --selftest --threads 3 | tail -1
+selftest passed
+tests/cmp.sh build
+reference comparison: checks=5124 failures=0
+3.15 comparison (low 32 bits, r = 44497, 132049): failures=0
+tests/ec_sweep_all.sh build/irred
+r=1279 s=500 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1275, harmless=4
+r=1279 s=418 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1279, harmless=0
+r=1279 s=500 site=sq opts='--ec-block 8 --ec-window 4': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1275, harmless=4
+r=4423 s=2098 site=sq opts='--isa generic': injected=4423 detected=4423 right=4423 wrong=0 | unchecked: silently wrong=4423, harmless=0
+r=1279 s=500 site=acc opts='--ec-block 8 --ec-window 4': injected=119 detected=119 right=119 wrong=0
+r=4423 s=1000 site=acc opts='': injected=133 detected=133 right=133 wrong=0
+r=1279 s=500 site=chk opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0
+r=4423 s=1000 site=chk opts='': injected=6 detected=6 right=6 wrong=0
+r=1279 s=500 site=ver opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0
+r=4423 s=1000 site=ver opts='': injected=6 detected=6 right=6 wrong=0
+fault sweep: all injected faults detected, all results right
+tests/ckpt_test.sh build/irred build/irred020
+== reference run (no checkpoints)
+   result xa3cbe3b7b97817ce
+== SIGINT, then resume
+PASS: exit status 2 after SIGINT
+PASS: signal: block finished and verified first
+PASS: checkpoints are of verified states
+PASS: three generations
+PASS: resumed
+PASS: resumed result matches
+PASS: all squarings checked
+PASS: progress residues match the uninterrupted run
+PASS: files removed at the end
+== corrupted newest checkpoint -> falls back to .ckpt.1
+PASS: damaged .ckpt skipped, .ckpt.1 used
+PASS: result after fallback matches
+== mismatched and foreign files are ignored
+PASS: mismatch / foreign files ignored, fresh start
+PASS: --ckpt-mins 0: only the signal checkpoint
+== lock
+PASS: second process refused
+== a run started by irred 0.20 (version 1 checkpoint) continues
+PASS: v1 checkpoint recognised
+PASS: 0.20 -> 0.21 result matches
+PASS: reports the 438535 unchecked squarings
+== --no-ec segment, then checked
+PASS: --no-ec squarings counted (303176)
+== faults in a checkpointed run
+PASS: sq fault: detected, redone, result right
+PASS: damaged verified state: detected, result right
+     The verified state at 515818 was damaged in memory; falling back to the last checkpoint
+checkpoint tests: 20 passed, 0 failed
+tests/bug014_test.sh
+4423 3015: true x95868bc52f115a6e | 0.14 xe25996b6 | bug + chain only: x0423c7a7e25996b6 (0 check failures) | with map check: exit 3
+4423 2247: true xd7951e1a96d918fc | 0.14 xfa1fcb08 | bug + chain only: xc0d4b519fa1fcb08 (0 check failures) | with map check: exit 3
+4423 1991: true x3aea5edbedc0df84 | 0.14 x0ef4cf9c | bug + chain only: xfc5f3dcd0ef4cf9c (0 check failures) | with map check: exit 3
+4423 1000 (deltaq != 0): true y6b0463063ed3a0e8, bug copy y6b0463063ed3a0e8
+4423 2098 (deltaq != 0): true irreducible, bug copy irreducible
+0.14 bug: invisible to the chain, caught by the map check

@@ -1,0 +1,1 @@
+Step 2: the shell script produced no iter output as written, I had to remove the "tail -1". Note: I am using Ubuntu 26.04 which reimplements coreutils in Rust, so it may be a backwards compatibility issue. Or perhaps the irred program does not do a buffer flush when it receives a SIGTERM?

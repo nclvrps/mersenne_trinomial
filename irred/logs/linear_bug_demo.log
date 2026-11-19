@@ -1,0 +1,11 @@
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.21, 20261119)
+Testing x^4423 + x^1000 + 1 (via its reciprocal x^4423 + x^3423 + 1)
+MAP CHECK FAILED: the fast squaring code disagrees with the reference implementation for r = 4423, s = 1000 (AVX-512BW interleave).
+This is a bug (or a persistent hardware fault); nothing was computed.
+exit=3
+---
+Error checking: 6 windows verified
+All 4423 squarings were error-checked
+4423 1000 y98cae405630e114c LOG
+exit=0
+true answer: 4423 1000 y6b0463063ed3a0e8
