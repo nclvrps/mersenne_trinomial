@@ -217,6 +217,48 @@ GF2_HD bool odd_div_test(u64 x, const OddDiv &o, u64 *quot) {
     return true;
 }
 
+// Round 5: exact arithmetic for the irregular classes (see coarse_sieve.cu,
+// "irregular classes").  No division anywhere.
+
+// 2-adic inverse of an odd g: g^-1 mod 2^64 (g*g == 1 mod 8 gives 3 bits,
+// each Newton step doubles them: 3, 6, 12, 24, 48, 96).  For g | x the
+// exact quotient x/g is then simply x * g^-1 (mod 2^64).
+GF2_HD u64 inv_2adic(u64 g) {
+    u64 x = g;
+    for (int i = 0; i < 5; i++) x *= 2 - g * x;
+    return x;
+}
+
+// floor(a*b / M) for M = 2^d - 1, a < 2^d, b <= M: with a*b = A*2^d + B,
+// a*b = A*M + (A + B), and A < b <= M, B <= M, so the floor is A or A + 1.
+GF2_HD u64 floor_mul_div_m(u64 a, u64 b, int d, u64 M) {
+#if defined(__CUDA_ARCH__)
+    const u64 lo = a * b, hi = __umul64hi(a, b);
+#else
+    const u64 a0 = (u32)a, a1 = a >> 32, b0 = (u32)b, b1 = b >> 32;
+    const u64 p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+    const u64 mid = (p00 >> 32) + (u32)p01 + (u32)p10;
+    const u64 lo = (mid << 32) | (u32)p00;
+    const u64 hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+#endif
+    const u64 A = (lo >> d) | (hi << (64 - d));     // a*b < 2^(2d): fits
+    const u64 B = lo & M;
+    return A + (A + B >= M ? 1 : 0);
+}
+
+// x mod n for x < M, n = M/g (so x/n = x*g/M exactly): x - n*floor(x*g/M)
+GF2_HD u64 mod_divisor_m(u64 x, u64 n, u64 g, int d, u64 M) {
+    return x - n * floor_mul_div_m(x, g, d, M);
+}
+
+// omega(2^d - 1), the number of distinct primes of M, for d < 64 (compile-
+// time loop bounds for the per-class divisibility tests; the host checks
+// it against its own factorization)
+GF2_HD constexpr int gf2_npf(int d) {
+    return (int)"\0\0\1\1\2\1\2\1\3\2\3\2\4\1\3\3\4\1\4\1\5\3\4\2\6\3\3\3\6\3\6\1"
+                "\5\4\3\4\10\2\3\4\7\2\6\3\7\6\4\3\11\2\7\5\7\3\6\6\10\4\6\2\13\1\3\6"[d];
+}
+
 // ---------------------------------------------------------------------------
 // Is u the least of its d-bit rotations?  Requires u odd and u < 2^(d-1)
 // (the only candidates the sweep offers).
@@ -309,7 +351,9 @@ GF2_HD u64 fkm_next(u64 w, int n, int *p) {
     return fkm_extend((w >> b) | 1, n - b, n);
 }
 
-#if defined(__CUDACC__)
+// (device pass only: the host compiler of an nvcc build would warn about
+// the unknown pragma under -Wall)
+#if defined(__CUDA_ARCH__)
 #define GF2D_UNROLL _Pragma("unroll")
 #else
 #define GF2D_UNROLL
@@ -485,7 +529,7 @@ GF2_HD void bs_pow_g(const u32 (&U)[D], u32 (&G)[D]) {
     GF2D_UNROLL
     for (int k = 0; k < D; k++) G[k] = 0;
     G[0] = ~0u;                                  // 1 in every slot
-#if defined(__CUDACC__)
+#if defined(__CUDA_ARCH__)
 #pragma unroll 1
 #endif
     for (int b = D - 2; b >= 0; b--) {
@@ -757,12 +801,116 @@ GF2_HD u64 ph_log(u64 x, u64 M, int d, u64 qlow, const PHDev &ph) {
 }
 
 // ---------------------------------------------------------------------------
+// RR logs (round 5): rational reconstruction against a table of the logs of
+// ALL polynomials of degree <= dh = floor(d/2).
+//
+// The extended Euclidean algorithm on (q, y), stopped at the first remainder
+// r of degree <= dh, gives r = t*y (mod q) with deg t = d - deg(previous
+// remainder) <= d - dh - 1 <= dh.  So every y != 0 is r/t with both of
+// degree <= dh, and log y = L[r] - L[t] with L[P] = log_g(P) for the
+// 2^(dh+1) polynomials P (field elements, as deg P < d).  No smoothness
+// test, no failure: one half-gcd and two reads of a table of 2^(dh+1) logs
+// (2^25 entries = 256 MB at d=49) per class.  L is built from the logs of
+// the irreducible polynomials of degree <= dh (~2^(dh+1)/dh of them) by
+// multiplicativity; those come from Pohlig-Hellman -- for d=49, where M =
+// 127 * 4432676798593 has no table-sized parts, with many giant steps per
+// log, which is affordable for 1.47M factor-base elements but not for the
+// 1.15e13 classes.  The cofactors t never exceed degree dh <= 27, so they
+// are u32.
+struct RRDev {
+    const u64 *L;          // [2^(dh+1)] logs; L[0] unused
+    int dh;
+};
+
+// the half-gcd: r = t * y mod q (q = x^d + qlow), deg r, deg t <= dh
+GF2_HD void rr_split_rt(u64 y, u64 q, int d, int dh, u64 *r_out, u32 *t_out) {
+    u64 a = q, b = y;
+    u32 ta = 0, tb = 1;
+    int da = d, db = 63 - gf2f_clz64(b);
+    while (db > dh) {
+        const int s = da - db;                  // reduce a by b once
+        a ^= b << s;
+        ta ^= tb << s;
+        da = 63 - gf2f_clz64(a);                // a != 0: gcd(q, y) = 1
+        const bool sw = da < db;                // keep deg a >= deg b
+        const u64 na = sw ? b : a, nb = sw ? a : b;
+        const u32 nta = sw ? tb : ta, ntb = sw ? ta : tb;
+        const int nda = sw ? db : da, ndb = sw ? da : db;
+        a = na; b = nb; ta = nta; tb = ntb; da = nda; db = ndb;
+    }
+    *r_out = b;
+    *t_out = tb;
+}
+
+template <int D>
+GF2_HD void rr_split(u64 y, u64 *r_out, u32 *t_out) {
+    rr_split_rt(y, ((u64)1 << D) | gf2_qlow(D), D, D / 2, r_out, t_out);
+}
+
+GF2_HD u64 rr_log(u64 y, u64 q, int d, u64 M, const RRDev &rr) {
+    u64 r;
+    u32 t;
+    rr_split_rt(y, q, d, rr.dh, &r, &t);
+    const u64 lr = rr.L[r], lt = rr.L[t];
+    return lr >= lt ? lr - lt : lr + M - lt;
+}
+
+// ---------------------------------------------------------------------------
 // host-side builders (one-off per degree; bit-serial gf_mul is fine here)
 #include "gf2_wide_setup.h"
 #include <cstring>
 #include <vector>
 #include <algorithm>
 #include <functional>
+
+// ---- RR tables, host side ----
+// Polynomials of degree <= dh are the integers [1, 2^(dh+1)).  spf[P] is the
+// least irreducible factor of P (0 for P irreducible, or P = 1): a sieve as
+// Eratosthenes', ~2^(dh+1) * H(dh) carry-less products (3 s at dh = 24;
+// ~1e9, perhaps half a minute, at dh = 27), and P is irreducible iff
+// nothing marked it before P.
+static void rr_sieve(int dh, std::vector<u32> &spf, std::vector<u32> &irr) {
+    const u32 n = 1u << (dh + 1);
+    spf.assign(n, 0);
+    irr.clear();
+    for (u32 P = 2; P < n; P++) {
+        if (spf[P]) continue;
+        irr.push_back(P);
+        const int dp = 31 - __builtin_clz(P);
+        const u32 qn = 1u << (dh + 1 - dp);      // multiples P*Q, deg <= dh
+        for (u32 Q = 2; Q < qn; Q++) {
+            const u32 m = (u32)gf2f_clmul32(P, Q);
+            if (!spf[m]) spf[m] = P;
+        }
+    }
+}
+
+// P / f for f | P (carry-less long division)
+static u32 rr_divexact(u32 P, u32 f) {
+    const int df = 31 - __builtin_clz(f);
+    u32 q = 0;
+    for (int k = 31 - __builtin_clz(P) - df; k >= 0; k--)
+        if ((P >> (k + df)) & 1) { P ^= f << k; q |= 1u << k; }
+    return q;
+}
+
+// L[P] = log P for every P of degree <= dh from the logs of the
+// irreducibles (irr[i] has log irr_log[i]): L[f*Q] = L[f] + L[Q] (mod M),
+// in increasing order so L[Q] (deg Q < deg P) is always ready
+static void rr_fill(int dh, u64 M, const std::vector<u32> &spf,
+                    const std::vector<u32> &irr,
+                    const std::vector<u64> &irr_log, std::vector<u64> &L) {
+    const u32 n = 1u << (dh + 1);
+    L.assign(n, 0);
+    for (size_t i = 0; i < irr.size(); i++) L[irr[i]] = irr_log[i];
+    L[1] = 0;
+    for (u32 P = 2; P < n; P++) {
+        const u32 f = spf[P];
+        if (!f) continue;                        // irreducible: set above
+        const u64 s = L[f] + L[rr_divexact(P, f)];
+        L[P] = s >= M ? s - M : s;
+    }
+}
 #include <cmath>
 
 struct TowerHost {
@@ -1062,8 +1210,8 @@ static bool ph_fit_tables(const u64 *P, int n, size_t budget, u64 max_giant,
 // within budget_bytes, the cheapest exponents, CRT constants -- the split
 // with the least model cost over all splits whose tables fit (each distinct
 // part gets one exponent search, ~4M candidates at most).  False if none
-// fits (e.g. d=49: 2^49-1 = 127 * 4432676798593 would need ~16,000 giant
-// steps per log with any table that fits on a card).
+// fits (e.g. d=49: 2^49-1 = 127 * 4432676798593 would need ~8,000-33,000
+// giant steps per log with any table that fits on a card).
 static bool ph_plan_host(int d, u64 q, size_t budget_bytes, PHHost &H,
                          const PHCostModel &cm = kPHCostScalar,
                          u64 max_giant = 64) {

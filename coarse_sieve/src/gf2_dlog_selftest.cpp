@@ -1,9 +1,9 @@
-// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, round 3)
+// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, rounds 3-5)
 //
 //   g++ -O2 -march=native -std=c++17 -I. -Icommon -o gf2_dlog_selftest gf2_dlog_selftest.cpp
 //   (or: make gf2_dlog_selftest)
-//   ./gf2_dlog_selftest [dlo dhi [budget_MB [samples [tower_dmax]]]]
-//                                      (default 2 55 1536 20000 44)
+//   ./gf2_dlog_selftest [dlo dhi [budget_MB [samples [tower_dmax [rr_dmax]]]]]
+//                                      (default 2 55 1536 20000 44 47)
 //
 // 1. fast arithmetic vs the bit-serial reference in gf2_wide_field.h, d=2..55:
 //    gf2f_mul / gf2f_sqr / gf2f_antilog vs gf_mul / gf_sqr / repeated
@@ -30,6 +30,12 @@
 //    that f divides x^r + x^s0 + 1 (r = 136279841), by arithmetic mod f;
 //    for even d <= tower_dmax also that the tower's log is the same
 // 7. the packed best[] key format for d <= 55 (order and round trip)
+// 8. RR (round 5): the half-gcd at every d = 3..55 (r = t*y mod q by the
+//    bit-serial reference multiply, deg r, deg t <= d/2, compile-time and
+//    run-time moduli agree), the factor-base sieve against trial division
+//    for d/2 <= 14, and RR logs end to end up to rr_dmax (default 47; d=49
+//    is skipped -- its factor-base logs need ~2e10 giant steps, a GPU job)
+//    with the factor-base logs by PH on the host
 //
 // Exit status 0 iff everything matches.  The same code runs on the GPU in
 // coarse_sieve_wide --selftest-logs; this is the CPU-side cross-check.
@@ -336,6 +342,98 @@ static int test_dlog(int dlo, int dhi, size_t budget, u64 samples, int tower_dma
     return fails;
 }
 
+// ---------------------------------------------------------------- part 8
+// RR: the half-gcd's contract, for random y at degree D
+template <int D> static u64 rr_split_check(u64 &n) {
+    const u64 q = find_primitive_poly(D), mask = ((u64)1 << D) - 1;
+    u64 bad = 0;
+    for (int i = 0; i < 3000; i++) {
+        u64 y = rng() & mask;
+        if (!y) y = 1;
+        u64 r, r2;
+        u32 t, t2;
+        rr_split<D>(y, &r, &t);
+        rr_split_rt(y, q, D, D / 2, &r2, &t2);
+        n++;
+        if (r != r2 || t != t2 || !t || (r >> (D / 2 + 1)) || (t >> (D / 2 + 1)) ||
+            gf_mul(t, y, q, D) != r) bad++;
+    }
+    return bad;
+}
+template <int D> struct RRAll { static void go(u64 &n, u64 &b) { RRAll<D - 1>::go(n, b); b += rr_split_check<D>(n); } };
+template <> struct RRAll<2> { static void go(u64 &, u64 &) {} };
+
+static u32 poly_mod32(u32 a, u32 f) {
+    const int df = 31 - __builtin_clz(f);
+    for (int k = 31 - __builtin_clz(a | 1) - df; k >= 0; k--)
+        if ((a >> (k + df)) & 1) a ^= f << k;
+    return a;
+}
+
+// the sieve vs trial division: the irreducibles of degree <= dh in order, and
+// spf[P] = the least (irreducible) divisor of every reducible P
+static u64 test_rr_sieve(int dh, u64 &n) {
+    std::vector<u32> spf, irr, ref;
+    rr_sieve(dh, spf, irr);
+    u64 bad = 0;
+    for (u32 P = 2; P < (2u << dh); P++) {
+        const int dp = 31 - __builtin_clz(P);
+        u32 least = 0;
+        for (u32 f = 2; 2 * (31 - __builtin_clz(f)) <= dp; f++)
+            if (!poly_mod32(P, f)) { least = f; break; }
+        if (!least) ref.push_back(P);
+        if (spf[P] != least) bad++;
+        n++;
+    }
+    if (ref != irr) bad++;
+    return bad;
+}
+
+static int test_rr(int dlo, int dhi, size_t budget, u64 samples) {
+    int fails = 0;
+    for (int d = std::max(dlo, 3); d <= dhi; d++) {
+        if (d == 49) { printf("d=49 RR    skipped (factor-base logs: a GPU job)\n"); continue; }
+        const double t0 = now();
+        const u64 q = find_primitive_poly(d), ql = q ^ ((u64)1 << d), M = ((u64)1 << d) - 1;
+        const int dh = d / 2;
+        u64 gp[64]; gp[0] = 2;
+        for (int t = 1; t < d; t++) gp[t] = gf_sqr(gp[t - 1], q, d);
+        PHHost H; PHTabs tb; PHDev D{};
+        if (!ph_plan_host(d, q, budget, H, kPHCostScalar)) {
+            printf("d=%2d RR    no PH plan for the factor-base logs  <-- FAIL\n", d);
+            fails++;
+            continue;
+        }
+        ph_fill_host(H, ql, d, tb, D);
+        std::vector<u32> spf, irr;
+        rr_sieve(dh, spf, irr);
+        std::vector<u64> fbl(irr.size()), L;
+        u64 badfb = 0;
+        for (size_t i = 0; i < irr.size(); i++) {
+            fbl[i] = ph_log(irr[i], M, d, ql, D);
+            if (fbl[i] >= M || gf2f_antilog(fbl[i], ql, d, gp) != irr[i]) badfb++;
+        }
+        rr_fill(dh, M, spf, irr, fbl, L);
+        const RRDev rr{L.data(), dh};
+        const bool exh = d <= 20;
+        const u64 nchk = exh ? M : samples;
+        u64 bad = 0, e = 1;
+        for (u64 k = 0; k < nchk; k++) {
+            const u64 u = exh ? k : rng() % M;
+            if (!exh) e = gf2f_antilog(u, ql, d, gp);
+            if (rr_log(e, q, d, M, rr) != u) bad++;
+            if (exh) e = gf_mulx(e, q, d);
+        }
+        printf("d=%2d RR    %s %8llu logs: %llu wrong | %zu irreducibles of degree <= %d "
+               "(%llu bad), table %.0f MB, %.1fs\n", d, exh ? "all    " : "sampled",
+               (ull)nchk, (ull)bad, irr.size(), dh, (ull)badfb, L.size() * 8 / 1048576.0,
+               now() - t0);
+        if (bad || badfb) fails++;
+        fflush(stdout);
+    }
+    return fails;
+}
+
 // ---------------------------------------------------------------- part 6
 // minimal polynomial of a (coefficient mask), as in coarse_sieve's kernels
 static u64 minpoly_mask(u64 a, u64 q, int d) {
@@ -439,6 +537,7 @@ int main(int argc, char **argv) {
     size_t budget = (size_t)(argc > 3 ? atol(argv[3]) : 1536) << 20;
     u64 samples = argc > 4 ? strtoull(argv[4], 0, 10) : 20000;
     int tower_dmax = argc > 5 ? atoi(argv[5]) : 44;
+    int rr_dmax = argc > 6 ? atoi(argv[6]) : 47;
     if (tower_dmax > 54) tower_dmax = 54;
     if (dlo < 2) dlo = 2;
     if (dhi > 55) dhi = 55;
@@ -457,7 +556,15 @@ int main(int argc, char **argv) {
     int f6 = test_classes(dlo, dhi, budget, 40, tower_dmax);
     int f7 = test_keys();
     printf("7. packed keys d=2..55: %s\n", f7 ? "FAILED" : "ok");
-    bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7;
+    u64 n8 = 0, b8 = 0, n8s = 0, b8s = 0;
+    RRAll<55>::go(n8, b8);
+    for (int dh = 1; dh <= 14; dh++) b8s += test_rr_sieve(dh, n8s);
+    printf("8. RR: half-gcd d=3..55: %llu checks, %llu bad; factor-base sieve "
+           "d/2 <= 14: %llu checks, %llu bad; RR logs d=%d..%d:\n", (ull)n8,
+           (ull)b8, (ull)n8s, (ull)b8s, std::max(dlo, 3), std::min(dhi, rr_dmax));
+    fflush(stdout);
+    int f8 = test_rr(dlo, std::min(dhi, rr_dmax), budget, samples);
+    bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7 && !b8 && !b8s && !f8;
     printf("gf2_dlog_selftest: %s (%.0fs)\n", ok ? "ALL OK" : "FAILURES", now() - t0);
     (void)g_bad;
     return ok ? 0 : 1;
