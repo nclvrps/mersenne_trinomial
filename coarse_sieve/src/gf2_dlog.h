@@ -7,7 +7,11 @@
 //   tower  (even d = 2m): GF(2^d) = K(w), K = GF(2^m), w = x.  Every element
 //          is a + b*w with a, b in K; for b != 0 it equals b*(c + w),
 //          c = a/b, so  log e = (2^m+1)*logK(b) + T[logK(c)].  The split
-//          e -> (a,b) is GF(2)-linear (byte tables); tables have 2^m entries.
+//          e -> (a,b) is GF(2)-linear (byte tables); T has 2^m entries.
+//          logK itself is either a 2^m-entry table (classic, prime m) or
+//          (round 4) the same construction one level down, over a subfield
+//          K_n of K, with tables of ~2^n entries: then a log costs one read
+//          of a large table (T) instead of three.
 //   ph     (any d): Pohlig-Hellman over a coprime split M = P_1*...*P_n of
 //          M = 2^d - 1 (n <= 4): e^(E_i) lies in the order-P_i subgroup and
 //          a hash table of 16-byte slots (with baby-step/giant-step when P_i
@@ -25,8 +29,9 @@
 // the modulus fixed at compile time); the FKM enumeration of class
 // representatives (Lyndon words); and the u64 helpers the sweep needs
 // (Mersenne mulmod/powmod, exact-division tests).
-// Everything is plain host+device code: no tables in shared memory, no
-// warp intrinsics, so cuda_emul.h validates it exactly.
+// Everything is plain host+device code with no warp intrinsics, so
+// cuda_emul.h validates it exactly (coarse_sieve's batched kernel copies the
+// small tower tables to shared memory first -- device-only code).
 
 #ifndef GF2_DLOG_H
 #define GF2_DLOG_H
@@ -572,13 +577,42 @@ GF2_HD void bs_store(const u32 (&P)[D], u64 *v) {
 // ---------------------------------------------------------------------------
 // tower logs (d = 2m).  All pointers are device pointers; structs are
 // passed to kernels by value.
+//
+// log e = (2^m+1) log_h(b) + T[log_h(a) - log_h(b)] for e = a + b w, so a
+// log needs log_h (h = g^(2^m+1), generating K*) of two elements of K:
+//   classic (round 3): one table LK of all 2^m elements of K -- two random
+//          DRAM reads per class, plus the read of T;
+//   subfield tower (round 4, whenever m has a divisor n with 2 <= n < m):
+//          the same trick once more, inside K.  K is a degree-k extension of
+//          K_n = GF(2^n) (k = m/n), with basis 1, h, ..., h^(k-1).  Writing
+//          Y = lambda * Y', lambda the last nonzero coordinate of Y, gives
+//          log_h Y = (2^m-1)/(2^n-1) * log_hn(lambda) + TP[Y'], where
+//          hn = h^((2^m-1)/(2^n-1)) generates K_n*, LKn (2^n entries) holds
+//          log_hn, and TP the logs of the normalized Y' (one per point of
+//          the projective space P^(k-1)(K_n), (2^m-1)/(2^n-1) of them).
+//          For even m (k = 2) both are tiny: 2^n entries.  So the two K logs
+//          cost a few reads of small (cached / shared-memory) tables, and
+//          the class one DRAM read (T) instead of three.
+//          Normalized points are indexed by the logs of their coordinates:
+//          Y' = (y'_0, ..., y'_(j-1), 1, 0, ..., 0) has digits
+//          l_i = log_hn(y'_i), or 2^n - 1 for y'_i = 0, at bits n*i of the
+//          index, after the 2^n + ... + 2^(n(j-1)) entries for smaller j.
 struct TowerDev {
     int m, nb;            // nb = ceil(d/8) byte tables
     u64 MK;               // 2^m - 1 (also the coordinate mask)
-    const u64 *btab;      // [nb][256]: packed coords coordK(a) | coordK(b)<<m
-    const u32 *LK;        // [2^m]   coordinate -> log base h (h = g^(2^m+1))
+    const u64 *btab;      // [nb][256]: packed coords coord(a) | coord(b)<<m
+    const u32 *LK;        // classic: [2^m] coordinate -> log base h
     const u64 *T;         // [2^m]   T[l] = log_g(h^l + w) for l < MK, and
                           //         T[MK] = log_g(w)  (c = 0)
+    int sub_n, sub_k;     // subfield tower (sub_k = 0: classic); coord(y)
+                          // is then k digits of n bits: y's K_n-coordinates
+                          // in the basis hn^0..hn^(n-1) (digit i: coeff of h^i)
+    u64 sub_mult;         // (2^m - 1) / (2^n - 1)
+    const uint16_t *LKn;  // [2^n]   n-bit K_n element -> log base hn
+    const u32 *TP;        // logs of the normalized points (see above)
+    u32 tp_n;             // number of TP entries
+    u32 shm_bytes;        // device: stage btab, LKn (and TP if shm_tp) in
+    int shm_tp;           //   shared memory (0: read them from global)
 };
 
 GF2_HD u64 tower_coords(u64 x, const TowerDev &t) {
@@ -587,20 +621,60 @@ GF2_HD u64 tower_coords(u64 x, const TowerDev &t) {
     return pk;
 }
 
-// log_g(x) for x != 0.  T is indexed by log_h(c) rather than by c, so the
-// quotient c = a/b is never formed: three table reads (two in LK, one in
-// T) instead of four.
-GF2_HD u64 tower_log(u64 x, u64 M, const TowerDev &t) {
-    u64 pk = tower_coords(x, t);
-    u64 ac = pk & t.MK, bc = pk >> t.m;
-    u64 h1 = t.MK + 2;                          // 2^m + 1 = log_g(h)
-    if (bc == 0) return h1 * t.LK[ac];          // x in K*;  < M
-    u64 lb = t.LK[bc], l = t.MK;                // c = a/b; slot MK: c = 0
-    if (ac) {
-        u64 la = t.LK[ac];
-        l = la >= lb ? la - lb : la + t.MK - lb;          // log_h(c)
+// log_h(Y) for Y in K given coord(Y) (subfield tower); ~0 for Y = 0
+GF2_HD u64 tower_sub_log(u64 yc, const TowerDev &t) {
+    const int n = t.sub_n;
+    const u32 MKn = (1u << n) - 1;
+    int j = t.sub_k - 1;
+    u32 lam;
+    while ((lam = (u32)(yc >> (n * j)) & MKn) == 0)
+        if (--j < 0) return ~0ULL;
+    const u32 ll = t.LKn[lam];
+    u64 v = t.sub_mult * ll;                    // log_h(lambda) < MK
+    if (j > 0) {
+        u64 idx = 0, off = 0;
+        for (int i = 0; i < j; i++) {
+            const u32 yi = (u32)(yc >> (n * i)) & MKn;
+            u32 li = MKn;                       // digit for a zero coordinate
+            if (yi) {
+                const u32 l = t.LKn[yi];
+                li = l >= ll ? l - ll : l + MKn - ll;   // log_hn(yi / lambda)
+            }
+            idx |= (u64)li << (n * i);
+            if (i) off += (u64)1 << (n * i);    // entries of smaller j
+        }
+        v += t.TP[off + idx];                   // < MK
+        if (v >= t.MK) v -= t.MK;
     }
-    u64 v = h1 * lb + t.T[l];                   // h1*lb < M, T < M
+    return v;
+}
+
+GF2_HD u64 tower_klog(u64 yc, const TowerDev &t) {   // log_h, Y != 0
+    return t.sub_k ? tower_sub_log(yc, t) : (u64)t.LK[yc];
+}
+
+// e -> (lb = log_h(b), l = T index) for b != 0; false if b == 0
+GF2_HD bool tower_split(u64 pk, const TowerDev &t, u64 *lb, u64 *l) {
+    const u64 ac = pk & t.MK, bc = pk >> t.m;
+    if (!bc) return false;
+    *lb = tower_klog(bc, t);
+    *l = t.MK;                                  // c = a/b = 0: slot MK
+    if (ac) {
+        const u64 la = tower_klog(ac, t);
+        *l = la >= *lb ? la - *lb : la + t.MK - *lb;    // log_h(c)
+    }
+    return true;
+}
+
+// log_g(x) for x != 0.  T is indexed by log_h(c) rather than by c, so the
+// quotient c = a/b is never formed.
+GF2_HD u64 tower_log(u64 x, u64 M, const TowerDev &t) {
+    const u64 pk = tower_coords(x, t);
+    const u64 h1 = t.MK + 2;                    // 2^m + 1 = log_g(h)
+    u64 lb, l;
+    if (!tower_split(pk, t, &lb, &l))           // x in K*;  < M
+        return h1 * tower_klog(pk & t.MK, t);
+    const u64 v = h1 * lb + t.T[l];             // h1*lb < M, T < M
     return v >= M ? v - M : v;
 }
 
@@ -685,6 +759,7 @@ GF2_HD u64 ph_log(u64 x, u64 M, int d, u64 qlow, const PHDev &ph) {
 // ---------------------------------------------------------------------------
 // host-side builders (one-off per degree; bit-serial gf_mul is fine here)
 #include "gf2_wide_setup.h"
+#include <cstring>
 #include <vector>
 #include <algorithm>
 #include <functional>
@@ -694,13 +769,38 @@ struct TowerHost {
     int m = 0, nb = 0;
     u64 MK = 0;
     std::vector<u64> btab;               // nb*256
-    std::vector<u32> LK, AK;             // 2^m, 2^m - 1
+    std::vector<u32> LK, AK;             // 2^m, 2^m - 1 (host; LK also on the
+                                         // device for the classic tower)
+    int sub_n = 0, sub_k = 0;            // subfield tower, 0 = classic
+    u64 sub_mult = 0;
+    std::vector<uint16_t> LKn;                // 2^n
+    std::vector<u32> TP;                 // sum_{j=1}^{k-1} 2^(n j)
 };
 
-// Byte tables for e -> (coordK(a) | coordK(b) << m), and LK/AK for K*.
-// T (the 2^m logs log(h^l + w)) is filled on the device (k_tower_T); AK
-// stays on the host.  Returns false if any internal consistency check fails.
-static bool tower_build_host(int d, u64 q, TowerHost &W) {
+// The subfield K_n used for the inner tower: the largest proper divisor n of
+// m with 2 <= n (so k = m/n >= 2 is smallest and TP smallest), or 0 if m is
+// prime (or m = 2): then the classic tower.  want: -1 automatic, 0 classic,
+// n > 0 a specific divisor (tests).  *tp_entries: size of TP.
+static int tower_sub_choice(int m, int want, u64 *tp_entries) {
+    int n = 0;
+    if (want > 0) {
+        if (want >= 2 && want < m && m % want == 0) n = want;
+    } else if (want < 0) {
+        for (int c = m / 2; c >= 2; c--) if (m % c == 0) { n = c; break; }
+    }
+    u64 tp = 0;
+    if (n) for (int j = 1; j < m / n; j++) tp += (u64)1 << (n * j);
+    if (tp > ((u64)1 << 26)) n = 0, tp = 0;     // keep TP <= 256 MB
+    if (tp_entries) *tp_entries = tp;
+    return n;
+}
+
+// Byte tables for e -> (coord(a) | coord(b) << m), and the logs in K: the
+// table LK (classic), or LKn/TP (subfield tower, sub_want != 0 and m has a
+// divisor 2 <= n < m).  T (the 2^m logs log(h^l + w)) is filled on the
+// device (k_tower_T).  AK and LK stay on the host either way (TP is built
+// from LK).  Returns false if any internal consistency check fails.
+static bool tower_build_host(int d, u64 q, TowerHost &W, int sub_want = -1) {
     if (d < 4 || (d & 1) || d > 54) return false;
     const int m = d / 2;
     const u64 M = ((u64)1 << d) - 1, MK = ((u64)1 << m) - 1;
@@ -746,17 +846,8 @@ static bool tower_build_host(int d, u64 q, TowerHost &W) {
         for (int k = 0; k < m; k++) if (c >> k & 1) e ^= rows[k];
         return e;
     };
+    W = TowerHost();
     W.m = m; W.MK = MK; W.nb = (d + 7) / 8;
-    W.btab.assign((size_t)W.nb * 256, 0);
-    for (int k = 0; k < W.nb; k++)
-        for (int byte = 0; byte < 256; byte++) {
-            u64 e = ((u64)byte << (8 * k)) & M;
-            u64 b = gf_mul(e ^ lin_sigma(e), inv_den, q, d);
-            u64 a = e ^ gf_mul(b, 2, q, d);
-            u64 ca = coordK(a), cb = coordK(b);
-            if (embedK(ca) != a || embedK(cb) != b) return false;   // a,b in K
-            W.btab[(size_t)k * 256 + byte] = ca | (cb << m);
-        }
     // K* = <h>: step by h in coordinates (a linear map) -> AK, LK
     std::vector<u64> hcol(m);
     for (int k = 0; k < m; k++) {
@@ -775,16 +866,109 @@ static bool tower_build_host(int d, u64 q, TowerHost &W) {
         }
     W.LK.assign((size_t)MK + 1, 0xFFFFFFFFu);
     W.AK.assign((size_t)MK, 0);
-    u64 c = coordK(1);
-    for (u64 k = 0; k < MK; k++) {
-        if (!c || c > MK || W.LK[c] != 0xFFFFFFFFu) return false;   // h not of order MK?!
-        W.AK[k] = (u32)c;
-        W.LK[c] = (u32)k;
-        u64 nc = 0;
-        for (int kb = 0; kb < mb; kb++) nc ^= hb[(size_t)kb * 256 + ((c >> (8 * kb)) & 255)];
-        c = nc;
+    {
+        u64 c = coordK(1);
+        for (u64 k = 0; k < MK; k++) {
+            if (!c || c > MK || W.LK[c] != 0xFFFFFFFFu) return false;   // h not of order MK?!
+            W.AK[k] = (u32)c;
+            W.LK[c] = (u32)k;
+            u64 nc = 0;
+            for (int kb = 0; kb < mb; kb++) nc ^= hb[(size_t)kb * 256 + ((c >> (8 * kb)) & 255)];
+            c = nc;
+        }
+        if (c != coordK(1)) return false;
     }
-    return c == coordK(1);
+    // coordinates of the elements of K handed to the device
+    std::function<u64(u64)> coord = coordK;
+    std::vector<u64> fv, lab;                   // subfield tower: labelled RREF
+    std::vector<int> fpiv;
+    const int n = tower_sub_choice(m, sub_want, nullptr);
+    if (n) {
+        const int k = m / n;
+        const u64 MKn = ((u64)1 << n) - 1, mult = MK / MKn;
+        const u64 hn = gf_pow(h, mult, q, d);   // generates K_n*
+        // basis of K over GF(2): h^i * hn^jj (i < k, jj < n); label bit
+        // n*i + jj, so a vector's label is its packed coordinate
+        u64 hi = 1;
+        for (int i = 0; i < k; i++, hi = gf_mul(hi, h, q, d)) {
+            u64 z = hi;
+            for (int jj = 0; jj < n; jj++, z = gf_mul(z, hn, q, d)) {
+                fv.push_back(z);
+                lab.push_back((u64)1 << (n * i + jj));
+            }
+        }
+        for (int r = 0; r < m; r++) {           // full reduction, labels along
+            int best = -1;
+            for (int t = r; t < m; t++)
+                if (fv[t] && (best < 0 || fv[t] > fv[best])) best = t;
+            if (best < 0) return false;         // not a basis
+            std::swap(fv[r], fv[best]); std::swap(lab[r], lab[best]);
+            const int p = 63 - __builtin_clzll(fv[r]);
+            for (int t = 0; t < m; t++)
+                if (t != r && (fv[t] >> p & 1)) { fv[t] ^= fv[r]; lab[t] ^= lab[r]; }
+            fpiv.push_back(p);
+        }
+        coord = [&fv, &lab, &fpiv, m](u64 e) {
+            u64 c = 0, r = 0;
+            for (int t = 0; t < m; t++)
+                if (e >> fpiv[t] & 1) { c ^= lab[t]; r ^= fv[t]; }
+            return r == e ? c : ~0ULL;          // ~0: e not in K
+        };
+        // LKn: n-bit coordinates of hn^l (a K_n element: digit 0 only)
+        W.LKn.assign((size_t)MKn + 1, 0xFFFF);
+        std::vector<u64> hnp(MKn);
+        u64 z = 1;
+        for (u64 l = 0; l < MKn; l++, z = gf_mul(z, hn, q, d)) {
+            const u64 c = coord(z);
+            if (c == 0 || c > MKn || W.LKn[c] != 0xFFFF) return false;
+            W.LKn[c] = (uint16_t)l;
+            hnp[l] = z;
+        }
+        if (z != 1) return false;
+        // TP: log_h of each normalized point, by its digit index
+        std::vector<u64> hp(k + 1);
+        hp[0] = 1;
+        for (int i = 1; i <= k; i++) hp[i] = gf_mul(hp[i - 1], h, q, d);
+        std::vector<std::vector<u64>> prod(k, std::vector<u64>((size_t)MKn + 1, 0));
+        for (int i = 0; i < k; i++)              // prod[i][MKn] = 0 (zero digit)
+            for (u64 l = 0; l < MKn; l++) prod[i][l] = gf_mul(hnp[l], hp[i], q, d);
+        for (int j = 1; j < k; j++) {
+            const u64 cnt = (u64)1 << (n * j);
+            for (u64 idx = 0; idx < cnt; idx++) {
+                u64 e = hp[j];
+                for (int i = 0; i < j; i++) e ^= prod[i][(idx >> (n * i)) & MKn];
+                const u64 ce = coordK(e);
+                if (embedK(ce) != e || !ce) return false;
+                W.TP.push_back(W.LK[ce]);
+            }
+        }
+        W.sub_n = n; W.sub_k = k; W.sub_mult = mult;
+    }
+    W.btab.assign((size_t)W.nb * 256, 0);
+    for (int kk = 0; kk < W.nb; kk++)
+        for (int byte = 0; byte < 256; byte++) {
+            u64 e = ((u64)byte << (8 * kk)) & M;
+            u64 b = gf_mul(e ^ lin_sigma(e), inv_den, q, d);
+            u64 a = e ^ gf_mul(b, 2, q, d);
+            u64 ca = coord(a), cb = coord(b);
+            if (ca == ~0ULL || cb == ~0ULL) return false;
+            if (!n && (embedK(ca) != a || embedK(cb) != b)) return false;   // a,b in K
+            W.btab[(size_t)kk * 256 + byte] = ca | (cb << m);
+        }
+    return true;
+}
+
+// A TowerDev over the given table pointers (device or host memory)
+static inline TowerDev tower_dev(const TowerHost &W, const u64 *btab,
+                                 const u32 *LK, const u64 *T,
+                                 const uint16_t *LKn, const u32 *TP) {
+    TowerDev t;
+    memset(&t, 0, sizeof t);
+    t.m = W.m; t.nb = W.nb; t.MK = W.MK;
+    t.btab = btab; t.LK = LK; t.T = T;
+    t.sub_n = W.sub_n; t.sub_k = W.sub_k; t.sub_mult = W.sub_mult;
+    t.LKn = LKn; t.TP = TP; t.tp_n = (u32)W.TP.size();
+    return t;
 }
 
 struct PHPartHost { u64 P = 0, E = 0, K = 0, N = 0, G = 1, delta = 1, gamma = 1; int sbits = 1; };

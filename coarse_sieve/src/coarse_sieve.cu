@@ -89,7 +89,11 @@
 //         round-3 batched kernel (default) or the round-2 one (A/B timing,
 //         fallback).  Checkpoints do not depend on it: either kernel can
 //         resume the other's.
-//         Tests only: COARSE_LOGS_CHUNK_LOG2=k caps logs-path chunks at 2^k
+//         COARSE_TOWER_SUBN=0 uses the round-3 tower (one table of all logs
+//         in K) even where the subfield tower applies (A/B timing).
+//         Tests only: COARSE_TOWER_SUBN=n forces the inner subfield
+//         GF(2^n) (any n | m, 2 <= n < m); COARSE_LOGS_CHUNK_LOG2=k caps
+//         logs-path chunks at 2^k
 //         values (a resume must use the same k); COARSE_SELFTEST_LOGS_DMAX
 //         limits the engine checks of --selftest-logs;
 //         COARSE_TEST_FAULT_EVERY=n corrupts the log of every class with
@@ -207,9 +211,17 @@
 // Z(u) = log(g^u + 1) per cyclotomic class.  The logs path computes that
 // log directly, from tables of ~2^(d/2) entries (gf2_dlog.h):
 //   tower (even d = 2m):  GF(2^d) = K(w), K = GF(2^m); a + b*w = b*(c + w),
-//          c = a/b, so log = (2^m+1) log_K(b) + T[log_h(c)] with 2^m-entry
-//          tables (96 MB at d=46, 1.5 GB at d=54) and a GF(2)-linear split
-//          (byte tables).
+//          c = a/b, so log = (2^m+1) log_K(b) + T[log_h(c)] with a 2^m-entry
+//          table T (64 MB at d=46, 1 GB at d=54) and a GF(2)-linear split
+//          (byte tables).  The two logs in K come from the same trick one
+//          level down whenever m is composite (round 4): K is an extension
+//          of a subfield K_n, n | m, and a log in K is one read of a table
+//          of 2^n logs in K_n plus one of a table indexed by the projective
+//          point Y/lambda (2^n entries for even m; 16512 / 1082400 /
+//          262656 for m = 21 / 25 / 27).  Those tables are small enough to
+//          sit in shared memory or cache, so a tower log costs one DRAM read
+//          (T) instead of three.  For prime m (d = 34, 38, 46) K's logs come
+//          from a 2^m-entry table LK as in round 3.
 //   Pohlig-Hellman (odd d): M = 2^d - 1 = P_1 * ... * P_k (k <= 4) split
 //          into coprime parts; x^E_i lands in the order-P_i subgroup, a hash
 //          table gives log mod P_i, CRT combines.  A planner picks the split
@@ -834,6 +846,7 @@ __global__ void k_logs_sweep(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
 
 template <int D, int METHOD>
 __device__ __forceinline__ void logs_batch(const LogsParams &L,
+                                           const TowerDev &tw,
                                            const fw *gpow2, u64 (&ub)[LB],
                                            u64 (&vb)[LB], u64 (&tb)[LB], int n,
                                            bool verify, ull *best,
@@ -868,7 +881,7 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
         }
     } else {
         bs_store<D>(X, vb);
-        for (int k = 0; k < n; k++) vb[k] = tower_log(vb[k], M, L.tw);
+        for (int k = 0; k < n; k++) vb[k] = tower_log(vb[k], M, tw);
     }
     if (L.check) {                              // selftest: log(g^u) == u?
         for (int k = 0; k < n; k++) if (vb[k] != ub[k]) (*err)++;
@@ -911,14 +924,53 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
     }
 }
 
+#if defined(__CUDA_ARCH__)
+// Copy the tower's small tables -- btab, and for the subfield tower LKn and
+// (if t.shm_tp) TP -- into dynamic shared memory and point t at the copies.
+// Every thread of the block must call this; __syncthreads() follows.
+__device__ __forceinline__ void tower_stage_shared(TowerDev &t,
+                                                   unsigned char *shm) {
+    u64 *bt = (u64 *)shm;
+    const int nbw = t.nb * 256;
+    for (int i = threadIdx.x; i < nbw; i += blockDim.x) bt[i] = t.btab[i];
+    t.btab = bt;
+    unsigned char *p = shm + (size_t)nbw * sizeof(u64);
+    if (t.sub_k) {
+        const int nw = 1 << (t.sub_n - 1);      // 2^n u16 = 2^(n-1) u32
+        u32 *lk = (u32 *)p;
+        const u32 *src = (const u32 *)t.LKn;
+        for (int i = threadIdx.x; i < nw; i += blockDim.x) lk[i] = src[i];
+        t.LKn = (const uint16_t *)p;
+        p += (size_t)nw * sizeof(u32);
+        if (t.shm_tp) {
+            u32 *tp = (u32 *)p;
+            for (u32 i = threadIdx.x; i < t.tp_n; i += blockDim.x) tp[i] = t.TP[i];
+            t.TP = tp;
+        }
+    }
+}
+#endif
+
 // sweep the Lyndon words in [ulo, uhi), runs of `run` u-values per step of
-// the grid-stride loop; partial batches carry over between runs
+// the grid-stride loop; partial batches carry over between runs.  Tower
+// kernels run 512-thread blocks (one per SM, sharing one copy of the small
+// tables in shared memory), PH kernels 128-thread blocks (up to ~250
+// registers).
 template <int D, int METHOD>
-__global__ void k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
-                             u64 run, ull *best, Heavy *heavy,
-                             unsigned *nheavy, unsigned *overflow,
-                             unsigned long long *nsurv,
-                             unsigned long long *nerr) {
+__global__ void __launch_bounds__(METHOD == LM_TOWER ? 512 : 128, 1)
+k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
+             u64 run, ull *best, Heavy *heavy,
+             unsigned *nheavy, unsigned *overflow,
+             unsigned long long *nsurv,
+             unsigned long long *nerr) {
+    TowerDev tw = L.tw;
+#if defined(__CUDA_ARCH__)
+    if (METHOD == LM_TOWER && tw.shm_bytes) {
+        extern __shared__ __align__(16) unsigned char logs_shm[];
+        tower_stage_shared(tw, logs_shm);
+        __syncthreads();
+    }
+#endif
     const u64 nruns = (uhi - ulo + run - 1) / run;
     u64 rr = (u64)blockIdx.x * blockDim.x + threadIdx.x;
     const u64 stride = (u64)gridDim.x * blockDim.x;
@@ -946,8 +998,8 @@ __global__ void k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
         }
         if (n == 0) break;
         my_surv += n;
-        logs_batch<D, METHOD>(L, gpow2, ub, vb, tb, n, (nb++ & 7) == 0, best,
-                              heavy, nheavy, overflow, P, &my_err);
+        logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, n, (nb++ & 7) == 0,
+                              best, heavy, nheavy, overflow, P, &my_err);
     }
     if (my_surv) atomicAdd(nsurv, my_surv);
     if (my_err) atomicAdd(nerr, my_err);
@@ -979,13 +1031,8 @@ __global__ void k_tower_T(TowerDev t, u64 M, u64 q, u64 qlow, int d,
         u64 uend = u + run; if (uend > u0 + count) uend = u0 + count;
         u64 e = gf2f_antilog(u, qlow, d, gpow2);
         for (; u < uend; u++, e = gf_mulx(e, q, d)) {
-            u64 pk = tower_coords(e, t), ac = pk & t.MK, bc = pk >> t.m;
-            if (!bc) continue;
-            u64 lb = t.LK[bc], l = t.MK;
-            if (ac) {
-                u64 la = t.LK[ac];
-                l = la >= lb ? la - lb : la + t.MK - lb;
-            }
+            u64 lb, l;
+            if (!tower_split(tower_coords(e, t), t, &lb, &l)) continue;
             u64 h = (t.MK + 2) * lb;
             T[l] = u >= h ? u - h : u + M - h;
         }
@@ -1084,7 +1131,8 @@ struct GpuCtx {
     // logs path (per-degree tables + error counter)
     unsigned long long *d_nerr = nullptr;
     u64 *d_btab = nullptr, *d_T = nullptr;
-    u32 *d_LK = nullptr;
+    u32 *d_LK = nullptr, *d_TP = nullptr;
+    uint16_t *d_LKn = nullptr;
 #if defined(WIDE_FIELD)
     PHSlot *d_slots[4] = {nullptr, nullptr, nullptr, nullptr};
 #endif
@@ -1758,6 +1806,7 @@ enum { FM_AUTO = 0, FM_TOWER = 1, FM_PH = 2, FM_LOGS = 3, FM_BUCKETS = 4,
 static int g_force_method = FM_AUTO;
 static bool g_logs_selfcheck = false;    // selftest: verify every log on device
 static bool g_logs_r2 = false;           // COARSE_LOGS_KERNEL=r2: round-2 kernel
+static int g_tower_sub = -1;             // COARSE_TOWER_SUBN: -1 auto, 0 classic, n
 
 #if defined(WIDE_FIELD)
 // ---------------------------------------------------------------------------
@@ -1853,8 +1902,12 @@ static bool logs_plan(int d, u64 q, int want, size_t budget, LogsPlan &pl) {
     bool tower_ok = d >= 4 && !(d & 1) && d <= 54;
     if (want == FM_TOWER && !tower_ok) return false;
     if (want != FM_PH && tower_ok) {
-        // LK (4 B) + T (8 B) per K-element, byte tables, slack
-        size_t need = ((size_t)12 << (d / 2)) + ((size_t)((d + 7) / 8) << 11) + 65536;
+        // T (8 B per K-element) and the byte tables, plus LK (4 B per
+        // K-element) for the classic tower or LKn + TP for the subfield one
+        u64 tp = 0;
+        const int n = tower_sub_choice(d / 2, g_tower_sub, &tp);
+        size_t need = ((size_t)8 << (d / 2)) + ((size_t)((d + 7) / 8) << 11) + 65536;
+        need += n ? ((size_t)2 << n) + 4 * (size_t)tp : (size_t)4 << (d / 2);
         if (need <= budget) {
             pl.method = LM_TOWER;
             pl.bytes = need;
@@ -1922,12 +1975,36 @@ static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
         CUCHK(cudaMalloc(&G.d_btab, W.btab.size() * sizeof(u64)));
         CUCHK(cudaMemcpy(G.d_btab, W.btab.data(), W.btab.size() * sizeof(u64),
                          cudaMemcpyHostToDevice));
-        CUCHK(cudaMalloc(&G.d_LK, W.LK.size() * sizeof(u32)));
-        CUCHK(cudaMemcpy(G.d_LK, W.LK.data(), W.LK.size() * sizeof(u32),
-                         cudaMemcpyHostToDevice));
+        if (W.sub_k) {                          // subfield tower: LKn, TP
+            CUCHK(cudaMalloc(&G.d_LKn, W.LKn.size() * sizeof(uint16_t)));
+            CUCHK(cudaMemcpy(G.d_LKn, W.LKn.data(),
+                             W.LKn.size() * sizeof(uint16_t),
+                             cudaMemcpyHostToDevice));
+            CUCHK(cudaMalloc(&G.d_TP, W.TP.size() * sizeof(u32)));
+            CUCHK(cudaMemcpy(G.d_TP, W.TP.data(), W.TP.size() * sizeof(u32),
+                             cudaMemcpyHostToDevice));
+        } else {                                // classic: LK
+            CUCHK(cudaMalloc(&G.d_LK, W.LK.size() * sizeof(u32)));
+            CUCHK(cudaMemcpy(G.d_LK, W.LK.data(), W.LK.size() * sizeof(u32),
+                             cudaMemcpyHostToDevice));
+        }
         const u64 slots = W.MK + 1;
         CUCHK(cudaMalloc(&G.d_T, slots * sizeof(u64)));
-        L.tw = TowerDev{W.m, W.nb, W.MK, G.d_btab, G.d_LK, G.d_T};
+        L.tw = tower_dev(W, G.d_btab, G.d_LK, G.d_T, G.d_LKn, G.d_TP);
+        // the batched kernel stages the small tables in shared memory: the
+        // byte tables, and for the subfield tower LKn and, if it fits, TP
+        {
+            int optin = 48 << 10;
+            cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin,
+                                   G.dev);
+            size_t shm = W.btab.size() * sizeof(u64);
+            if (W.sub_k) {
+                shm += W.LKn.size() * sizeof(uint16_t);
+                const size_t tpb = W.TP.size() * sizeof(u32);
+                if (shm + tpb <= (size_t)optin) { shm += tpb; L.tw.shm_tp = 1; }
+            }
+            L.tw.shm_bytes = shm <= (size_t)optin ? (u32)shm : 0;
+        }
         if (Th.empty()) {                       // coupon-collector sweeps
             launch_dims(slots, blocks, threads);
             k_fill<<<blocks, threads>>>((ull *)G.d_T, slots, ~0ULL);
@@ -1977,7 +2054,8 @@ static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
 
 static void logs_free_device(GpuCtx &G) {
     cudaFree(G.d_btab); cudaFree(G.d_LK); cudaFree(G.d_T);
-    G.d_btab = G.d_T = nullptr; G.d_LK = nullptr;
+    cudaFree(G.d_LKn); cudaFree(G.d_TP);
+    G.d_btab = G.d_T = nullptr; G.d_LK = G.d_TP = nullptr; G.d_LKn = nullptr;
     for (int i = 0; i < 4; i++) {
         cudaFree(G.d_slots[i]);
         G.d_slots[i] = nullptr;
@@ -1986,20 +2064,26 @@ static void logs_free_device(GpuCtx &G) {
 
 // launch shape for the batched kernel: ONE full wave of resident blocks
 // (from the occupancy calculator, so it follows whatever register count the
-// compiler gave this instantiation), each thread grid-striding over ~10-20
+// compiler gave this instantiation), each thread grid-striding over its
 // runs and carrying partial batches from run to run; fewer blocks if there
 // are fewer runs.  A grid of several waves would leave its last wave partly
-// idle: e.g. 3.2 waves of PH blocks take as long as 4.  Smaller blocks for
-// the register-heavy PH variant.
+// idle: e.g. 3.2 waves of PH blocks take as long as 4.  PH: 128-thread
+// blocks (register-heavy); tower: 512-thread blocks, one per SM, sharing
+// the tables staged in `shm` bytes of shared memory.
 static void logs_batch_dims(LogsBatchFn kfn, u64 nruns, int method,
-                            int &blocks, int &threads) {
-    threads = method == LM_PH ? 128 : 256;
+                            const LogsParams &L, int &blocks, int &threads,
+                            size_t &shm) {
+    threads = method == LM_PH ? 128 : 512;
+    shm = method == LM_TOWER ? L.tw.shm_bytes : 0;
+    if (shm > ((size_t)48 << 10))
+        CUCHK(cudaFuncSetAttribute(kfn, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                   (int)shm));
     int dev = 0, nsm = 0, per_sm = 0;
     if (cudaGetDevice(&dev) != cudaSuccess) dev = 0;
     if (cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, dev) !=
             cudaSuccess || nsm < 1)
         nsm = 1;
-    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kfn, threads, 0)
+    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kfn, threads, shm)
             != cudaSuccess || per_sm < 1)
         per_sm = 1;
     const u64 wave = (u64)nsm * (u64)per_sm;
@@ -2044,9 +2128,11 @@ static u64 logs_batch_check(GpuCtx &G, int d, const LogsPlan &pl,
     L.check = 1;
     const u64 run = 1024;
     int blocks, threads;
-    logs_batch_dims(kfn, (uhi - ulo + run - 1) / run, pl.method, blocks, threads);
-    kfn<<<blocks, threads>>>(L, G.dgp, ulo, uhi, run, nullptr, nullptr, nullptr,
-                             nullptr, dns, dne);
+    size_t shm;
+    logs_batch_dims(kfn, (uhi - ulo + run - 1) / run, pl.method, L, blocks,
+                    threads, shm);
+    kfn<<<blocks, threads, shm>>>(L, G.dgp, ulo, uhi, run, nullptr, nullptr,
+                                  nullptr, nullptr, dns, dne);
     launch_dims((uhi - ulo) / 2, blocks, threads);
     k_rep_count<<<blocks, threads>>>(L, ulo, uhi, dnc);
     CUCHK(cudaMemcpy(&ns, dns, 8, cudaMemcpyDeviceToHost));
@@ -2128,7 +2214,7 @@ static u64 logs_wide_selftest(u64 r, int want) {
             CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
             LogsParams L = logs_params_base(d, r, 1, q, pl.method);
             TowerHost W;
-            if (pl.method == LM_TOWER && !tower_build_host(d, q, W)) {
+            if (pl.method == LM_TOWER && !tower_build_host(d, q, W, g_tower_sub)) {
                 fprintf(stderr, "  d=%d: tower construction failed\n", d);
                 fails++;
                 cudaFree(G.dgp); G.dgp = nullptr;
@@ -2166,6 +2252,10 @@ static u64 logs_wide_selftest(u64 r, int want) {
             if (pl.batched)
                 fprintf(stderr, "; batched: %" PRIu64 " classes, %s", ncls,
                         bfail ? "FAILED" : "ok");
+            if (pl.method == LM_TOWER && W.sub_k)
+                fprintf(stderr, "; over GF(2^%d)", W.sub_n);
+            else if (pl.method == LM_TOWER)
+                fprintf(stderr, "; classic");
             fprintf(stderr, ", %.2fs]\n", now_s() - t0);
             fails += bad + bfail;
         }
@@ -2197,7 +2287,7 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
 
     double t0 = now_s();
     TowerHost W;
-    if (pl.method == LM_TOWER && !tower_build_host(d, q, W)) {
+    if (pl.method == LM_TOWER && !tower_build_host(d, q, W, g_tower_sub)) {
         fprintf(stderr, "d=%d: tower construction failed -- internal error\n", d);
         exit(1);
     }
@@ -2220,10 +2310,13 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
             Lg.back().fault = strtoull(e, nullptr, 10);
         logs_setup_device(G, d, q, pl, W, Th, Lg.back());
     }
+    char inner[48] = "";                        // the inner tower, if any
+    if (pl.method == LM_TOWER && W.sub_k)
+        snprintf(inner, sizeof inner, " over GF(2^%d)", W.sub_n);
     W = TowerHost();                            // host copies no longer needed
     Th.clear(); Th.shrink_to_fit();
-    fprintf(stderr, "d=%2d logs (%s%s, %.0f MB tables, built in %.1fs), %d "
-            "chunk%s", d, mname, kfn ? ", batched" : ", round-2 kernel",
+    fprintf(stderr, "d=%2d logs (%s%s%s, %.0f MB tables, built in %.1fs), %d "
+            "chunk%s", d, mname, inner, kfn ? ", batched" : ", round-2 kernel",
             pl.bytes / 1048576.0, now_s() - t0, nchunks, nchunks == 1 ? "" : "s");
     if (NG > 1) fprintf(stderr, " on %d GPUs", NG);
     fprintf(stderr, ": ");
@@ -2265,11 +2358,16 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl,
             CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
             int blocks, threads;
             if (kfn) {
-                logs_batch_dims(kfn, (uhi - ulo + run - 1) / run, pl.method,
-                                blocks, threads);
-                kfn<<<blocks, threads>>>(Lg[g], G.dgp, ulo, uhi, run, G.d_best,
-                                         G.d_heavy, G.d_nheavy, G.d_overflow,
-                                         G.d_nsurv, G.d_nerr);
+                // runs of krun = run/8 u-values: ~50 per thread, so threads
+                // finish together (the chunk itself is unchanged)
+                const u64 krun = run >= 512 ? run / 8 : run;
+                size_t shm;
+                logs_batch_dims(kfn, (uhi - ulo + krun - 1) / krun, pl.method,
+                                Lg[g], blocks, threads, shm);
+                kfn<<<blocks, threads, shm>>>(Lg[g], G.dgp, ulo, uhi, krun,
+                                              G.d_best, G.d_heavy, G.d_nheavy,
+                                              G.d_overflow, G.d_nsurv,
+                                              G.d_nerr);
             } else {
                 launch_dims((uhi - ulo + run - 1) / run, blocks, threads);
                 k_logs_sweep<<<blocks, threads>>>(Lg[g], G.dgp, ulo, uhi, run,
@@ -2402,18 +2500,15 @@ static int run_gpu(u64 r, int depth, u64 smax, std::vector<ull> &best,
         // bytes/element: 8*2^d in the narrow build, 16*2^d in the wide build.
         size_t need = (((size_t)2 * sizeof(fw)) << d) + 16;
         // size for the most constrained device so every device fits
-        size_t freeb = (size_t)-1, totb = 0;
+        size_t freeb = (size_t)-1;
         for (size_t g = 0; g < g_gpus.size(); g++) {
             size_t f = 0, t = 0;
             CUCHK(cudaSetDevice(g_gpus[g].dev));
             cudaMemGetInfo(&f, &t);
-            if (f < freeb) { freeb = f; totb = t; }
+            if (f < freeb) freeb = f;
         }
         CUCHK(cudaSetDevice(g_gpus[0].dev));
-
-        const size_t budget = freeb > GPU_MEM_RESERVE ? freeb - GPU_MEM_RESERVE : 0;
         const int fm = g_force_method;
-        (void)budget; (void)totb;
 #if defined(WIDE_FIELD)
         // logs path: chosen (forced) engine or automatic; true if it ran
         auto try_logs = [&](int want, int start_chunk, bool must) -> bool {
@@ -2610,6 +2705,9 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    // COARSE_TOWER_SUBN=0 uses the classic (round-3) tower; =n forces the
+    // subfield K_n of the inner tower (tests); default: automatic
+    if (const char *e = getenv("COARSE_TOWER_SUBN")) g_tower_sub = atoi(e);
     if (const char *e = getenv("COARSE_METHOD")) {
         if (!strcmp(e, "dense")) g_force_method = FM_DENSE;
         else if (!strcmp(e, "buckets")) g_force_method = FM_BUCKETS;
