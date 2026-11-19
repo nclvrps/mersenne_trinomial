@@ -1,4 +1,4 @@
-// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, rounds 3-5)
+// gf2_dlog_selftest.cpp -- host self-test for gf2_dlog.h (coarse_sieve, rounds 3-6)
 //
 //   g++ -O2 -march=native -std=c++17 -I. -Icommon -o gf2_dlog_selftest gf2_dlog_selftest.cpp
 //   (or: make gf2_dlog_selftest)
@@ -18,7 +18,8 @@
 // 5. both discrete-log engines with the tables the sieve builds (tower: T by
 //    log_h, classic or with the subfield tower inside K -- automatic choice,
 //    and for d <= 36 every other subfield; PH: 16-byte slots), for the
-//    bit-sliced and the round-2 planner:
+//    bit-sliced planner (the batched kernel) and the scalar one (RR's
+//    factor-base logs):
 //    every element for d <= 20, `samples` random elements above; PH tables
 //    limited to budget_MB (d = 31, 37, 41 then use baby-step/giant-step, as
 //    on an 8 GB card), tower up to tower_dmax (default 44, as the tables
@@ -28,7 +29,10 @@
 //    u, the Zech log, j = u r^-1, the progression start s0 = v j^-1 (lambda
 //    exponent) and the minimal polynomial f of g^j -- then checks directly
 //    that f divides x^r + x^s0 + 1 (r = 136279841), by arithmetic mod f;
-//    for even d <= tower_dmax also that the tower's log is the same
+//    for even d <= tower_dmax also that the tower's log is the same; and
+//    the reciprocal partner (round 6): the minimal polynomial of g^-j is f
+//    reversed, Z(-u) = Z(u) - u, and f* divides x^r + x^s + 1 for
+//    s = r - s0 (mod 2^d - 1)
 // 7. the packed best[] key format for d <= 55 (order and round trip)
 // 8. RR (round 5): the half-gcd at every d = 3..55 (r = t*y mod q by the
 //    bit-serial reference multiply, deg r, deg t <= d/2, compile-time and
@@ -36,9 +40,13 @@
 //    for d/2 <= 14, and RR logs end to end up to rr_dmax (default 47; d=49
 //    is skipped -- its factor-base logs need ~2e10 giant steps, a GPU job)
 //    with the factor-base logs by PH on the host
+// 9. reciprocal pairs (round 6): for every class of degree d <= 22 the pair
+//    role of it and of its partner rep(~u) are complementary (self-
+//    reciprocal classes alone), the counts match I(d) and the number of
+//    self-reciprocal irreducibles; I(d) for every d <= 55
 //
 // Exit status 0 iff everything matches.  The same code runs on the GPU in
-// coarse_sieve_wide --selftest-logs; this is the CPU-side cross-check.
+// coarse_sieve --selftest; this is the CPU-side cross-check.
 #include "gf2_dlog.h"
 #include <algorithm>
 #include <vector>
@@ -285,8 +293,8 @@ static int test_dlog(int dlo, int dhi, size_t budget, u64 samples, int tower_dma
         for (int model = 0; model < 2; model++) {
             double t0 = now();
             PHHost H; PHTabs tb; PHDev D{};
-            if (!ph_plan_host(d, q, budget, H, model ? kPHCostRound2 : kPHCostBitsliced)) {
-                printf("d=%2d PH (%s planner): no feasible plan%s\n", d, model ? "round-2" : "bit-sliced",
+            if (!ph_plan_host(d, q, budget, H, model ? kPHCostScalar : kPHCostBitsliced)) {
+                printf("d=%2d PH (%s planner): no feasible plan%s\n", d, model ? "scalar" : "bit-sliced",
                        d == 49 ? " (expected: 2^49-1 has the prime factor 4432676798593)" : "  <-- FAIL");
                 if (d != 49) fails++;
                 continue;
@@ -300,7 +308,7 @@ static int test_dlog(int dlo, int dhi, size_t budget, u64 samples, int tower_dma
                 if (exh) e = gf_mulx(e, q, d);
             }
             printf("d=%2d PH    %s %8llu logs: %llu wrong | %-10s:", d, exh ? "all    " : "sampled",
-                   (ull)nchk, (ull)bad, model ? "round-2" : "bit-sliced");
+                   (ull)nchk, (ull)bad, model ? "scalar" : "bit-sliced");
             for (int i = 0; i < H.nparts; i++)
                 printf(" %llu(pc %d%s)", (ull)H.part[i].P, __builtin_popcountll(H.part[i].E),
                        H.part[i].G > 1 ? (", G=" + std::to_string(H.part[i].G)).c_str() : "");
@@ -488,7 +496,7 @@ static int test_classes(int dlo, int dhi, size_t budget, int per_degree,
             u64 ph = pk / p * (p - 1);
             lam = lam / gcd_u64(lam, ph) * ph;
         }
-        int done = 0, bad = 0, tries = 0;
+        int done = 0, bad = 0, pbad = 0, tries = 0;
         while (done < per_degree && tries++ < 100 * per_degree) {
             int p;
             u64 u = fkm_seek((rng() % ((u64)1 << (d - 1))) | 1, d, &p);
@@ -505,10 +513,29 @@ static int test_classes(int dlo, int dhi, size_t budget, int per_degree,
             const bool ok = f != 0 && (f >> d) == 1 &&
                             (xpow_mod(r, f, d) ^ xpow_mod(s, f, d) ^ 1) == 0;
             if (!ok) { if (bad < 3) printf("d=%d u=%llx: f=%llx s0=%llu does not divide\n", d, (ull)u, (ull)f, (ull)s0); bad++; }
+            // the reciprocal partner (round 6): its class is that of -u, its
+            // root g^-j has the minimal polynomial f* (f reversed), Z(-u) =
+            // Z(u) - u, and it divides x^r + x^s + 1 for s = r - s0 (mod M)
+            {
+                const u64 fr = minpoly_mask(gf2f_antilog(M - j, ql, d, gp), q, d);
+                u64 frev = 0;
+                for (int k = 0; k <= d; k++) if ((f >> k) & 1) frev |= (u64)1 << (d - k);
+                const u64 rm = r % M, sp0 = rm >= s0 ? rm - s0 : rm + M - s0;
+                const u64 sp = sp0 ? sp0 : M;
+                const u64 vn = ph_log(gf2f_antilog(M - u, ql, d, gp) ^ 1, M, d, ql, D);
+                const bool okp = fr != 0 && fr == frev &&
+                                 (xpow_mod(r, fr, d) ^ xpow_mod(sp, fr, d) ^ 1) == 0 &&
+                                 vn == (v >= u ? v - u : v + M - u);
+                if (!okp) {
+                    if (pbad < 3) printf("d=%d u=%llx: partner f*=%llx s=%llu fails\n", d, (ull)u, (ull)fr, (ull)sp);
+                    pbad++;
+                }
+            }
             done++;
         }
-        if (bad || twbad || done < per_degree) fails++;
-        printf("d=%2d classes: %d checked, f | x^r + x^s0 + 1 for %d", d, done, done - bad);
+        if (bad || pbad || twbad || done < per_degree) fails++;
+        printf("d=%2d classes: %d checked, f | x^r + x^s0 + 1 for %d, f* | x^r + x^(r-s0) + 1 for %d",
+               d, done, done - bad, done - pbad);
         if (tw) printf("; tower log %s", twbad ? "DIFFERS" : "agrees");
         printf("\n");
         fflush(stdout);
@@ -530,6 +557,69 @@ static int test_keys() {
         prev = k1;
     }
     return bad;
+}
+
+// ---------------------------------------------------------------- part 9
+// Reciprocal pairs (round 6): gf2f_pair_role must split the Lyndon words of
+// length d into pairs {u, rep(~u)} with exactly one canonical member, plus
+// the self-reciprocal classes as singletons; their numbers must match the
+// formulas, and gf2_irreducible_count must count the classes.
+static long long sr_count(int d) {          // self-reciprocal irreducibles
+    if (d & 1) return d == 1 ? 1 : 0;
+    const int m = d / 2;
+    long long s = 0;
+    for (int e = 1; e <= m; e += 2) {
+        if (m % e) continue;
+        int mu = 1, x = e;
+        for (int p = 2; p * p <= x; p++) {
+            if (x % p) continue;
+            x /= p;
+            if (x % p == 0) { mu = 0; break; }
+            mu = -mu;
+        }
+        if (mu && x > 1) mu = -mu;
+        s += mu * (long long)((u64)1 << (m / e));
+    }
+    return s / d;
+}
+
+static int test_pairs(int dmax_exh, u64 &nchecked) {
+    int fails = 0;
+    for (int d = 2; d <= dmax_exh; d++) {
+        const u64 M = ((u64)1 << d) - 1;
+        u64 nly = 0, n1 = 0, n0 = 0, n2 = 0, bad = 0;
+        int p;
+        for (u64 u = fkm_seek(1, d, &p); u < ((u64)1 << (d - 1)) || (d == 2 && u == 1);
+             u = fkm_next(u, d, &p)) {
+            if (p == d) {
+                nly++;
+                const int role = gf2f_pair_role(u, d, M);
+                const u64 pr = gf2f_min_rotation(~u & M, d, M);
+                const int prole = gf2f_pair_role(pr, d, M);
+                if (role == 1) { n1++; if (prole != 0 || pr == u) bad++; }
+                else if (role == 0) { n0++; if (prole != 1 || pr == u) bad++; }
+                else { n2++; if (pr != u) bad++; }
+            }
+            if (d == 2) break;
+        }
+        nchecked += nly;
+        if (bad || nly != gf2_irreducible_count(d) || n1 != n0 ||
+            (long long)n2 != sr_count(d)) {
+            printf("d=%d pairs: %llu classes (I(d) %llu), %llu canonical, %llu skipped, "
+                   "%llu self-reciprocal (formula %lld), %llu bad  <-- FAIL\n", d,
+                   (ull)nly, (ull)gf2_irreducible_count(d), (ull)n1, (ull)n0, (ull)n2,
+                   sr_count(d), (ull)bad);
+            fails++;
+        }
+    }
+    // I(d) for all d <= 55 by the necklace identity sum_{e|d} e I(e) = 2^d
+    for (int d = 1; d <= 55; d++) {
+        unsigned __int128 t = 0;
+        for (int e = 1; e <= d; e++)
+            if (d % e == 0) t += (unsigned __int128)e * (e == 1 ? 2 : gf2_irreducible_count(e));
+        if (t != ((unsigned __int128)1 << d)) { printf("I(%d) wrong  <-- FAIL\n", d); fails++; }
+    }
+    return fails;
 }
 
 int main(int argc, char **argv) {
@@ -564,7 +654,12 @@ int main(int argc, char **argv) {
            (ull)b8, (ull)n8s, (ull)b8s, std::max(dlo, 3), std::min(dhi, rr_dmax));
     fflush(stdout);
     int f8 = test_rr(dlo, std::min(dhi, rr_dmax), budget, samples);
-    bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7 && !b8 && !b8s && !f8;
+    u64 n9 = 0;
+    int f9 = test_pairs(22, n9);
+    printf("9. reciprocal pairs: every class d=2..22 (%llu), pair roles and counts "
+           "(I(d), self-reciprocal) %s; I(d) d<=55 %s\n", (ull)n9,
+           f9 ? "FAILED" : "ok", f9 ? "(see above)" : "ok");
+    bool ok = !b1 && !b2 && !g_bs_bad && !f5 && !f6 && !f7 && !b8 && !b8s && !f8 && !f9;
     printf("gf2_dlog_selftest: %s (%.0fs)\n", ok ? "ALL OK" : "FAILURES", now() - t0);
     (void)g_bad;
     return ok ? 0 : 1;

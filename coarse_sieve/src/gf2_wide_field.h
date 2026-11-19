@@ -11,8 +11,8 @@
 // {hi,lo} pair.  No __int128 or PCLMUL is used, so this compiles and runs
 // identically on host and CUDA device.
 //
-// Selected by coarse_sieve.cu when built with -DWIDE_FIELD; the default
-// (narrow) build keeps gf2_small_field.h for its faster u32 path (d<=32).
+// coarse_sieve.cu's field arithmetic (since round 6 its only one: the u32
+// build on gf2_small_field.h is gone), and the base of gf2_dlog.h.
 
 #ifndef GF2_WIDE_FIELD_H
 #define GF2_WIDE_FIELD_H
@@ -118,7 +118,7 @@ GF2_HD u64 gcd_u64(u64 a, u64 b) {
 
 // (a * b) mod m without a 128-bit type, for m <= 2^63-1 (d <= 63).  At
 // d >= 33 the index products j*rmod and inv*(v/gg) exceed 64 bits, so the
-// plain "(a*b) % m" used in the narrow build would overflow; this
+// plain "(a*b) % m" of the old u32 build would overflow; this
 // double-and-add stays within u64 because a,b < m < 2^63 keeps every
 // partial sum below 2^64.
 GF2_HD u64 mulmod_u64(u64 a, u64 b, u64 m) {
