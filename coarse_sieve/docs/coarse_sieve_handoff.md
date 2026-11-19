@@ -1,279 +1,349 @@
-# coarse_sieve (-DWIDE_FIELD) -- round 2: discrete logs instead of buckets
+# coarse_sieve (-DWIDE_FIELD) -- round 3: batched bit-sliced logs kernel, depth to 55
 
-Baseline: the round-1 `coarse_sieve.cu` (2026-10-18), which you validated
-on hardware (selftests, d = 33..41, oracle data for smaller Mersenne r).
+Baseline: the round-2 `coarse_sieve.cu` / `gf2_dlog.h` (2026-10-19), which you
+validated on hardware: all selftests PASS, d = 33..41 identical to round 1,
+production through d = 47, and r = 74207281 d = 41..44 matching the Brent et
+al. certificates.
 
 Deliverables
 
 | file | what |
 |---|---|
-| `coarse_sieve.cu` | round 2 (replaces round 1's) |
-| `gf2_dlog.h` | NEW -- fast GF(2^d) arithmetic, necklace test, tower and Pohlig-Hellman log engines; put it next to `gf2_wide_field.h` (common/) |
-| `gf2_dlog_selftest.cpp` | NEW -- host self-test of everything in `gf2_dlog.h` (sieve/ or anywhere on the vpath) |
-| `Makefile` | `coarse_sieve_wide` depends on `gf2_dlog.h`; new targets `gf2_dlog_selftest`, `emul-coarse_sieve_wide` |
-| `cuda_emul.h` | your version plus what coarse_sieve needs (`cudaStreamQuery`, events with flags, `atomicCAS`, optional `EMUL_NDEV` / `EMUL_FREE_MB` hooks); backward compatible |
-| `coarse_sieve_round2.patch` | the same changes as a patch against round 1 (flat paths, like the round-1 patch; if your tree is sieve/ + common/, just copy the files) |
+| `coarse_sieve.cu` | round 3 (replaces round 2's) |
+| `gf2_dlog.h` | round 3: + FKM enumeration, bit-sliced GF(2^d) arithmetic, new table layouts, multi-part PH planner, d <= 55 |
+| `gf2_dlog_selftest.cpp` | rewritten host self-test (covers all of the above, plus an end-to-end factor check at every d <= 55) |
+| `Makefile` | `-std=c++17` for `coarse_sieve_wide`, `emul-coarse_sieve_wide` and `gf2_dlog_selftest` (the bit-sliced code uses C++17 folds) |
+| `cuda_emul.h` | adds `cudaGetDevice`, `cudaDeviceGetAttribute`, `cudaOccupancyMaxActiveBlocksPerMultiprocessor` stubs; backward compatible |
+| `coarse_sieve_round3.patch` | the same changes as a patch against round 2 (flat paths, like the earlier patches) |
 
 ## TL;DR
 
-* New **logs path** in the wide build.  Per degree: one sweep over the
-  class representatives, and for each class ONE discrete log
-  Z(u) = log(g^u + 1), computed directly from small tables -- tower
-  decomposition for even d (2^(d/2)-entry tables, 128 MB at d=46),
-  Pohlig-Hellman for odd d (<= 768 MB at d=47).  No 2^d table, no
-  buckets: time grows ~2x per degree instead of ~4x, and VRAM no longer
-  sets the speed.
-* It is chosen automatically whenever the dense tables don't fit (on
-  your card: d >= 29).  `COARSE_METHOD=buckets` gives round 1 exactly.
-* Output is byte-identical to round 1 in every comparison made here
-  (emulated: from scratch to d=28, then d = 29..32 incrementally with the
-  r=136279841 survivor chain, plus the round-1 regression set; engine
-  checks at every d up to 47).
-* Projected on the 2070 SUPER: d=41 ~3-5 min (round 1: ~5 h), d=42 ~1-2
-  min, ..., d=47 ~3-4.5 h; all of 42..47 in ~4.5-7 h, versus ~3 years
-  bucketed (table in section 5).
-* Your auto-checkpoint idea is deferred to round 3, as agreed (sketch in
-  section 7).
+* **New default logs kernel** (`k_logs_batch`): it enumerates exactly the
+  class representatives (Lyndon words, FKM algorithm -- no necklace test of
+  every odd u), and handles them 32 per thread at a time: g^u and the
+  Pohlig-Hellman powers in bit-sliced form (one u32 per coefficient holds 32
+  field elements; a product is d^2 LOP3 instructions for all 32), one modular
+  inversion per 32 classes (Montgomery's trick).  Tables re-laid out (PH:
+  16-byte slots; tower: T indexed by log, one lookup fewer).
+* **Estimated ~4-5x on odd (PH) degrees and ~3-5x on even (tower) degrees**:
+  d=47 ~1-1.5 h (round 2: 5.9 h), d=46 ~13-20 min (67 min).  Table in
+  section 5; please send the `done` lines, as before.
+* **Depth limit 47 -> 55**, with a backward-compatible key format (all your
+  existing .found.bin files and checkpoints stay valid).  **d = 48 is the
+  useful new degree** (~1-2 h; ~50k more s certified, each of which would
+  otherwise cost `factor` ~100 CPU-s).  **d = 49 cannot be sieved** by this
+  method at all (2^49 - 1 = 127 * 4432676798593), and that hole makes
+  d = 50..55 worthless for least-degree certificates -- see section 2.  The
+  program now refuses any run that includes degree 49; 50..55 stay
+  available behind `--allow-degree-gap` for other uses.
+* Output byte-identical to round 2 / round 1 in every comparison made here
+  (emulated: from scratch to d=28, then the r=136279841 chain d = 29..32;
+  the full regression set with both kernels).
+* The round-2 kernel is still there: `COARSE_LOGS_KERNEL=r2` (A/B timing,
+  fallback).  Checkpoints are interchangeable between the two.
+* Your auto-checkpoint idea is deferred again, as you said.
 
-## 1. How the logs path works
+## 1. What the batched kernel does
 
-For the primitive modulus q of degree d, g = x, M = 2^d - 1, r^-1 mod M:
+Per thread, repeatedly: collect the next 32 class representatives u, then
+process all 32 together.
 
-1. **Sweep** u over the odd integers below 2^(d-1), in runs per thread,
-   with g^u by LFSR stepping (two `gf_mulx` per odd step).  Every
-   cyclotomic class has exactly one coset-minimal representative (the
-   least rotation of its d-bit string), and it is odd and < 2^(d-1).
-   Any representative gives the same factor and progression: with
-   u' = 2^i u, Z(u') = 2^i Z(u) and 2 is a unit mod M.
-2. **Necklace test** (is u its own least rotation?): a rotation smaller
-   than u must start in a zero run at least as long as u's leading run of
-   z zeros; runs are found with log2(z) shift-ANDs, and only the few
-   other runs of exactly z zeros need an explicit comparison.  ~50
-   instructions instead of a data-dependent loop over all d-1 rotations
-   (which kept warps busy ~30 iterations per u).  Subfield classes are
-   rejected afterwards by exact-division tests.
-3. **Zech log** v = log(g^u + 1):
-   * tower (even d = 2m): GF(2^d) = K(w), K = GF(2^m), w = x; every
-     element with b != 0 is a + b w = b (c + w), c = a/b, so
-     log = (2^m + 1) log_K(b) + T[c].  The split e -> (a, b) is
-     GF(2)-linear (ceil(d/8) byte tables); log_K / antilog_K and T are
-     2^m-entry tables.  T is filled on the GPU by a coupon-collector
-     sweep and checked complete.
-   * Pohlig-Hellman (odd d, works for any d): M = P_1 * P_2 split into
-     the most balanced coprime halves; x^(E_i) lies in the order-P_i
-     subgroup, an open-addressing hash table gives its log mod P_i, CRT
-     combines.  E_i = c_i M/P_i is chosen (over c_i and rotations) with
-     few set bits in a short window, so one shared squaring chain plus
-     ~19 multiplies does both parts (d=47: chain 27, popcounts 10 + 11).
-     A part too big for the table budget runs baby-step/giant-step:
-     d = 31 (M prime), 37 (616318177) and 41 (164511353, G = 2 on your
-     card); every d >= 42 fits whole (largest part 13264529, at d=47).
-4. **Progression**: j = u r^-1, gg = gcd(j, M) from M's factorization
-   (exact-division tests, no 64-bit division), s0 = v * j^-1 mod M with
-   j^-1 = j^(lambda(M)-1) (Carmichael exponent: 31 bits at d=47 instead
-   of 47; 16 at d=42).  Range test and `progression_open` as in round 1;
-   the minimal polynomial (d^2 work) only for in-range, improvable hits.
-   Marks go into the same best[] by atomicMin, so results do not depend
-   on order, chunking or device count.
-5. **Fast arithmetic** (`gf2_dlog.h`): 32x32 carry-less products from
-   integer multiplies on 4-bit-spaced bit classes (BearSSL style), one
-   Karatsuba level to 64x64, two-fold reduction by the sparse low part of
-   q (2-6 terms for every d <= 47), squaring by bit-spreading.  ~8x
-   cheaper than the bit-serial `gf_mul` the other paths use.
+1. **Enumeration (FKM).**  The degree-d classes are exactly the binary
+   Lyndon words of length d (aperiodic, least among their rotations); read
+   MSB first they are the odd representatives u < 2^(d-1) the round-2
+   kernel found by testing every odd u.  The Fredricksen-Kessler-Maiorana
+   algorithm visits the pre-necklaces in numeric order (~2 cheap steps per
+   class) and can start anywhere (`fkm_seek`), so each thread just walks
+   its runs of u.  Subfield elements are periodic words, so they are never
+   produced; nothing is tested and nothing is skipped.
+2. **Bit-slicing.**  32 elements as d u32 "planes" (bit k of plane i =
+   coefficient i of element k).  A product is sum over i+j=m of
+   a_i & b_j per output plane -- one LOP3 per term, d^2 for 32 products
+   (d=47: ~2,250 instructions, i.e. ~70 per product, against ~250 for one
+   scalar clmul product); the reduction by the fixed modulus only XORs
+   planes; a squaring is a plane permutation plus that reduction (~3 per
+   element).  The modulus is a compile-time constant per d (`gf2_qlow`, the
+   same smallest primitive polynomials `find_primitive_poly` returns; the
+   host checks they agree), so each d is its own template instantiation
+   with every plane in registers.  The plane computations are generated by
+   C++17 folds over index sequences rather than loops, so nothing depends
+   on how far the compiler is willing to unroll (clang gave up on the loop
+   version at d = 55 and spilled the planes).
+3. **g^u for all 32 at once**: left-to-right square-and-multiply by g = x,
+   where "multiply by x in the slots whose bit is set" is a select between
+   shifted and unshifted planes -- no general products at all.
+4. **Pohlig-Hellman (odd d)**: per part, X^(E_i) bit-sliced (shared by the
+   32 classes because E_i is the same for all), transpose back, then one
+   hash lookup per class and part, CRT.  The planner now considers splits
+   of M into up to 4 coprime parts with a cost model for the bit-sliced
+   kernel (squarings nearly free, products ~73 units per class, lookups
+   ~300 when from DRAM, plus 1 per MB of table), e.g. d=47: the same split
+   10610063 * 13264529 as round 2 (1 GB of slots), d=51: three parts in
+   68 MB, d=55: three parts in 384 MB.  Slots are 16-byte {key, value}
+   pairs, so a probe is one sector instead of two.
+5. **Tower (even d)**: transpose back to scalars and `tower_log` as before,
+   except T is now indexed by log_h(c) (T[l] = log(h^l + w)): the antilog
+   table AK is gone and a log is 3 table reads instead of 4
+   (LK[a], LK[b], T[l]); 12 bytes per K-element instead of 16.
+6. **Montgomery batch inversion**: the progression start needs j^-1 mod M
+   for each class; one exponentiation inverts the product of the 32 j's
+   (Carmichael exponent, as in round 2), then three multiplies per class
+   (one forward, two back) peel off the individual inverses.  Irregular
+   classes (gcd(u, M) > 1) leave the batch and go through the round-2 code.
+7. **Launch shape**: exactly one full wave of resident blocks (from the
+   occupancy API, so it adapts to whatever register count nvcc gives each
+   instantiation), each thread grid-striding over its runs.  A multi-wave
+   grid would leave its last wave part-idle (3.2 waves cost 4).
+8. **Safety checks** unchanged: every log range-checked, 1 in 256 classes
+   re-verified by exponentiation (slot 0 of every 8th batch), any error
+   stops the run before output or checkpoint; `COARSE_TEST_FAULT_EVERY`
+   still works (tested with both kernels).  As before, a lone random bit
+   flip in an unsampled log could still produce one false factor, which
+   check-ntl would reject.
 
-**Chunks.**  The sweep is cut into kernel launches of 2^17 thread-runs
-(d=47: 32768 chunks of 2^31 u-values).  Chunk geometry depends only on d,
-so a checkpoint's chunk index is stable.  Representatives cluster at
-small u (the least rotation starts with the longest zero run), so the
-first chunks of a degree are ~12x denser than average: the progress dots
-come slowly at first and quickly at the end.  The host waits on
-blocking-sync events (no polling gap between chunks, no busy CPU core).
+Per-class cost (from the compiled kernels and the planner's model): PH
+d=47 ~2,000-2,700 issue slots (round 2: ~10,500), tower d=46 ~550 (round
+2: ~3,900) plus its three random DRAM reads, which are now the tower's
+limit.
 
-**Safety checks.**  Every log is range-checked and every 256th one per
-thread is re-verified by exponentiation (g^v == g^u + 1); the tower table
-must be complete; an impossible minimal polynomial is counted too.  The
-count is read after every round of chunks, and any nonzero count stops
-the run ("discrete-log consistency errors ... NOT trustworthy", exit 1),
-so neither the output nor a checkpoint can include such a chunk.  The
-sampling catches anything systematic (a bug, a bad table, a flaky card)
-within the first chunk; a lone random bit flip in an unsampled log can
-still produce one false factor, which check-ntl would reject.  Test hook:
-`COARSE_TEST_FAULT_EVERY=n` corrupts the log of every class with
-u = 1 (mod n); with n=3 at d=19 the run stops after the first chunk
-(298 errors caught).
+## 2. Degrees above 47, and the d = 49 hole
 
-## 2. What changed
-
-`gf2_dlog.h` (new): the arithmetic above, `gf2f_is_min_rotation` (+ the
-all-rotations reference), Mersenne mulmod/powmod, exact-division tests,
-`TowerDev`/`tower_log`, `PHDev`/`ph_log`, host-side table builders and the
-PH planner (`ph_plan_host`: coprime split, exponent search, table sizes
-within budget).
-
-`coarse_sieve.cu`:
-* kernels `k_logs_sweep`, `k_tower_T`, `k_ph_build`, `k_dlog_check`,
-  `k_rep_check`; host driver `sieve_degree_gpu_logs` (setup per device,
-  chunk rounds across devices, checkpoint/stop at chunk boundaries,
-  heavy-progression drain as before, error abort);
-* method selection in `run_gpu`: dense if its tables fit, else logs
-  (tower for even d <= 46, PH otherwise), else buckets;
-  `COARSE_METHOD=auto|dense|buckets|logs|tower|ph` overrides;
-* checkpoints: same file format; the bucket-count field now carries a
-  method tag in bits 24+ (old round-1 checkpoints decode unchanged and
-  resume in the bucketed path; a logs checkpoint resumes in the logs path
-  and checks the chunk count);
-* logs-table budget: free VRAM minus the 256 MB reserve and
-  min(free/8, 512 MB) slack; `COARSE_LOGS_MAX_MB` caps it further
-  (smaller only means more giant steps for the PH parts that don't fit);
-* `--selftest-logs [logs|tower|ph]` (below);
-* bucket path: unchanged except the poll back-off (1 ms doubling to
-  128 ms instead of a flat 100 ms; short buckets were padded out);
-* header comments: Env / Sizing / Selftest / new "LOGS MODE" section.
+* **Key format.**  best[] keys stay `(d << 48) | mask` for d <= 47 (so all
+  existing files and checkpoints are unchanged) and become
+  `(0xF << 60) | ((d - 48) << 56) | mask` for d = 48..55.  Keys still order
+  by (degree, mask), all below the UINT64_MAX "no factor" marker.  A
+  `.found.bin` reader that does `d = key >> 48` must special-case the
+  `0xF` prefix (see the header comment); the .cert format is unchanged.
+* **Arithmetic** (two-fold reduction, mulmod, the tower and PH engines,
+  FKM, the necklace test) is validated to d = 55 (section 3).
+* **d = 49 is impossible here**: 2^49 - 1 = 127 * 4432676798593, and no
+  table can hold a 4.4e12-element subgroup (baby-step/giant-step would
+  need tens of thousands of giant steps per class even with a 4 GB table),
+  and a bucketed pass would take decades.  So `coarse_sieve_wide` now
+  refuses any run whose degree range includes 49, up front, with an
+  explanation.
+* **Why that also makes 50..55 pointless for certificates.**  A factor
+  found at degree 50..55 is real, but it is the *least*-degree factor only
+  if the trinomial has no degree-49 factor -- and ruling that out costs a
+  `factor` run covering degree 49, i.e. at least one full gcd, which is the
+  same ~100 CPU-s that run would spend finding the 50..55 factor itself.
+  So sieving 50..55 saves `factor` essentially nothing.  It is still
+  possible (it might be useful if only reducibility matters):
+  `--min-depth 50 --allow-degree-gap` with `--load-survivors` from d=48;
+  the program then prints that degree 49 is not covered, and labels its
+  survivors "no factor of degree <= 55 other than 49".
+* Making d = 49 possible would take a different discrete-log method (index
+  calculus over a factor base of irreducibles of degree <= ~16-20,
+  smoothness tests per class); my rough estimate is 2-9 GPU-days for d=49
+  alone and a substantial new subsystem.  It would only be worth it
+  together with 50..52; see section 7.
+* **Early stop**: if a degree cannot be done (no fitting tables), the run
+  now writes its outputs for the degrees it did finish, says so ("stopped
+  after degree N of M"), saves a checkpoint at that degree boundary if
+  checkpointing is on, and exits with status 2.  (Round 2 could not reach
+  this case, but with depth > 47 allowed it would otherwise have labelled
+  the outputs with the requested depth.)
 
 ## 3. Validation done here
 
-No GPU here; everything ran under the functional CUDA emulation
-(`cuda_emul.h`), plus host unit tests of the same code.
+No GPU here: everything ran on the CPU, the CUDA code under the functional
+emulation (`cuda_emul.h`), plus host unit tests of the same headers.
 
-* `gf2_dlog_selftest` (host): fast multiply / square / antilog vs the
-  bit-serial reference at every d = 2..47, Mersenne mulmod, inverses via
-  phi and via lambda, exact division: 3.5M checks, 0 mismatches.
-  Necklace test vs all rotations: exhaustive for d <= 22 (and the
-  representative count equals the necklace formula), random u with spread
-  leading-zero counts to d=47 -- 100M checks in a separate run, 0
-  mismatches.  Both log engines: every element for d <= 20 (separately
-  every element to d=24), 20,000-200,000 random elements per degree to
-  d=47, incl. BSGS at 31/37/41 (G up to 32): 0 wrong.
-* Full program, emulated, A/B against the round-1 binary (byte-for-byte
-  `found.bin` / cert / survivors):
-  - from scratch to d=22 through the logs path, 128 chunks at d=22;
-  - `--load-survivors` d = 19..23; stop mid-degree (after 37 chunks) +
-    `--resume`; automatic dense -> logs switch (emulated 400 MB card);
-    2 emulated GPUs; forced buckets; a round-1 checkpoint resumed by the
-    round-2 binary: all identical.
-  - fault injection (above): the run stops with exit 1 and no output.
-  - deep chain, r = 136279841, s <= 999,999: logs from scratch to d=28
-    vs round 1 (937,442 factors), then d = 29 (PH), 30 (tower), 31 (PH,
-    M prime, BSGS), 32 (tower) incrementally vs round-1 buckets:
-    certs and survivor lists identical at every degree, and the class
-    counts printed by both paths agree.
-* All selftests PASS: `--selftest`, `--selftest-lowmem 7`,
-  `--selftest-logs` (logs / tower / ph) in the wide build, `--selftest`
-  and `--selftest-lowmem 3` in the narrow build.  The `--selftest-logs`
-  engine checks ran in emulation for every d up to 47 (512 exponents
-  per engine, with tables built by the device kernels): 0 wrong.
-* Compile check: no nvcc here, but both builds compile as CUDA (device
-  and host passes) with clang 18 against the CUDA 12.9 headers, and the
-  device code assembles with NVIDIA's ptxas for sm_60/75/80/86, no
-  warnings: `k_logs_sweep` 80 registers, no spills (nvcc's allocation
-  will differ a little).
+* `gf2_dlog_selftest` (host, ~6 min, "ALL OK"): fast arithmetic vs the
+  bit-serial reference at every d = 2..55 (4.1M checks); necklace test and
+  FKM vs brute force (exhaustive for d <= 22, stretches at every density to
+  d = 55; 15.3M checks); bit-sliced multiply / square / select-shift / g^u /
+  X^E / transposes vs scalar at every D = 2..55 (0.5M checks), and the
+  compile-time moduli vs `find_primitive_poly`; both log engines with the
+  sieve's table layouts and both planners (bit-sliced, round-2): every
+  element for d <= 20, 20,000 random elements per degree to d = 55
+  (tower to d = 54 with the optional 5th argument), BSGS at 31/37/41 and in
+  the round-2 plans above 47: 0 wrong; **end to end at every d <= 55**: for
+  40 random classes per degree, Zech log -> j -> progression start s0
+  (lambda inverse) -> minimal polynomial f, then a direct check that f
+  divides x^r + x^s0 + 1 (r = 136279841) by arithmetic mod f: all pass;
+  key format order / range for d <= 55.
+* Full program, emulated, both kernels (batched and r2), byte-for-byte
+  against the round-1 references: from scratch to d=22 (128 chunks);
+  `--load-survivors` 19..23; stop mid-degree + `--resume`; automatic
+  dense -> logs switch; 2 emulated GPUs; fault injection stops the run;
+  a checkpoint written by the round-2 kernel resumed by the batched one; a
+  round-1 checkpoint resumed by round 3; forced buckets.  All identical.
+* Deep chain, r = 136279841, s <= 999,999: batched logs from scratch to
+  d=28 vs round 1 (937,442 factors), then d = 29 (PH), 30 (tower), 31 (PH,
+  M prime, BSGS), 32 (tower) incrementally: certs and survivor lists
+  identical, class counts identical to round 2's.
+* `--selftest-logs` extended to every d <= 55 (on the device; in emulation
+  run here with `COARSE_SELFTEST_LOGS_DMAX=55`): rotation test, both
+  engines with tables built by the device kernels, and the batched kernel
+  in check mode (log(g^u) == u for each of the ~2,000 classes it enumerates
+  per degree in emulation -- ~2 million on the GPU -- and its class count
+  equal to the necklace test's): 0 wrong at every degree.  (While testing
+  I found that my first version of this check sampled a stretch of u that
+  holds no classes at all at high degrees -- above d = 45 on the GPU -- so
+  it would have passed vacuously; it now uses a stretch that is ~48%
+  classes at every d, and fails if it finds too few.)
+* Gates: depth 49, a 49-including range, `--min-depth 50` without the
+  flag, depth 56: all refused with the right message; early stop
+  (`COARSE_TEST_STOP_DEGREE`): outputs equal to a shorter run, exit 2,
+  and stop + resume equals the full run.
+* Compile check: no nvcc here, but clang 18 (CUDA mode, CUDA 12.9 headers)
+  compiles both builds warning-free and NVIDIA's ptxas 12.9 assembles every
+  kernel for sm_75 with no spills.  Registers of `k_logs_batch`: PH 72-128
+  (d <= 31), ~167 (d = 33-39), 204-229 (41-47), 244-254 (49-55); tower
+  68-128.  So the PH kernels near the top run 8-9 warps per SM, which is
+  enough for LOP3 streams; nvcc's allocation will differ somewhat (if it
+  ever spills, `-Xptxas -v` will say so -- please send that output if the
+  timings look off).
 * Not testable here: GPU timing, nvcc itself, real multi-GPU.
 
 ## 4. Hardware test plan
 
     make coarse_sieve coarse_sieve_wide gf2_dlog_selftest
-    ./gf2_dlog_selftest                    # CPU, ~1 min: "ALL OK"
+          # coarse_sieve_wide now takes a few minutes: 54 kernel instantiations
+    ./gf2_dlog_selftest                     # CPU, ~6 min: "ALL OK"
     ./coarse_sieve --selftest
     ./coarse_sieve_wide --selftest
     ./coarse_sieve_wide --selftest-lowmem 7
-    ./coarse_sieve_wide --selftest-logs          # + engine checks to d=47
+    ./coarse_sieve_wide --selftest-logs          # engines + batched check to d=55
     ./coarse_sieve_wide --selftest-logs tower
     ./coarse_sieve_wide --selftest-logs ph
+    COARSE_LOGS_KERNEL=r2 ./coarse_sieve_wide --selftest-logs
 
-Each prints `selftest: PASS`; the `--selftest-logs` runs also print one
-line per engine and degree, e.g.
-`[d=47 PH    logs,  768 MB tables: 1048576 checked, 0 wrong, ...]`.
+Each prints `selftest: PASS`.  The `--selftest-logs` runs print one line
+per engine and degree, now ending in `batched: <~2 million> classes, ok`;
+they build tables up to d = 55 (1.5 GB at d=54), so allow a few minutes.
 
-Regression against your round-1 certs (logs is now the automatic choice
-at these degrees; adjust names to your files):
+Regression against your round-2 outputs, e.g. with the r2_ files of your
+33..41 regression (adjust names; extend to 42..45 with your production
+files -- d=43..45 give meaningful timings in under an hour):
 
-    for d in $(seq 33 41); do
-      ./coarse_sieve_wide 136279841 $d r2_$d \
-          --load-survivors out$((d-1)).survivors.txt --min-depth $d
-      cmp r2_$d.found.cert out$d.found.cert && \
-      cmp r2_$d.survivors.txt out$d.survivors.txt && echo "d=$d identical"
+    for d in $(seq 34 41); do
+      ./coarse_sieve_wide 136279841 $d r3_$d \
+          --load-survivors r2_$((d-1)).survivors.txt --min-depth $d
+      cmp r3_$d.found.cert r2_$d.found.cert && \
+      cmp r3_$d.survivors.txt r2_$d.survivors.txt && echo "d=$d identical"
     done
 
-Expect seconds per degree through d=40 (about a minute at d=39) and a
-few minutes at d=41: the whole loop ~10 min, vs ~7.5 h bucketed.  The
-same loop with `COARSE_METHOD=buckets` reproduces round 1 if you ever
-want an A/B.  Your oracle runs for the smaller Mersenne r are another
-cheap cross-check.
+A same-binary A/B: rerun one degree with `COARSE_LOGS_KERNEL=r2` -- it
+should reproduce your round-2 timing.  The r = 74207281 oracle check
+(d = 41..44) is another cheap cross-check.
 
-Production, one degree at a time as before:
+Production, the one new degree worth running:
 
-    ./coarse_sieve_wide 136279841 42 out42 --load-survivors out41.survivors.txt \
-        --min-depth 42 --checkpoint out42.ckpt --checkpoint-mins 20
+    ./coarse_sieve_wide 136279841 48 out48 --load-survivors out47.survivors.txt \
+        --min-depth 48 --checkpoint out48.ckpt --checkpoint-mins 20
 
-and so on to 47 (or one run `... 47 out47 ... --min-depth 42` for all
-six; the cert then holds degrees 42..47).  The first lines show the
-engine and tables, e.g. `d=42 logs (tower, 32 MB tables, built in 0.4s),
-1024 chunks:`.  Please send the `done` lines for d=41..43: they pin the
-real per-class cost, and d+2 then takes ~4x as long as d.
+The header line should read `d=48 logs (tower, batched, 192 MB tables,
+...), 65536 chunks:`.  Please send the `done` lines (d=48 and any re-runs)
+-- they will pin the real per-class costs.
 
 ## 5. Projections (RTX 2070 SUPER)
 
-From an instruction-count model of the compiled kernels (PTX weighted
-for 64-bit ops, 4.5e12 issue slots/s, 65-100% efficiency); the round-1
-column is your measurements up to d=40 and the calibrated model above.
+Round 2 column: your measurements.  Round 3: the instruction counts above
+scaled by the effective rate your round-2 runs showed (1.5e12 issue
+slots/s), a little better for the LOP3-dense PH code; the tower rows are
+bounded by ~3 random DRAM reads per class (~0.4-0.6 ns at a realistic
+random-sector rate).  Treat them as estimates.
 
-| d | engine | classes | round 2 (est.) | round 1 (buckets) |
+| d | engine | classes | round 2 (measured) | round 3 (est.) |
 |---|---|---|---|---|
-| 33-36 | PH / tower | 0.26-1.9e9 | ~1-4 s each | 9-59 s |
-| 37 | PH (BSGS) | 3.7e9 | ~15-25 s | 146 s |
-| 38 | tower | 7.2e9 | ~5-10 s | 422 s |
-| 39 | PH | 1.4e10 | ~1 min | 25 min |
-| 40 | tower | 2.7e10 | ~20-30 s | 1.5 h |
-| 41 | PH (BSGS) | 5.4e10 | ~3-5 min | ~5 h |
-| 42 | tower | 1.0e11 | ~1-2 min | ~20 h |
-| 43 | PH | 2.0e11 | ~13-20 min | ~3.3 days |
-| 44 | tower | 4.0e11 | ~5-8 min | ~13 days |
-| 45 | PH | 7.8e11 | ~50-75 min | ~7 weeks |
-| 46 | tower | 1.5e12 | ~25-40 min | ~7 months |
-| 47 | PH | 3.0e12 | ~3-4.5 h | ~2.3 years |
+| 41 | PH | 5.4e10 | 399 s | ~1.5-2 min |
+| 42 | tower | 1.0e11 | 222 s | ~1 min |
+| 43 | PH | 2.0e11 | 1,646 s | ~6-8 min |
+| 44 | tower | 4.0e11 | 945 s | ~3-5 min |
+| 45 | PH | 7.8e11 | 6,380 s | ~20-30 min |
+| 46 | tower | 1.5e12 | 4,022 s | ~13-20 min |
+| 47 | PH | 3.0e12 | 21,242 s | ~1-1.5 h |
+| 48 | tower | 5.9e12 | -- | ~1-2 h |
+| 49 | -- | 1.1e13 | not possible | not possible |
+| 50 | tower | 2.3e13 | -- | ~3-6 h (see section 2) |
+| 51 | PH | 4.4e13 | -- | ~1-1.5 days |
+| 52 | tower | 8.7e13 | -- | ~0.5-1 day |
+| 53 | PH | 1.7e14 | -- | ~4-6 days |
+| 54 | tower | 3.3e14 | -- | ~2-4 days |
+| 55 | PH | 6.6e14 | -- | ~13-19 days |
 
-Plus ~1-5 s of table setup per degree.  Odd degrees cost more: a PH log
-is ~12,000 instructions (27 squarings, 19 multiplies, 2 lookups) against
-~200 plus a few table reads for the tower.  The per-class inverse
-(~3,000) and the sweep (~70 per odd u) are the rest.  Sieving 42..47
-removes about 1 - 41/47 = 13% of the survivors (~370k s), i.e. roughly
-11,000 CPU-hours of `factor` first-interval work at ~108 CPU-s each.
+What d=48 buys: about 1/48 of the ~2.5M survivors of d=47 (~50k s; your
+`out47` count divided by 48 is the real number), each saving a `factor`
+first interval (~100 CPU-s), i.e. ~1,400 CPU-hours for ~1-2 GPU-hours.
 
 ## 6. Operational notes
 
-* Memory: best[] (545 MB at full smax) + tables: tower 16 * 2^(d/2) bytes
-  (32 MB at d=42, 128 MB at d=46); PH 192-768 MB for d = 43..47, up to
-  the budget for d = 31/37/41.  Nothing else scales with d.
-* Stop / checkpoint: SIGINT/SIGTERM are honoured at the next chunk
-  boundary -- at most a few seconds at d=47 (the densest chunks come
-  first), within the ~30 s spot-reclaim budget.  Checkpoints are written
-  at chunk boundaries; resume with `--resume <file>` exactly as before.
-  A logs checkpoint must be resumed by a wide build of this round (the
-  narrow build says so).
-* Multi-GPU: chunks go round-robin like buckets; each device builds its
-  own tables (sized for the smallest card).
-* "survivors" in the `done` line is, as in round 1, the number of degree-d
-  classes examined (e.g. 69,273,666 at d=31); it must match between paths.
-* Depth ceiling stays 47 (packed key, and the fast arithmetic's two-fold
-  reduction).
+* Memory: best[] (545 MB at full smax) + tables: tower 12 * 2^(d/2) bytes
+  (96 MB at d=46, 192 MB at d=48, 1.5 GB at d=54); PH as planned (1 GB at
+  d=47; 68 MB-1 GB above 49).
+* Chunks as before (d=48: 65536 chunks of 2^31 u); the first chunks of a
+  degree are the densest, so dots come slowly at first.  A stop request
+  waits for the in-flight chunk (well under a second now).
+* `COARSE_LOGS_KERNEL=r2` selects the round-2 kernel and the round-2 PH
+  plan; checkpoints do not record the kernel, so either can resume either.
+* Exit status 2 now means "stopped early, outputs cover fewer degrees than
+  asked" (section 2).
+* "survivors" in the `done` line is still the number of classes examined;
+  it must equal round 2's for the same degree.
 
-## 7. Round 3 candidates (not done)
+## 7. Round 4 candidates (not done)
 
-1. **Auto-checkpoint** (your PS): default `<out_prefix>.ckpt`, default
-   interval 15 min, and if that file exists at start, resume from it
-   automatically.  To be safe it needs the run's identity in the
-   checkpoint (r, depth, min-depth, smax, a hash of the loaded survivors
-   / found file) so a stale file from a different command line is refused
-   with a clear message instead of being resumed; plus `--no-checkpoint`,
-   and removing (or marking complete) the file after a successful run.
-   Small change; checkpoints are ~1 MB, so 15 min costs nothing.
-2. Batch (Montgomery) inversion of j, ~8 classes per thread: ~-40% on the
-   tower degrees (the inverse dominates there), ~-15% on PH degrees.
-3. Bit-sliced PH exponentiation (32 classes per thread as bit-planes):
-   squarings become nearly free and multiplies ~4x cheaper; est. 2-3x on
-   odd d (d=47 ~1.5 h).  Register pressure is the risk; a real rewrite.
-4. d > 47: needs a wider packed key and a three-fold reduction; each
-   extra degree ~2x the previous and removes ~1/d of the survivors.
+1. **Auto-checkpoint** (your earlier PS; sketch unchanged from the round-2
+   handoff): default `<out_prefix>.ckpt` every ~15 min, auto-resume when
+   it exists, with the run's identity (r, depth, min-depth, smax, hash of
+   the loaded file) stored and checked so a stale file is refused, plus
+   `--no-checkpoint`.
+2. **Index calculus for d = 49** (and with it 50..52).  Rough economics:
+   49..52 would certify ~4 * 50k s for maybe 4-12 GPU-days including d=49,
+   i.e. ~20-60 CPU-hours of `factor` work per GPU-hour, against ~17 for
+   the GPU running tsfactor's deep tail (13.5 vs 233 ms per degree).
+   Better, but only modestly, for a substantial new subsystem.
+3. **Tower: 2 DRAM reads per log instead of 3.**  The tower degrees are
+   now bound by their three random reads (LK[a], LK[b], T).  Computing
+   c = a/b in K = GF(2^(d/2)) in bit-sliced form (an Itoh-Tsujii inversion,
+   ~150 instructions per class) and indexing T by c directly would leave
+   only LK[b] and T[c]: perhaps ~1.5x on even d, if they measure
+   memory-bound as expected.
+
+## 8. Your tsfactor question
+
+You're right that the round 2/3 ideas don't carry over to tsfactor's inner
+loop.  They all exploit the shape of the sieve's work -- an enormous number
+of tiny, independent problems (one d-bit field element per class): that is
+what lets 32 classes share a bit-sliced exponentiation, a table lookup
+replace a discrete log, FKM skip non-representatives, and one inversion
+serve 32 classes.  tsfactor's work is the opposite shape: a few huge,
+dependent operations per s (squarings and FFT products of 136M-bit
+polynomials, then gcds), bound by memory bandwidth and CPU gcd time, with
+nothing to batch across s (each s is a different modulus).
+
+Two smaller things do transfer:
+
+* **Blocking sync.**  tsfactor never calls
+  `cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync)`, so with the default
+  (spin while waiting, when there are fewer CUDA contexts than CPU threads)
+  every thread that waits on the GPU -- the scan thread at each
+  `cudaMemcpy`/`cudaDeviceSynchronize`, and, with `--gpu-gcd`, the gcd
+  threads waiting on GPU products -- burns a whole core while it waits.
+  coarse_sieve switched to blocking-sync waits in round 2 for that reason.
+  Since easy survivors are gcd-bound, it may be worth one line (before the
+  first CUDA call) and an A/B; `top -H` during a run would show whether
+  tsfactor's waiting threads sit at 100%.
+* **Depth is the lever.**  Every survivor that reaches `factor`/tsfactor
+  costs at least one full gcd, so the cheapest work saved is the work never
+  started: each extra coarse_sieve degree certifies ~1/d of the survivors
+  with no per-s cost.  That is the case for d=48 above -- and, with
+  d = 49 impossible here, also where this approach ends.
+
+## Appendix: round 2 (2026-10-19), for reference
+
+Round 2 replaced the bucketed low-memory path (time ~4x per degree) with
+the logs path (~2x per degree): one Zech logarithm per class, computed
+directly from tables of ~2^(d/2) entries -- tower decomposition for even
+d, Pohlig-Hellman (with baby-step/giant-step where a part does not fit) for
+odd d -- plus fast clmul arithmetic, a necklace test, Carmichael-exponent
+inverses, blocking-sync waits, chunked checkpointing and log
+self-verification.  Your hardware results: selftests PASS; d = 33..41
+identical to round 1; production done through d = 47 (d=41 399 s, 42
+222 s, 43 1,646 s, 44 945 s, 45 6,380 s, 46 4,022 s, 47 21,242 s);
+r = 74207281 d = 41..44 matched the Brent certificates.
 
 ## Appendix: round 1 (2026-10-18), for reference
 
@@ -296,6 +366,6 @@ the per-bucket slice resolve, which is what made d = 33/34 slower than
 estimated).
 
 Round-1 answers that still stand: more CPU RAM / SSD / HDD would not
-help (recomputing beats every storage tier, and round 2 needs no big
+help (recomputing beats every storage tier, and the logs path needs no big
 table at all); hand-written PTX would not either (ptxas re-schedules
 anyway; the wins are algorithmic).

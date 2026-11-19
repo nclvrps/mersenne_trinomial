@@ -67,14 +67,16 @@ sieve_ref: sieve_ref.cpp gf2_small_field.h gf2_field_setup.h
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
 
 # host self-test of the discrete-log engines used by coarse_sieve_wide
+# (gf2_dlog.h needs C++17: the bit-sliced arithmetic is expanded by folds)
 gf2_dlog_selftest: gf2_dlog_selftest.cpp gf2_dlog.h gf2_wide_field.h gf2_wide_setup.h
-	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
+	$(CXX) $(CXXFLAGS) -std=c++17 $(INC) -o $@ $<
 
 coarse_sieve: coarse_sieve.cu gf2_small_field.h gf2_field_setup.h
 	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
 
+# (~54 kernel instantiations of the logs path: expect a few minutes)
 coarse_sieve_wide: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h
-	$(NVCC) $(NVFLAGS) -DWIDE_FIELD $(INC) -o $@ $<
+	$(NVCC) $(NVFLAGS) -std=c++17 -DWIDE_FIELD $(INC) -o $@ $<
 
 cantor_ref: cantor_ref.cpp gf2_cantor_core.h gf2_cantor_engine.h
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
@@ -121,7 +123,7 @@ emul-coarse_sieve_wide:
 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
 	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
 	$(SEDLAUNCH) $$(find . sieve -maxdepth 1 -name 'coarse_sieve.cu' 2>/dev/null | head -1) > build_emul/coarse_sieve_wide.cpp
-	$(CXX) $(CXXFLAGS) -x c++ -DWIDE_FIELD -Ibuild_emul -o build_emul/coarse_sieve_wide build_emul/coarse_sieve_wide.cpp
+	$(CXX) $(CXXFLAGS) -std=c++17 -x c++ -DWIDE_FIELD -Ibuild_emul -o build_emul/coarse_sieve_wide build_emul/coarse_sieve_wide.cpp
 
 emul-tsfactor:
 	@echo "== $(NTLMSG) =="

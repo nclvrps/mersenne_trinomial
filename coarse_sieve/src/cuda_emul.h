@@ -15,6 +15,14 @@ static inline cudaError_t cudaMemset(void* d, int v, size_t n) { memset(d, v, n)
 static inline cudaError_t cudaDeviceSynchronize() { return 0; }
 static inline cudaError_t cudaGetLastError() { return 0; }
 static inline cudaError_t cudaSetDevice(int) { return 0; }
+static inline cudaError_t cudaGetDevice(int* d) { *d = 0; return 0; }
+// launch-shape queries: a small pretend GPU (4 SMs, 2 resident blocks per SM
+// for any kernel) -- only the work split changes, never the results
+enum cudaDeviceAttr { cudaDevAttrMultiProcessorCount = 16 };
+static inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int) {
+    *v = a == cudaDevAttrMultiProcessorCount ? 4 : 0; return 0; }
+template <class F> static inline cudaError_t
+cudaOccupancyMaxActiveBlocksPerMultiprocessor(int* n, F, int, size_t) { *n = 2; return 0; }
 // test hooks: EMUL_NDEV=n pretends to have n devices (all the same host
 // memory); EMUL_FREE_MB=m reports m MB free (default 64 GB) so the
 // memory-dependent paths (coarse_sieve buckets / logs tables) can be hit
