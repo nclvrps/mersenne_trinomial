@@ -1,4 +1,4 @@
-// coarse_sieve.cu  (round 7)
+// coarse_sieve.cu  (round 8)
 // GPU coarse sieve for the least-degree irreducible factors of the
 // trinomials x^r + x^s + 1 over GF(2), all s in [1, floor(r/2)], factor
 // degrees d <= 55.
@@ -34,12 +34,17 @@
 //     --gpus <N>              use N GPUs (default: all; chunks are dealt out,
 //                             results merged by minimum; no peer access needed)
 //     --no-tune               skip the per-degree timing of kernel variants
+//     --watchdog-mins <N>     exit with status 3 when nothing progresses for N
+//                             minutes, e.g. a hung GPU (default 30; 0: off;
+//                             see WATCHDOG)
 //   coarse_sieve --selftest [tower|ph|rr]
 //
 // Build:  nvcc -O3 -arch=native -std=c++17 -Xcompiler -march=native -I.
 //              -o coarse_sieve coarse_sieve.cu
-//         (needs gf2_wide_field.h, gf2_wide_setup.h, gf2_dlog.h; the ~80
-//         kernel instantiations take a few minutes to compile)
+//         (needs gf2_wide_field.h, gf2_wide_setup.h, gf2_dlog.h; the ~110
+//         kernel instantiations take several minutes to compile).  Add
+//         -DCOARSE_PHASE_TIMING for a diagnostic build that reports where
+//         the batched kernel's time goes (see PHASE TIMING).
 //
 // METHOD
 // Work in GF(2^d) = GF(2)[x]/(q_d), q_d primitive, so g = x generates the
@@ -118,14 +123,18 @@
 // For d >= 40 (COARSE_TUNE_MIN) each degree first runs its candidate
 // variants on one dense sample of ~2^26 classes on GPU 0 -- the subfield
 // towers over the two largest proper divisors of m and the classic tower
-// at even d, PH and RR at odd d; the tower and RR ones also in round 5's
-// loop order ("r5-order", see logs_batch) -- and sieves with the fastest;
-// the "[tune ...]" line reports ns per class for each.  All variants
-// compute identical results.  --no-tune (COARSE_TUNE=0) turns this off.
-// The choice is stored in checkpoints, so a resumed degree keeps it without
-// re-timing.
+// at even d, PH and RR at odd d; the tower and RR ones in each loop order:
+// round 5's ("r5-order", the default since round 8), round 6's ("r6-order",
+// the table reads one class ahead) and, round 8, the grouped one
+// ("grouped": the logs, inversion and marking in groups of 8 held in
+// registers; logs_batch_grouped); and at d = 48 and 52, where it decides
+// the L1 size, the subfield tower with its table TP in global memory too
+// ("TP-global"; tower_tp_choice) -- and sieves with the fastest; the
+// "[tune ...]" line reports ns per class for each.  All variants compute
+// identical results.  --no-tune (COARSE_TUNE=0) turns this off.  The choice
+// is stored in checkpoints, so a resumed degree keeps it without re-timing.
 //
-// CHECKPOINTS (format v4, rounds 6-7)
+// CHECKPOINTS (format v4, rounds 6-8)
 // Every run saves to <out_prefix>.ckpt (or --checkpoint <file>) every 15
 // minutes, at a chunk boundary, and on SIGTERM or SIGINT: the first signal
 // saves and exits after the chunk in flight (seconds), a second exits at
@@ -133,10 +142,15 @@
 // the run (r, smax, the degree range, the seed file's path and a hash of its
 // contents) and a different command line refuses to start rather than mix
 // two runs.  --fresh sets the old file aside (*.old) and starts over;
-// --no-checkpoint writes none; <file>.lock keeps a second run off the same
-// file; a finished run deletes it.  The file also records the position
+// --no-checkpoint writes none; a finished run deletes it.  <file>.lock
+// keeps a second run off the same file: what counts is the flock on it,
+// which ends with its process however that ends, so a lock file left by a
+// killed run is harmless and never needs deleting (round 8 notes one when
+// it finds it, and unlinks its own on a second signal and on a watchdog
+// exit too).  The file also records the position
 // (degree, chunks done, the classes they covered) and the degree's engine,
-// inner subfield and loop order, and holds best[] as a delta against the
+// inner subfield, loop order and (round 8) TP placement, and holds best[]
+// as a delta against the
 // seed image when that is small (a few MB for a one-degree run), else as a
 // full image (8 bytes per s).  Writes are atomic (tmp + rename); the two
 // previous generations are kept as <file>.1 and <file>.2.  Round 7: it also
@@ -144,7 +158,22 @@
 // a resumed degree's done line (and the total) gives the time of one
 // uninterrupted run -- each run's time up to its last checkpoint; the table
 // rebuild of a resumed run is not counted there -- with this run's own
-// time beside it.
+// time beside it.  Round 6's and 7's binaries read round 8's checkpoints
+// (they take the grouped order for their own pipelined one and ignore the
+// TP flag: the same results), and round 8 reads theirs.
+//
+// WATCHDOG (round 8)
+// If no chunk, tuner sample, table-building launch or checkpoint write
+// completes for --watchdog-mins (30), the run says so and exits with
+// status 3, the last checkpoint intact -- for unattended runs, where a hung
+// GPU would otherwise burn hours; a wrapper can restart it:
+//     until ./coarse_sieve ...; do [ $? -eq 3 ] || break; sleep 60; done
+//
+// PHASE TIMING (round 8; a build option, -DCOARSE_PHASE_TIMING)
+// Each degree (and a stop) prints the batched kernel's warp-cycles per log
+// and lane by phase -- fill (enumeration and deal), g^u (bit-sliced),
+// logs, inversion, marking, other -- and their shares.  The production
+// build has none of this code.
 //
 // MEMORY
 // best[] (8 bytes per s: 545 MB at r = 136279841) on every GPU, plus the
@@ -173,8 +202,20 @@
 //   COARSE_LOGS_CHUNK_LOG2=k   chunks of at most 2^k u values (a resume
 //                         must use the same k)
 //   COARSE_TUNE=0, COARSE_TUNE_MIN=d, COARSE_TUNE_PICK=i (take candidate i)
-//   COARSE_PIPE=0|1       fix the loop order (0: round 5's; 1: table reads
-//                         one class ahead, the default) instead of tuning it
+//   COARSE_PIPE=0|1|2     fix the loop order instead of tuning it (0: round
+//                         5's, the default; 1: round 6's, the table reads
+//                         one class ahead; 2: grouped, round 8 -- tower and
+//                         RR at d >= 40 on the GPU, other degrees fall back
+//                         to 0)
+//   COARSE_LDCG=0         the random table reads (tower T, RR L) through L1,
+//                         as before round 8 (default 1: past L1, __ldcg)
+//   COARSE_TOWER_TP=shared|global   fix where the subfield tower's TP lives
+//                         (default auto: shared memory if it fits; the tuner
+//                         also times global at d = 48, 52)
+//   COARSE_TEST_TP_CHOICE=1   offer the TP-global candidates at every degree
+//   COARSE_TEST_WATCHDOG_SECS=s   the watchdog's limit in seconds
+//   COARSE_TEST_HANG_AFTER_CHUNKS=n   hang (no progress, stop requests
+//                         ignored) once n chunks are done
 //   COARSE_FILL=0|1|2|3   how the batches are filled (round 7, k_logs_batch):
 //                         0 round 6's, 1 rotated runs, 2 pooled, 3 pooled
 //                         with runs taken from a counter (the default)
@@ -199,7 +240,10 @@
 // faster at every degree), the round-2 kernel, the round-4 irregular path,
 // .found.bin files and the old checkpoint formats; round 7 full batches
 // (the warps pool the classes they find), the faster pair tie-break, the
-// time of all runs in checkpoints, and lockstep warps in the emulation.
+// time of all runs in checkpoints, and lockstep warps in the emulation;
+// round 8 the watchdog and the lock-file notes, the grouped loop order and
+// TP-global as tuner candidates, table reads past L1, round 5's order as
+// the untuned default, and the phase-timing build.
 
 // the CPU emulation (make emul-coarse_sieve) runs the lanes of each warp in
 // lockstep, for the batched kernel's warp intrinsics (cuda_emul.h)
@@ -221,6 +265,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
+#include <cerrno>
+#include <atomic>
+#include <pthread.h>
 
 // fw ("field word"): field elements and everything indexed like them
 typedef u64 fw;
@@ -366,10 +414,17 @@ struct LogsParams {
     u64 M, q, qlow, rmodinv, smax;
     u64 rmod;                      // r mod M (the partner's s0 = r - s0)
     int pair;                      // 1: one Zech log per reciprocal pair
-    int pipe;                      // 1: table reads one class ahead (round 6)
+    int pipe;                      // the loop order: 0 round 5's (round 8's
+                                   // default), 1 round 6's (table reads one
+                                   // class ahead), 2 grouped (round 8: its
+                                   // own kernel, logs_batch_grouped)
     int fill;                      // round 7: the batches' fill (FILL_*)
     unsigned long long *runctr;    // FILL_POOL: the launch's next run (zeroed
                                    // before each launch)
+    int ldcg;                      // round 8: the random table reads (tower T,
+                                   // RR L) bypass L1 (__ldcg)
+    unsigned long long *prof;      // round 8, -DCOARSE_PHASE_TIMING builds:
+                                   // per-phase warp-cycles (PT_*), or null
     u64 lam_m1;                    // lambda(M) - 1: j^-1 = j^(lambda-1) mod M
     u64 fault;                     // test hook: corrupt the log of u = 1 mod fault
     int check;                     // selftest: compute log(g^u), count != u
@@ -649,6 +704,47 @@ __global__ void k_pair_check(LogsParams L, const fw *gpow2, u64 seed,
 //   * then each class's progression, and its partner's: s == r - s0 (mod n).
 #define LB 32
 
+// Per-phase timing of the batched kernel (round 8; a build option,
+// -DCOARSE_PHASE_TIMING, so the production kernels are untouched): lane 0
+// of every warp adds the clock64() cycles of each phase to L.prof[PT_*].
+// The warp runs in lockstep, so these are wall-clock cycles of the warp,
+// stalls included -- where a warp's time goes, not what each lane computes.
+enum { PT_FILL = 0, PT_GU, PT_LOGS, PT_INV, PT_MARK, PT_REST, PT_NPH,
+       PT_BATCH = PT_NPH, PT_ENTRY, PT_N };
+#if defined(COARSE_PHASE_TIMING)
+#define PT_PARAM , long long &pt_t
+#define PT_ARG , pt_t
+#define PT_INIT long long pt_t = clock64()
+#define PT(ph) pt_mark(L.prof, pt_t, (ph))
+#define PT_COUNT(i, v) do { if (L.prof) atomicAdd(&L.prof[i], (unsigned long long)(v)); } while (0)
+__device__ __forceinline__ void pt_mark(unsigned long long *prof, long long &t,
+                                        int ph) {
+    const long long now = clock64();
+    if (prof && (threadIdx.x & 31u) == 0)
+        atomicAdd(&prof[ph], (unsigned long long)(now - t));
+    t = now;
+}
+#else
+#define PT_PARAM
+#define PT_ARG
+#define PT_INIT do {} while (0)
+#define PT(ph) do {} while (0)
+#define PT_COUNT(i, v) do {} while (0)
+#endif
+
+// A random read of a big table (tower T, RR L): with L.ldcg (round 8, the
+// default) past L1, where its line would never be read again and would only
+// evict the batch arrays' local memory -- 64-80% of the L1 traffic in the
+// round-7 profiles.  COARSE_LDCG=0 reads through L1 as before.
+__device__ __forceinline__ u64 logs_ld(const u64 *p, int cg) {
+#if defined(__CUDA_ARCH__)
+    return cg ? (u64)__ldcg((const unsigned long long *)p) : *p;
+#else
+    (void)cg;
+    return *p;
+#endif
+}
+
 // Stage A of a class's log (tower, RR): the table reads -- the tower's
 // coordinates, inner logs and T[l]; RR's split and L[r], L[t].  Stage B
 // (logs_stage_b: logs_stage_v, logs_fwd_tail) combines them and does the
@@ -662,13 +758,13 @@ __device__ __forceinline__ void logs_stage_a(u64 x, const LogsParams &L,
         const u64 pk = tower_coords(x, tw);
         inK = !tower_split(pk, tw, &lb, &l);
         if (inK) { lb = tower_klog_cold(pk & tw.MK, tw); tv = 0; }  // x in K*
-        else tv = tw.T[l];
+        else tv = logs_ld(tw.T + l, L.ldcg);
     } else {                                    // RR: x = r/t, two reads
         u64 rr_r;
         u32 rr_t;
         rr_split<D>(x, &rr_r, &rr_t);
-        lb = L.rr.L[rr_r];
-        tv = L.rr.L[rr_t];
+        lb = logs_ld(L.rr.L + rr_r, L.ldcg);
+        tv = logs_ld(L.rr.L + rr_t, L.ldcg);
         inK = false;
     }
 }
@@ -747,7 +843,7 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
                                            bool verify, ull *best,
                                            Heavy *heavy, unsigned *nheavy,
                                            unsigned *overflow, fw *P,
-                                           unsigned long long *err) {
+                                           unsigned long long *err PT_PARAM) {
     const u64 M = L.M;
     for (int k = n; k < LB; k++) ub[k] = 1;     // padding; results unused
     u32 X[D];
@@ -757,6 +853,7 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
         bs_pow_g<D>(U, X);                      // g^u
     }
     if (!L.check) X[0] = ~X[0];                 // x = g^u + 1
+    PT(PT_GU);
     if (METHOD == LM_PH) {
         for (int k = 0; k < LB; k++) vb[k] = 0;
         for (int i = 0; i < L.ph.nparts; i++) {
@@ -804,9 +901,10 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
     //          runs one class ahead, so each class's DRAM reads have a whole
     //          iteration (class k-1's stage B, class k+1's stage A) to
     //          arrive; x runs two classes ahead (a local-memory read);
-    //   otherwise (round 5): each iteration loads the next class's x and u
-    //          first, and issues its own T read before the work that does
-    //          not depend on it (j, the divisibility mask).
+    //   otherwise (round 5; round 8's default): each iteration loads the
+    //          next class's x and u first, and issues its own T read before
+    //          the work that does not depend on it (j, the divisibility mask).
+    //   (The grouped order, L.pipe = 2, is logs_batch_grouped below.)
     u64 acc = 1;
     bool any = false, piped = false;
     if constexpr (METHOD != LM_PH) {
@@ -861,8 +959,10 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
                              acc, any, err);
         }
     }
+    PT(PT_LOGS);
     if (!any) return;
     u64 inv = gf2f_powmod_m(acc, L.lam_m1, D, M);   // (prod J)^-1
+    PT(PT_INV);
     // backward: J^-1 = inv * tb[k], then inv <- inv * J (Montgomery)
     u64 vn = vb[n - 1], Jn = ub[n - 1], tn = tb[n - 1], gn = xb[n - 1];
     for (int k = n - 1; k >= 0; k--) {
@@ -899,6 +999,152 @@ __device__ __forceinline__ void logs_batch(const LogsParams &L,
                               heavy, nheavy, overflow, P, err);
             }
         }
+    }
+    PT(PT_MARK);
+}
+
+// The grouped loop order (round 8, L.pipe = 2; tower and RR, d >= 40 on the
+// GPU): the batch's logs, inversion and marking go in groups of LG = 8
+// classes, each group with its own inversion, so that everything a class
+// carries from its log to its marking -- v, J, the prefix product, gg --
+// stays in registers (the loops over a group are unrolled, so the arrays are
+// indexed by constants).  The round-5/6 orders keep those in the batch
+// arrays in local memory: per class three stores in the forward step and
+// four loads in the backward one, against a working set of ~1 KB per thread
+// (512 KB per SM) that L1 (64 KB) cannot hold -- in the round-7 ncu profile
+// of RR at d=47, local memory is 64% of the L1 traffic and 90% of its loads
+// miss L1.  Here only u and x = g^u + 1 pass through local memory (written
+// once, read once).  The price: four modular inversions per batch instead
+// of one (by my count ~5-8% more instructions, depending on the exponent
+// lambda(M) - 1), and eight unrolled copies of a class's code (~13 KB each
+// in SASS, its hot part ~3 KB: the loop no longer fits L0's 16 KB but
+// should fit L1's 46 KB at odd d, where irregular classes are rare).
+// Results are identical; the tuner times it against the other orders.  Also
+// a check the other orders lack: each group's first inverse in the backward
+// step is multiplied back (J * J^-1 == 1 mod M), one multiply per group.
+#define LG 8
+template <int D, int METHOD>
+__device__ __forceinline__ void logs_batch_grouped(const LogsParams &L,
+                                                   const TowerDev &tw,
+                                                   const fw *gpow2, u64 (&ub)[LB],
+                                                   u64 (&vb)[LB], int n, u32 pairm,
+                                                   bool verify, ull *best,
+                                                   Heavy *heavy, unsigned *nheavy,
+                                                   unsigned *overflow, fw *P,
+                                                   unsigned long long *err PT_PARAM) {
+    static_assert(METHOD != LM_PH, "the grouped order is for tower and RR");
+    const u64 M = L.M;
+    for (int k = n; k < LB; k++) ub[k] = 1;     // padding; results unused
+    u32 X[D];
+    {
+        u32 U[D];
+        bs_load<D>(ub, U);
+        bs_pow_g<D>(U, X);                      // g^u
+    }
+    if (!L.check) X[0] = ~X[0];                 // x = g^u + 1
+    PT(PT_GU);
+    bs_store<D>(X, vb);
+    if (L.check) {                              // selftest: log(g^u) == u?
+        for (int k = 0; k < n; k++) {
+            u64 lb = 0, tv = 0;
+            bool inK = false;
+            logs_stage_a<D, METHOD>(vb[k], L, tw, lb, tv, inK);
+            if (logs_stage_v<METHOD>(lb, tv, inK, M, tw) != ub[k]) (*err)++;
+        }
+        return;
+    }
+    for (int g0 = 0; g0 < n; g0 += LG) {
+        u64 Vg[LG], Jg[LG], Tg[LG], Gg[LG];
+        u64 acc = 1;
+        bool any = false;
+        // forward: as logs_batch's round-5 order, into the group's registers
+        GF2D_UNROLL
+        for (int i = 0; i < LG; i++) {
+            Vg[i] = VB_SKIP;
+            Jg[i] = 1;
+            Tg[i] = 1;
+            Gg[i] = 1;
+            const int k = g0 + i;
+            if (k < n) {
+                const u64 x = vb[k], u = ub[k];
+                Tg[i] = acc;
+                u64 lb = 0, tv = 0;
+                bool inK = false;
+                logs_stage_a<D, METHOD>(x, L, tw, lb, tv, inK);
+                const u64 j = gf2f_mulmod_m(u, L.rmodinv, D, M);
+                const u32 mask = logs_divmask<D>(u, L);
+                u64 v = logs_stage_v<METHOD>(lb, tv, inK, M, tw);
+                // (logs_fwd_tail, with the batch's first class -- g0 = 0,
+                // i = 0 -- spot-checked)
+                if (L.fault && u % L.fault == 1) v ^= 1;    // fault injection (tests)
+                if (i == 0 && g0 == 0 && verify && v < M &&
+                    logs_verify_bad(v, u, L.qlow, D, gpow2))
+                    v = ~0ULL;                              // spot check failed
+                if (v >= M) { (*err)++; continue; }         // inconsistent log
+                u64 J = j;
+                if (mask) {                                 // gcd(u, M) > 1
+                    u64 vg = 0, gg = 0;
+                    const int st = logs_irreg_lift(u, j, v, mask, L, &J, &vg, &gg);
+                    if (st) {                   // 1: no s, for u or its partner
+                        if (st == 2) (*err)++;  // (impossible; see the lift)
+                        continue;
+                    }
+                    Vg[i] = VB_IRREG | vg;
+                    Gg[i] = gg;
+                } else {
+                    Vg[i] = v;
+                }
+                Jg[i] = J;
+                acc = gf2f_mulmod_m(acc, J, D, M);
+                any = true;
+            }
+        }
+        PT(PT_LOGS);
+        if (!any) continue;
+        u64 inv = gf2f_powmod_m(acc, L.lam_m1, D, M);   // (prod J)^-1
+        PT(PT_INV);
+        bool first = true;
+        // backward: as logs_batch's, from the group's registers
+        GF2D_UNROLL
+        for (int i = LG - 1; i >= 0; i--) {
+            const u64 vv = Vg[i], J = Jg[i];
+            if (vv == VB_SKIP) continue;
+            const int k = g0 + i;
+            const u64 jinv = gf2f_mulmod_m(inv, Tg[i], D, M);
+            inv = gf2f_mulmod_m(inv, J, D, M);
+            if (first) {                        // the inversion, checked
+                if (gf2f_mulmod_m(jinv, J, D, M) != 1) (*err)++;
+                first = false;
+            }
+            const bool paired = (pairm >> k) & 1;
+            if (!(vv & VB_IRREG)) {
+                const u64 s0 = gf2f_mulmod_m(vv, jinv, D, M);
+                logs_mark(s0 == 0 ? M : s0, M, J, L, gpow2, best, heavy, nheavy,
+                          overflow, P, err);
+                if (paired) {
+                    const u64 sp = L.rmod >= s0 ? L.rmod - s0 : L.rmod + M - s0;
+                    logs_mark(sp == 0 ? M : sp, M, M - J, L, gpow2, best, heavy,
+                              nheavy, overflow, P, err);
+                }
+            } else {                                // modulus n = M/gg
+                const u64 gg = Gg[i];
+                const u64 nn = M * inv_2adic(gg);
+                const u64 S = gf2f_mulmod_m(vv & ~VB_IRREG, jinv, D, M);
+                const u64 s0 = mod_divisor_m(S, nn, gg, D, M);  // vg * jg^-1 mod n
+                const u64 j = gg * mod_divisor_m(J, nn, gg, D, M);
+                if ((s0 == 0 ? nn : s0) <= L.smax)
+                    logs_mark(s0 == 0 ? nn : s0, nn, j, L, gpow2, best, heavy,
+                              nheavy, overflow, P, err);
+                if (paired) {
+                    const u64 rn = mod_divisor_m(L.rmod, nn, gg, D, M);
+                    const u64 sp = rn >= s0 ? rn - s0 : rn + nn - s0;
+                    if ((sp == 0 ? nn : sp) <= L.smax)
+                        logs_mark(sp == 0 ? nn : sp, nn, M - j, L, gpow2, best,
+                                  heavy, nheavy, overflow, P, err);
+                }
+            }
+        }
+        PT(PT_MARK);
     }
 }
 
@@ -991,13 +1237,14 @@ GF2_HD u64 logs_run_at(u64 rr, u64 k, u64 nruns, bool rot) {
 //          A lane whose class finds no room keeps it for the next round.
 //          FILL_POOL also takes each run from the launch's counter, so
 //          lanes and warps run out of work together at the end.
-template <int D, int METHOD>
+template <int D, int METHOD, int GROUP = 0>
 __global__ void __launch_bounds__(METHOD == LM_PH ? 128 : 512, 1)
 k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
              u64 run, ull *best, Heavy *heavy,
              unsigned *nheavy, unsigned *overflow,
              unsigned long long *nsurv,
              unsigned long long *nerr) {
+    PT_INIT;
     TowerDev tw = L.tw;
 #if defined(__CUDA_ARCH__)
     if (METHOD == LM_TOWER && tw.shm_bytes) {
@@ -1006,6 +1253,7 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
         __syncthreads();
     }
 #endif
+    PT(PT_REST);
     const u64 nruns = (uhi - ulo + run - 1) / run;
     const u64 stride = (u64)gridDim.x * blockDim.x;
     const bool dyn = L.fill == FILL_POOL;
@@ -1078,10 +1326,20 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
                 total += take;
                 if (total == 32u * LB) break;   // every lane has LB
             }
-            if (n)
-                logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
-                                      (nb++ & 7) == 0, best, heavy, nheavy,
-                                      overflow, P, &my_err);
+            PT(PT_FILL);
+            if (n) {
+                if (lane == 0) PT_COUNT(PT_BATCH, 1);
+                PT_COUNT(PT_ENTRY, n);
+                if constexpr (GROUP)            // round 8: the grouped order
+                    logs_batch_grouped<D, METHOD>(L, tw, gpow2, ub, vb, n, pairm,
+                                                  (nb++ & 7) == 0, best, heavy,
+                                                  nheavy, overflow, P,
+                                                  &my_err PT_ARG);
+                else
+                    logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
+                                          (nb++ & 7) == 0, best, heavy, nheavy,
+                                          overflow, P, &my_err PT_ARG);
+            }
             if (total < 32u * LB) break;        // that was the last round
         }
     } else {
@@ -1109,14 +1367,23 @@ k_logs_batch(LogsParams L, const fw *gpow2, u64 ulo, u64 uhi,
                 }
                 w = fkm_next(w, D, &p);
             }
+            PT(PT_FILL);
             if (n == 0) break;
-            logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
-                                  (nb++ & 7) == 0, best, heavy, nheavy, overflow,
-                                  P, &my_err);
+            if ((threadIdx.x & 31u) == 0) PT_COUNT(PT_BATCH, 1);
+            PT_COUNT(PT_ENTRY, n);
+            if constexpr (GROUP)
+                logs_batch_grouped<D, METHOD>(L, tw, gpow2, ub, vb, n, pairm,
+                                              (nb++ & 7) == 0, best, heavy,
+                                              nheavy, overflow, P, &my_err PT_ARG);
+            else
+                logs_batch<D, METHOD>(L, tw, gpow2, ub, vb, tb, xb, n, pairm,
+                                      (nb++ & 7) == 0, best, heavy, nheavy,
+                                      overflow, P, &my_err PT_ARG);
         }
     }
     if (my_surv) atomicAdd(nsurv, my_surv);
     if (my_err) atomicAdd(nerr, my_err);
+    PT(PT_REST);
 }
 
 // selftest: count the representatives in [ulo, uhi) by the necklace test
@@ -1243,6 +1510,7 @@ struct GpuCtx {
     uint16_t *d_LKn = nullptr;
     PHSlot *d_slots[4] = {nullptr, nullptr, nullptr, nullptr};
     u64 *d_rrL = nullptr;                // RR: logs of all small polynomials
+    unsigned long long *d_prof = nullptr;   // -DCOARSE_PHASE_TIMING (round 8)
 };
 static std::vector<GpuCtx> g_gpus;
 static std::vector<ull> g_gather_tmp;
@@ -1271,8 +1539,11 @@ static bool g_tune = true;               // --no-tune / COARSE_TUNE=0
 static int g_tune_min = 40;              // COARSE_TUNE_MIN: least degree tuned
 static int g_tower_sub = -1;             // COARSE_TOWER_SUBN: -1 auto, 0 classic, n
 static bool g_test_eta = false;          // COARSE_TEST_ETA=1: always show the ETA
-static int g_pipe = 1;                   // COARSE_PIPE=0: round-5 loop order
+static int g_pipe = 0;                   // the loop order (COARSE_PIPE): 0 round
+                                         // 5's (round 8: the default), 1 round
+                                         // 6's, 2 grouped (round 8)
 static int g_fill = FILL_POOL;           // COARSE_FILL=0..3 (round 7)
+static int g_ldcg = 1;                   // COARSE_LDCG=0: table reads via L1
 static bool g_pipe_fixed = false;        // COARSE_PIPE set: the tuner keeps it
 
 #define GPU_MEM_RESERVE (256ull << 20)  // headroom for allocator/context overhead
@@ -1304,6 +1575,8 @@ struct CkptCtx {
     int snap_d = 0, snap_next = 0, snap_nchunks = 0;
     int snap_method = LM_NONE, snap_sub = -1;   // the degree's engine, subfield
     int snap_pipe = 1;                   // and loop order (LogsParams::pipe)
+    int snap_tpg = 0, cur_tpg = 0;       // round 8: TP from global memory (the
+                                         // snapshot's; the current degree's)
     u64 snap_classes = 0;                // classes covered by those chunks
     double snap_deg_s = 0;               // time on degree snap_d so far
     // round 7: time in all runs, as one uninterrupted run would show it --
@@ -1317,7 +1590,23 @@ struct CkptCtx {
 };
 static CkptCtx g_ckpt;
 
-extern "C" void ckpt_signal_handler(int) { g_ckpt.stop = 1; }
+// the watchdog's progress counter (round 8; see WATCHDOG below)
+static std::atomic<unsigned long long> g_wd_progress{0};
+static inline void wd_progress() { g_wd_progress.fetch_add(1, std::memory_order_relaxed); }
+
+// The first SIGINT/SIGTERM asks for a stop at the next chunk boundary; the
+// second kills at once, as before -- but (round 8) first unlinks the lock
+// file (see ckpt_lock), so a run stopped by a double Ctrl-C leaves none
+// behind.  unlink, signal and raise are async-signal-safe; the re-raised
+// signal is delivered with the default action once the handler returns, so
+// the exit status is the usual one of a run killed by that signal.
+static char g_lock_cpath[1100];                 // the lock file, once held
+extern "C" void ckpt_signal_handler(int sig) {
+    if (!g_ckpt.stop) { g_ckpt.stop = 1; return; }
+    if (g_lock_cpath[0]) unlink(g_lock_cpath);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
 
 // layout: magic; u32[CKPT_N32] = {4, d, next, nchunks, method, sub, flags,
 // seed path length, d_lo, d_hi, loop order (pipe), run time}; u64[CKPT_N64]
@@ -1334,11 +1623,13 @@ static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','4'};
 #define CKPT_F_SEED    2u
 #define CKPT_F_DEGTIME 4u
 #define CKPT_F_RUNTIME 8u
+#define CKPT_F_TPGLOB  16u     // round 8: the degree's tower reads TP from global
 
 struct CkptInfo {
     int d = 0, next = 0, nchunks = 0, method = LM_NONE, sub = -1, pipe = 1;
     int d_lo = 0, d_hi = 0;
     bool delta = false, seed = false;
+    bool tpg = false;                           // round 8: CKPT_F_TPGLOB
     bool deg_known = false, run_known = false;  // the times below recorded
     std::string seed_path;
     u64 r = 0, smax = 0, period_s = 0, seed_hash = 0, ndelta = 0, written = 0,
@@ -1367,6 +1658,7 @@ static bool ckpt_peek(const char *path, CkptInfo &ci, FILE **f_out = nullptr) {
         ci.classes = h64[6];
         ci.deg_known = (h32[6] & CKPT_F_DEGTIME) != 0;
         ci.run_known = (h32[6] & CKPT_F_RUNTIME) != 0;
+        ci.tpg = (h32[6] & CKPT_F_TPGLOB) != 0;
         float fr;
         memcpy(&fr, &h32[11], sizeof fr);
         memcpy(&ci.deg_s, &h64[7], sizeof ci.deg_s);
@@ -1404,6 +1696,7 @@ static void ckpt_snapshot(int d, int next, int nchunks, int method, int sub,
     g_ckpt.snap_method = method;
     g_ckpt.snap_sub = sub;
     g_ckpt.snap_pipe = pipe;
+    g_ckpt.snap_tpg = method == LM_TOWER ? g_ckpt.cur_tpg : 0;
     g_ckpt.snap_classes = classes;
     g_ckpt.snap_deg_s = deg_s;
     g_ckpt.snap_run_s = g_ckpt.run_before_s;
@@ -1467,7 +1760,8 @@ static void ckpt_write() {
         (u32)(int32_t)g_ckpt.snap_sub,
         (use_delta ? CKPT_F_DELTA : 0u) | (seed ? CKPT_F_SEED : 0u) |
         (deg_known ? CKPT_F_DEGTIME : 0u) |
-        (g_ckpt.snap_run_known ? CKPT_F_RUNTIME : 0u), plen,
+        (g_ckpt.snap_run_known ? CKPT_F_RUNTIME : 0u) |
+        (g_ckpt.snap_tpg ? CKPT_F_TPGLOB : 0u), plen,
         (u32)g_ckpt.d_lo, (u32)g_ckpt.d_hi, (u32)g_ckpt.snap_pipe, run_bits };
     const u64 h64[CKPT_N64] = { g_ckpt.r, g_ckpt.smax,
         (u64)(g_ckpt.period_s + 0.5), seed ? g_ckpt.seed_hash : 0, ndelta,
@@ -1490,6 +1784,7 @@ static void ckpt_write() {
     ckpt_rotate();
     if (rename(tmp.c_str(), g_ckpt.path) != 0) { perror("rename checkpoint"); return; }
     g_ckpt.last_write = now_s();
+    wd_progress();
     char eta[48] = "";
     if (g_ckpt.eta_s > 0) {
         snprintf(eta, sizeof eta, ", ");
@@ -1637,7 +1932,7 @@ static int ckpt_resume(const char *path, u64 r, u64 smax, int d_lo, int d_hi,
         CkptInfo c;
         if (!ckpt_peek(g.c_str(), c, &f)) {
             fprintf(stderr, "checkpoint %s: not a readable checkpoint (format "
-                    "v4, rounds 6-7)\n", g.c_str());
+                    "v4, rounds 6-8)\n", g.c_str());
             continue;
         }
         if (!checked) {                          // the newest readable one
@@ -1679,26 +1974,141 @@ static void ckpt_remove_all(const char *path) {
     for (int i = 0; i < 8; i++) remove(ckpt_gen_name(path, i).c_str());
 }
 
-// One run per checkpoint: an flock'ed <checkpoint>.lock, unlinked at exit.
-static std::string g_lock_path;
+// One run per checkpoint: an flock'ed <checkpoint>.lock.  The lock, not the
+// file, is what counts: the kernel drops it when its process ends, however
+// it ends (a second Ctrl-C, kill -9, a crash), so a file left behind is
+// harmless -- the next run simply locks it again (round 8 says so).  Deleting
+// it by hand is never needed, and is harmful only while the run that holds
+// it is still alive (a hung one): a new run would not see that lock.  A
+// clean exit unlinks the file (atexit), and round 8 also unlinks it on a
+// second SIGINT/SIGTERM and on a watchdog exit.  --fresh leaves it alone: by
+// then it is this run's own lock.
+static std::string g_lock_path;                 // (and g_lock_cpath, above)
 static void ckpt_unlock_atexit() { if (!g_lock_path.empty()) unlink(g_lock_path.c_str()); }
 static bool ckpt_lock(const char *path) {
-    std::string lp = std::string(path) + ".lock";
-    int fd = open(lp.c_str(), O_CREAT | O_RDWR, 0644);
-    if (fd < 0) {
-        fprintf(stderr, "note: cannot create %s (no protection against a "
-                "second run on the same checkpoint)\n", lp.c_str());
+    const std::string lp = std::string(path) + ".lock";
+    for (int attempt = 0; attempt < 16; attempt++) {
+        bool existed = false;
+        int fd = open(lp.c_str(), O_CREAT | O_EXCL | O_RDWR, 0644);
+        if (fd < 0 && errno == EEXIST) {
+            existed = true;
+            fd = open(lp.c_str(), O_RDWR);
+            if (fd < 0 && errno == ENOENT) continue;    // unlinked meanwhile
+        }
+        if (fd < 0) {
+            fprintf(stderr, "note: cannot create %s (no protection against a "
+                    "second run on the same checkpoint)\n", lp.c_str());
+            return true;
+        }
+        if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            fprintf(stderr, "another run is using checkpoint %s (lock %s held); "
+                    "not starting a second one\n", path, lp.c_str());
+            close(fd);
+            return false;
+        }
+        // the locked file must still be the one at the path: a run that was
+        // exiting may have unlinked it between our open and its lock's
+        // release, and a third run would then lock a new file there
+        struct stat sf, sp;
+        if (fstat(fd, &sf) != 0 || stat(lp.c_str(), &sp) != 0 ||
+            sf.st_dev != sp.st_dev || sf.st_ino != sp.st_ino) {
+            close(fd);
+            continue;
+        }
+        if (existed)
+            fprintf(stderr, "note: %s was left by an earlier run that did not "
+                    "exit normally (killed or crashed); harmless -- its lock "
+                    "ended with it\n", lp.c_str());
+        g_lock_path = lp;                        // fd stays open: lock held
+        snprintf(g_lock_cpath, sizeof g_lock_cpath, "%s", lp.c_str());
+        atexit(ckpt_unlock_atexit);
         return true;
     }
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        fprintf(stderr, "another run is using checkpoint %s (lock %s held); "
-                "not starting a second one\n", path, lp.c_str());
-        close(fd);
-        return false;
+    fprintf(stderr, "note: could not settle the lock %s (it keeps being "
+            "replaced); not starting\n", lp.c_str());
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// WATCHDOG (round 8)
+// When the GPU or its driver hangs, the run waits forever inside a CUDA
+// call: the GPU idle, the host thread blocked (or spinning) in the driver,
+// and a stop request never acted on, since no chunk boundary comes.  A
+// thread watches a progress counter, bumped whenever a round of chunks, a
+// tuner candidate, a table-building launch or a checkpoint write completes.
+// If it stays put for --watchdog-mins (default 30; 0: off) while degrees are
+// being sieved, the watchdog says so, removes the lock file and ends the
+// process with exit status 3.  The last checkpoint is intact (writes are
+// atomic), so a wrapper can restart an unattended run:
+//     until ./coarse_sieve ...; do [ $? -eq 3 ] || break; sleep 60; done
+// It writes no checkpoint itself: best[] lives on the GPU, and a hung driver
+// would not hand it back.  (A chunk takes seconds at most, a table build
+// minutes at most, so 30 minutes without progress is not a slow run.)
+// Test hooks: COARSE_TEST_WATCHDOG_SECS=s sets the limit in seconds;
+// COARSE_TEST_HANG_AFTER_CHUNKS=n makes the main thread hang, ignoring stop
+// requests as a hung driver call would, once n chunks are done.
+static std::atomic<int> g_wd_armed{0};
+#define WD_DEFAULT_MINS 30
+static double g_wd_limit_s = WD_DEFAULT_MINS * 60.0;
+static long g_test_hang_after = 0;
+
+static void wd_fire(double idle_s) {
+    char b[1400];
+    const bool mins = idle_s >= 120;
+    int n = snprintf(b, sizeof b, "\nwatchdog: no progress for %.0f %s -- the "
+                     "GPU or its driver seems to hang; exiting with status 3.  ",
+                     mins ? idle_s / 60 : idle_s, mins ? "minutes" : "seconds");
+    if (n > 0 && n < (int)sizeof b) {
+        if (g_ckpt.enabled && g_ckpt.path)
+            n += snprintf(b + n, sizeof b - n, "The last checkpoint (%s) is "
+                          "intact: the same command continues from it.\n",
+                          g_ckpt.path);
+        else
+            n += snprintf(b + n, sizeof b - n, "This run had no checkpoint, "
+                          "so its work is lost.\n");
     }
-    g_lock_path = lp;                            // fd stays open: lock held
-    atexit(ckpt_unlock_atexit);
-    return true;
+    if (n > 0) {
+        const size_t len = n < (int)sizeof b ? (size_t)n : sizeof b - 1;
+        ssize_t w = write(2, b, len);
+        (void)w;
+    }
+    if (g_lock_cpath[0]) unlink(g_lock_cpath);
+    _exit(3);
+}
+
+static void *wd_main(void *) {
+    unsigned long long last = g_wd_progress.load();
+    double since = now_s();
+    const useconds_t step = g_wd_limit_s < 120 ? 100000 : 1000000;
+    for (;;) {
+        usleep(step);
+        const unsigned long long p = g_wd_progress.load();
+        const double t = now_s();
+        if (p != last || !g_wd_armed.load()) {
+            last = p;
+            since = t;
+            continue;
+        }
+        if (t - since >= g_wd_limit_s) wd_fire(t - since);
+    }
+    return nullptr;
+}
+
+static void wd_start() {
+    if (g_wd_limit_s <= 0) return;
+    pthread_t t;
+    if (pthread_create(&t, nullptr, wd_main, nullptr) == 0) pthread_detach(t);
+    else fprintf(stderr, "note: could not start the watchdog thread\n");
+}
+
+// the test hook's hang: from here on the run makes no progress and ignores
+// stop requests, as if stuck in the driver (a second signal still kills)
+static void wd_test_hang_check() {
+    if (g_test_hang_after && g_ckpt.test_chunks_done >= g_test_hang_after) {
+        fprintf(stderr, "\n[COARSE_TEST_HANG_AFTER_CHUNKS: hanging after %ld "
+                "chunks]\n", g_ckpt.test_chunks_done);
+        for (;;) pause();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,19 +2187,32 @@ struct LogsPlan {
     bool ph_ok = false, rr_ok = false;
     PHHost ph_fb;                               // RR: PH plan of the factor-
     size_t rr_bytes = 0;                        //   base logs; the RR table
+    int tp_global = 0;                          // round 8: the subfield tower's
+                                                //   TP read from global memory
 };
 
 // The batched kernel for (d, method), or nullptr: tower at even d >= 4, PH
 // at odd d (and d=2), RR at odd d >= 5.  One instantiation per degree, since
-// the bit-sliced code needs d at compile time.
+// the bit-sliced code needs d at compile time.  group (round 8): the kernel
+// of the grouped loop order (L.pipe = 2), tower and RR at d >= GROUPED_MIN_D
+// -- the tuned degrees on the GPU (each such kernel adds compile time), every
+// degree in the emulated build (the tests).
 typedef void (*LogsBatchFn)(LogsParams, const fw *, u64, u64, u64, ull *,
                             Heavy *, unsigned *, unsigned *,
                             unsigned long long *, unsigned long long *);
-static LogsBatchFn logs_batch_fn(int d, int method) {
-#define LBF_PH(D) case D: return method == LM_PH ? k_logs_batch<D, LM_PH> : nullptr;
-#define LBF_PR(D) case D: return method == LM_PH ? k_logs_batch<D, LM_PH>     \
-                               : method == LM_RR ? k_logs_batch<D, LM_RR> : nullptr;
-#define LBF_TW(D) case D: return method == LM_TOWER ? k_logs_batch<D, LM_TOWER> : nullptr;
+#if defined(__CUDACC__)
+#define GROUPED_MIN_D 40
+#else
+#define GROUPED_MIN_D 5
+#endif
+static LogsBatchFn logs_batch_fn(int d, int method, bool group = false) {
+#define LBF_G(D, MT) (!group ? k_logs_batch<D, MT, 0>                           \
+                     : D >= GROUPED_MIN_D ? k_logs_batch<D, MT, (D >= GROUPED_MIN_D)> \
+                                          : nullptr)
+#define LBF_PH(D) case D: return method == LM_PH && !group ? k_logs_batch<D, LM_PH> : nullptr;
+#define LBF_PR(D) case D: return method == LM_PH ? (group ? nullptr : k_logs_batch<D, LM_PH>) \
+                               : method == LM_RR ? LBF_G(D, LM_RR) : nullptr;
+#define LBF_TW(D) case D: return method == LM_TOWER ? LBF_G(D, LM_TOWER) : nullptr;
     switch (d) {
     LBF_PH(2)  LBF_PH(3)  LBF_TW(4)  LBF_PR(5)  LBF_TW(6)  LBF_PR(7)
     LBF_TW(8)  LBF_PR(9)  LBF_TW(10) LBF_PR(11) LBF_TW(12) LBF_PR(13)
@@ -1805,6 +2228,7 @@ static LogsBatchFn logs_batch_fn(int d, int method) {
 #undef LBF_PH
 #undef LBF_PR
 #undef LBF_TW
+#undef LBF_G
     return nullptr;
 }
 
@@ -1909,6 +2333,7 @@ static LogsParams logs_params_base(int d, u64 r, u64 smax, u64 q, int method) {
     L.pair = 1;
     L.pipe = g_pipe;
     L.fill = g_fill;
+    L.ldcg = g_ldcg;
     L.smax = smax;
     // Carmichael lambda(M) = lcm of phi(p^k) over p^k || M: the exponent of
     // the unit group, so j^(lambda-1) = j^-1 for gcd(j, M) = 1.  It is much
@@ -1993,7 +2418,10 @@ static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
             if (W.sub_k) {
                 shm += W.LKn.size() * sizeof(uint16_t);
                 const size_t tpb = W.TP.size() * sizeof(u32);
-                if (shm + tpb <= (size_t)optin) { shm += tpb; L.tw.shm_tp = 1; }
+                if (!pl.tp_global && shm + tpb <= (size_t)optin) {
+                    shm += tpb;
+                    L.tw.shm_tp = 1;
+                }
             }
             L.tw.shm_bytes = shm <= (size_t)optin ? (u32)shm : 0;
         }
@@ -2010,6 +2438,7 @@ static void logs_setup_device(GpuCtx &G, int d, u64 q, const LogsPlan &pl,
                 k_tower_T<<<blocks, threads>>>(L.tw, M, q, L.qlow, d, G.dgp,
                                                u0, cnt, run, G.d_T);
                 CUCHK(cudaDeviceSynchronize());
+                wd_progress();
                 CUCHK(cudaMemcpy(Th.data(), G.d_T, slots * sizeof(u64),
                                  cudaMemcpyDeviceToHost));
                 missing = 0;
@@ -2245,6 +2674,7 @@ static bool rr_build_table(int d, u64 q, u64 r, const LogsPlan &pl,
         k_rr_fblogs<<<blocks, threads>>>(Lp, dgp, dfb, dout, lo, hi, dnext, dnerr);
         CUCHK(cudaDeviceSynchronize());
         CUCHK(cudaGetLastError());
+        wd_progress();
         const double dt = now_s() - ts;
         lo = hi;
         if (dt < 0.05 && slice < ((u64)1 << 30)) slice *= 2;
@@ -2313,7 +2743,7 @@ static void logs_selfcheck(int d, const LogsParams &L) {
 // representatives that the necklace test finds there.  Returns failures.
 static u64 logs_batch_check(GpuCtx &G, int d, const LogsPlan &pl,
                             LogsParams L, u64 ulo, u64 uhi, u64 *nclasses) {
-    LogsBatchFn kfn = logs_batch_fn(d, pl.method);
+    LogsBatchFn kfn = logs_batch_fn(d, pl.method, L.pipe == 2);
     if (!kfn) return 0;
     unsigned long long zero = 0, ns = 0, ne = 0, nc = 0;
     unsigned long long *dns, *dne, *dnc, *dctr;
@@ -2532,13 +2962,23 @@ static u64 logs_wide_selftest(u64 r, int want) {
             while (((u64)2 << lb) <= nbat && lb + 1 <= d - 8) lb++;
             const u64 blo = logs_dense_stretch(d, lb);
             bfail = logs_batch_check(G, d, pl, L, blo, blo + ((u64)1 << lb), &ncls);
-            if (pl.method != LM_PH) {           // and in the other loop order
+            int norders = 1;
+            if (pl.method != LM_PH) {           // and in the other loop orders
                 LogsParams L2 = L;
-                L2.pipe = !L.pipe;
+                L2.pipe = L.pipe == 1 ? 0 : 1;
                 u64 ncls2 = 0;
                 bfail += logs_batch_check(G, d, pl, L2, blo, blo + ((u64)1 << lb),
                                           &ncls2);
                 if (ncls2 != ncls) bfail++;
+                norders++;
+                if (logs_batch_fn(d, pl.method, true)) {    // round 8: grouped
+                    L2.pipe = 2;
+                    ncls2 = 0;
+                    bfail += logs_batch_check(G, d, pl, L2, blo,
+                                              blo + ((u64)1 << lb), &ncls2);
+                    if (ncls2 != ncls) bfail++;
+                    norders++;
+                }
             }
             if (ncls < ((u64)1 << lb) / 8) {        // the check must test something
                 fprintf(stderr, "  d=%d: batched check found only %" PRIu64
@@ -2577,7 +3017,8 @@ static u64 logs_wide_selftest(u64 r, int want) {
                     PRIu64 " (4 fills), %s; pairs: %llu, %s", d,
                     pl.method == LM_TOWER ? "tower" : pl.method == LM_RR ? "RR" : "PH",
                     pl.bytes / 1048576.0, nlog, bad, ncls,
-                    pl.method != LM_PH ? " (both loop orders)" : "", ntyp,
+                    norders == 3 ? " (3 loop orders)" : norders == 2 ? " (both loop orders)" : "",
+                    ntyp,
                     bfail ? "FAILED" : "ok", pb[1], pfail ? "FAILED" : "ok");
             if (pl.method == LM_TOWER && W.sub_k)
                 fprintf(stderr, "; over GF(2^%d)", W.sub_n);
@@ -2618,29 +3059,54 @@ static u64 logs_wide_selftest(u64 r, int want) {
 // again).  The report line gives ns per class (partners included) for each.
 // --no-tune (COARSE_TUNE=0) disables it; COARSE_TOWER_SUBN fixes the
 // subfield; test hook: COARSE_TUNE_PICK=i takes candidate i.
-struct TuneCand { int method, sub_n, pipe; double ns; };
+struct TuneCand { int method, sub_n, pipe; double ns; int tpg; };
 
 static void tune_name(const TuneCand &c, char *b, size_t n) {
     char base[24];
     if (c.method == LM_TOWER && c.sub_n) snprintf(base, sizeof base, "GF(2^%d)", c.sub_n);
     else if (c.method == LM_TOWER) snprintf(base, sizeof base, "classic");
     else snprintf(base, sizeof base, "%s", c.method == LM_RR ? "RR" : "PH");
-    snprintf(b, n, "%s%s", base, c.method != LM_PH && !c.pipe ? " r5-order" : "");
+    snprintf(b, n, "%s%s%s", base,
+             c.method == LM_PH ? "" : c.pipe == 0 ? " r5-order" : c.pipe == 2 ? " grouped" : " r6-order",
+             c.tpg ? " TP-global" : "");
+}
+
+// Round 8: the subfield tower stages its small tables -- btab, LKn and TP --
+// in shared memory.  At d = 48 and 52 TP takes them past 32 KB, which on
+// Turing forces the larger shared-memory carveout (64 KB) and halves L1
+// (64 -> 32 KB), where the batch arrays' local memory is cached.  So such a
+// candidate is also timed with TP read from global memory instead ("TP-
+// global": cached in L1 and L2, 32 KB at d=52), unless COARSE_TOWER_TP fixes
+// the choice (global or shared).
+static int g_tower_tp = -1;              // COARSE_TOWER_TP: -1 auto, 0 shared, 1 global
+static bool g_test_tp_choice = false;    // test hook COARSE_TEST_TP_CHOICE=1:
+                                         // offer TP-global for every subfield
+static bool tower_tp_choice(int d, int n, u64 tp) {
+    if (!n) return false;
+    if (g_test_tp_choice) return true;
+    const size_t base = ((size_t)((d + 7) / 8) << 11) + ((size_t)2 << n);
+    const size_t with = base + 4 * (size_t)tp;
+    int optin = 48 << 10;
+    cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin,
+                           g_gpus[0].dev);
+    return base <= ((size_t)32 << 10) && with > ((size_t)32 << 10) &&
+           with <= (size_t)optin;
 }
 
 // pl.method may change (odd d: PH <-> RR, unless COARSE_METHOD fixes it);
 // sub_use receives the tower's subfield (0: classic), pipe_use the loop
-// order; rrL the RR table if it was built
+// order, tp_use the TP placement (round 8); rrL the RR table if it was built
 static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
                       const fw *gpow2, std::vector<u64> &Th,
-                      std::vector<u64> &rrL, int &sub_use, int &pipe_use) {
+                      std::vector<u64> &rrL, int &sub_use, int &pipe_use,
+                      int &tp_use) {
     GpuCtx &G = g_gpus[0];
     CUCHK(cudaSetDevice(G.dev));
     std::vector<TuneCand> cand;                 // the first is the default
     if (pl.method == LM_TOWER) {
         u64 tp;
         const int sub_auto = tower_sub_choice(d / 2, g_tower_sub, &tp);
-        cand.push_back({LM_TOWER, sub_auto, g_pipe, 0});
+        cand.push_back({LM_TOWER, sub_auto, g_pipe, 0, g_tower_tp > 0});
         if (g_tower_sub < 0) {                  // the variants, if they fit
             size_t freeb = 0, totb = 0;
             CUCHK(cudaMemGetInfo(&freeb, &totb));
@@ -2656,28 +3122,50 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
                 if (n && tower_sub_choice(m, n, &tpn) != n) continue;
                 size_t need = ((size_t)8 << m) + ((size_t)((d + 7) / 8) << 11) + 65536;
                 need += n ? ((size_t)2 << n) + 4 * (size_t)tpn : (size_t)4 << m;
-                if (need <= budget) cand.push_back({LM_TOWER, n, g_pipe, 0});
+                if (need <= budget) cand.push_back({LM_TOWER, n, g_pipe, 0, g_tower_tp > 0});
             }
         }
     } else {
-        cand.push_back({pl.method, 0, g_pipe, 0});
+        cand.push_back({pl.method, 0, g_pipe, 0, 0});
         const int other = pl.method == LM_PH ? LM_RR : LM_PH;
         if (g_force_method == FM_AUTO && (other == LM_RR ? pl.rr_ok : pl.ph_ok) &&
             logs_batch_fn(d, other))
-            cand.push_back({other, 0, g_pipe, 0});
+            cand.push_back({other, 0, g_pipe, 0, 0});
     }
-    // round 6: each tower/RR variant in the round-5 loop order too, unless
-    // COARSE_PIPE fixes the order; right after it, as it needs no new tables
-    if (!g_pipe_fixed) {
+    // round 8: a subfield tower whose TP would take the shared tables past
+    // 32 KB, also with TP from global memory (tower_tp_choice)
+    if (g_tower_tp < 0) {
         std::vector<TuneCand> both;
         for (const TuneCand &c : cand) {
             both.push_back(c);
-            if (c.method != LM_PH) both.push_back({c.method, c.sub_n, 0, 0});
+            u64 tpn = 0;
+            if (c.method == LM_TOWER && c.sub_n &&
+                tower_sub_choice(d / 2, c.sub_n, &tpn) == c.sub_n &&
+                tower_tp_choice(d, c.sub_n, tpn))
+                both.push_back({c.method, c.sub_n, c.pipe, 0, 1});
+        }
+        cand.swap(both);
+    }
+    // each tower/RR variant in every loop order -- round 5's (the default),
+    // round 6's, and (round 8) the grouped one where its kernel exists --
+    // unless COARSE_PIPE fixes the order; a variant's orders one after
+    // another, as they need no new tables
+    if (!g_pipe_fixed) {
+        std::vector<TuneCand> both;
+        for (const TuneCand &c : cand) {
+            if (c.method == LM_PH) { both.push_back(c); continue; }
+            for (int o : {0, 1, 2}) {
+                if (o == 2 && !logs_batch_fn(d, c.method, true)) continue;
+                TuneCand t = c;
+                t.pipe = o;
+                both.push_back(t);
+            }
         }
         cand.swap(both);
     }
     sub_use = cand[0].sub_n;
     pipe_use = cand[0].pipe;
+    tp_use = cand[0].tpg;
     if (cand.size() < 2) return;
 
     u64 total, run, chunk;
@@ -2692,26 +3180,28 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
     CUCHK(cudaEventCreate(&e0));
     CUCHK(cudaEventCreate(&e1));
     const double t0 = now_s();
-    int cur_m = -1, cur_sub = -1;               // tables set up for these
+    int cur_m = -1, cur_sub = -1, cur_tpg = -1;  // tables set up for these
     LogsParams Lcur;
     bool timed_any = false;
     for (size_t ci = 0; ci < cand.size(); ci++) {
         TuneCand &c = cand[ci];
         c.ns = -1;
-        if (c.method != cur_m || c.sub_n != cur_sub) {   // (re)build the tables
+        if (c.method != cur_m || c.sub_n != cur_sub || c.tpg != cur_tpg) {
+            // (re)build the tables
             if (cur_m >= 0) {
                 logs_free_device(G);
                 cudaFree(G.dgp); G.dgp = nullptr;
                 cudaFree(G.d_nsurv); G.d_nsurv = nullptr;
                 cudaFree(G.d_nerr); G.d_nerr = nullptr;
             }
-            cur_m = cur_sub = -1;
+            cur_m = cur_sub = cur_tpg = -1;
             if (c.method == LM_RR && rrL.empty() && !rr_build_table(d, q, r, pl, rrL))
                 continue;
             TowerHost W;
             if (c.method == LM_TOWER && !tower_build_host(d, q, W, c.sub_n)) continue;
             LogsPlan pc = pl;
             pc.method = c.method;
+            pc.tp_global = c.tpg;
             Lcur = logs_params_base(d, r, smax, q, c.method);
             CUCHK(cudaMalloc(&G.dgp, d * sizeof(fw)));
             CUCHK(cudaMemcpy(G.dgp, gpow2, d * sizeof(fw), cudaMemcpyHostToDevice));
@@ -2720,8 +3210,10 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
             logs_setup_device(G, d, q, pc, W, Th, Lcur, &rrL);
             cur_m = c.method;
             cur_sub = c.sub_n;
+            cur_tpg = c.tpg;
         }
-        const LogsBatchFn kfn = logs_batch_fn(d, c.method);
+        const LogsBatchFn kfn = logs_batch_fn(d, c.method, c.pipe == 2);
+        if (!kfn) continue;                     // (c.ns stays -1: n/a)
         Lcur.pipe = c.pipe;                     // (no new tables for this)
         Lcur.runctr = G.d_runctr;
         for (int rep = timed_any ? 1 : 0; rep < 2; rep++) {   // first: warm-up
@@ -2750,6 +3242,7 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
             CUCHK(cudaEventRecord(e1));
             CUCHK(cudaEventSynchronize(e1));
             CUCHK(cudaGetLastError());
+            wd_progress();
             float ms = 0;
             CUCHK(cudaEventElapsedTime(&ms, e0, e1));
             CUCHK(cudaMemcpy(&cls, G.d_nsurv, 8, cudaMemcpyDeviceToHost));
@@ -2794,6 +3287,7 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
              : pl.method == LM_PH ? pl.ph.table_bytes : pl.bytes;
     sub_use = cand[best].sub_n;
     pipe_use = cand[best].pipe;
+    tp_use = cand[best].tpg;
     if (pl.method != LM_RR) { rrL.clear(); rrL.shrink_to_fit(); }
     char nm[64];
     fprintf(stderr, "  [tune d=%d on GPU 0, %llu classes, %.1fs:", d, cls,
@@ -2812,9 +3306,47 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
 // tower subfield
 struct ResumePos {
     int next = 0, nchunks = 0, method = LM_NONE, sub = -1, pipe = 1;
+    int tpg = 0;                        // round 8: the tower's TP from global
     u64 classes = 0;
     double deg_s = -1;                  // time on the degree so far (< 0: unknown)
 };
+
+#if defined(COARSE_PHASE_TIMING)
+// The phase timing of this run's chunks of degree d (round 8), summed over
+// the devices, which it then frees: per log and lane, the warp-cycles of
+// each phase -- a lane's time per log, as the 32 lanes of a warp run
+// together (a warp-cycle serves all of them) -- and the shares.
+static void pt_report(int d, int NG) {
+    unsigned long long pt[PT_N] = {0};
+    for (int g = 0; g < NG; g++) {
+        GpuCtx &G = g_gpus[g];
+        if (!G.d_prof) continue;
+        CUCHK(cudaSetDevice(G.dev));
+        CUCHK(cudaDeviceSynchronize());
+        unsigned long long h[PT_N];
+        CUCHK(cudaMemcpy(h, G.d_prof, sizeof h, cudaMemcpyDeviceToHost));
+        for (int i = 0; i < PT_N; i++) pt[i] += h[i];
+        cudaFree(G.d_prof);
+        G.d_prof = nullptr;
+    }
+    static const char *const nm[PT_NPH] = {"fill", "g^u", "logs", "inversion",
+                                           "marking", "other"};
+    double tot = 0;
+    for (int i = 0; i < PT_NPH; i++) tot += (double)pt[i];
+    if (!pt[PT_ENTRY] || tot <= 0) {
+        fprintf(stderr, "  [phase timing d=%d: no batches in this run]\n", d);
+        return;
+    }
+    const double per = 32.0 / (double)pt[PT_ENTRY];   // per log and lane
+    fprintf(stderr, "  [phase timing d=%d, warp-cycles per log and lane:", d);
+    for (int i = 0; i < PT_NPH; i++)
+        fprintf(stderr, "%s %s %.0f (%.1f%%)", i ? "," : "", nm[i],
+                (double)pt[i] * per, 100.0 * (double)pt[i] / tot);
+    fprintf(stderr, "; total %.0f; %llu logs in %llu warp batches, %.2f of 32 "
+            "per lane]\n", tot * per, pt[PT_ENTRY], pt[PT_BATCH],
+            pt[PT_BATCH] ? (double)pt[PT_ENTRY] / (32.0 * (double)pt[PT_BATCH]) : 0.0);
+}
+#endif
 
 // Sieve degree d (any VRAM: tables only).  rs: resume position within the
 // degree, or nullptr to start it.
@@ -2850,7 +3382,7 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
     double t0 = now_s();
     std::vector<u64> Th;                        // T, built once per degree
     std::vector<u64> rrL;                       // RR: the table, host copy
-    int sub_use = g_tower_sub, pipe_use = g_pipe;
+    int sub_use = g_tower_sub, pipe_use = g_pipe, tp_use = g_tower_tp > 0;
     if (mid && rs->method != LM_NONE) {
         // the degree's engine and subfield, as recorded: no re-tuning
         if (rs->method != pl.method) {
@@ -2866,10 +3398,20 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         }
         if (pl.method == LM_TOWER) sub_use = rs->sub;
         pipe_use = rs->pipe;
+        tp_use = rs->tpg;
     } else if (g_tune && d >= g_tune_min) {
-        logs_tune(d, q, r, smax, pl, gpow2, Th, rrL, sub_use, pipe_use);
+        logs_tune(d, q, r, smax, pl, gpow2, Th, rrL, sub_use, pipe_use, tp_use);
     }
-    const LogsBatchFn kfn = logs_batch_fn(d, pl.method);
+    pl.tp_global = pl.method == LM_TOWER ? tp_use : 0;
+    g_ckpt.cur_tpg = pl.tp_global;
+    if (pipe_use == 2 && !logs_batch_fn(d, pl.method, true)) {
+        // (COARSE_PIPE=2, or a checkpoint of the emulated build, below the
+        // degrees that have the grouped kernels)
+        fprintf(stderr, "d=%d: no grouped-order kernel at this degree; using "
+                "the round-5 order\n", d);
+        pipe_use = 0;
+    }
+    const LogsBatchFn kfn = logs_batch_fn(d, pl.method, pipe_use == 2);
     if (!kfn) {
         fprintf(stderr, "d=%d: no kernel for this engine -- internal error\n", d);
         exit(1);
@@ -2900,6 +3442,11 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         Lg.push_back(logs_params_base(d, r, smax, q, pl.method));
         Lg.back().pipe = pipe_use;
         Lg.back().runctr = G.d_runctr;
+#if defined(COARSE_PHASE_TIMING)
+        CUCHK(cudaMalloc(&G.d_prof, PT_N * sizeof(unsigned long long)));
+        CUCHK(cudaMemset(G.d_prof, 0, PT_N * sizeof(unsigned long long)));
+        Lg.back().prof = G.d_prof;
+#endif
         // test hook: COARSE_TEST_FAULT_EVERY=n flips a bit of the log of
         // every class with u = 1 (mod n), to exercise the error stop
         if (const char *e = getenv("COARSE_TEST_FAULT_EVERY"))
@@ -2907,14 +3454,18 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         logs_setup_device(G, d, q, pl, W, Th, Lg.back(), &rrL);
     }
     rrL.clear(); rrL.shrink_to_fit();
-    char inner[64] = "";                        // the inner tower, if any
+    char inner[96] = "";                        // the inner tower, if any
     if (pl.method == LM_TOWER && W.sub_k)
         snprintf(inner, sizeof inner, " over GF(2^%d)", W.sub_n);
     else if (pl.method == LM_TOWER)
         snprintf(inner, sizeof inner, ", classic");
-    if (pl.method != LM_PH && !pipe_use)
+    if (pl.method != LM_PH)
+        snprintf(inner + strlen(inner), sizeof inner - strlen(inner), "%s",
+                 pipe_use == 0 ? ", round-5 loop order"
+                 : pipe_use == 2 ? ", grouped loop order" : ", round-6 loop order");
+    if (pl.method == LM_TOWER && pl.tp_global && Lg[0].tw.sub_k && !Lg[0].tw.shm_tp)
         snprintf(inner + strlen(inner), sizeof inner - strlen(inner),
-                 ", round-5 loop order");
+                 ", TP from global memory");
     W = TowerHost();                            // host copies no longer needed
     Th.clear(); Th.shrink_to_fit();
     if (mid)
@@ -2965,6 +3516,9 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         const u64 classes_now = classes_before + classes_run;
         if (ckpt_stop_due()) {
             fprintf(stderr, "\n");
+#if defined(COARSE_PHASE_TIMING)
+            pt_report(d, NG);
+#endif
             ckpt_snapshot(d, base, nchunks, pl.method, sub_rec, pipe_use,
                           classes_now, deg_time());
             ckpt_stop_and_exit();
@@ -3034,6 +3588,8 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
             total_heavy += nheavy;
         }
         g_ckpt.test_chunks_done += used;
+        wd_progress();                          // (round 8: the watchdog)
+        wd_test_hang_check();
         const u64 cov = classes_before + classes_run;
         if (classes_run && cov < classes_all)
             g_ckpt.eta_s = (now_s() - t_pass) * (double)(classes_all - cov) /
@@ -3057,6 +3613,9 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
     fprintf(stderr, "\n");
     g_ckpt.eta_s = -1;
 
+#if defined(COARSE_PHASE_TIMING)
+    pt_report(d, NG);
+#endif
     unsigned long long nsurv = 0, nerr = 0;
     for (int g = 0; g < NG; g++) {
         GpuCtx &G = g_gpus[g];
@@ -3134,6 +3693,8 @@ static int run_gpu(u64 r, int d_from, int d_hi, u64 smax, std::vector<ull> &best
         }
     }
     CUCHK(cudaSetDevice(g_gpus[0].dev));
+    g_wd_armed = 1;                             // (round 8: the watchdog)
+    wd_progress();
     int reached = d_from - 1;
     // test hook: COARSE_TEST_STOP_DEGREE=n behaves as if degree n could not
     // be sieved here (exercises the early-stop handling in main)
@@ -3193,6 +3754,7 @@ static int run_gpu(u64 r, int d_from, int d_hi, u64 smax, std::vector<ull> &best
         G.d_runctr = nullptr;
         G.d_best = nullptr;
     }
+    g_wd_armed = 0;
     g_gather_tmp.clear(); g_gather_tmp.shrink_to_fit();
     return reached;
 }
@@ -3325,10 +3887,12 @@ static void usage(const char *prog) {
         "  --fresh                set an existing checkpoint aside (*.old), start over\n"
         "  --gpus <N>             use N GPUs (default: all present)\n"
         "  --no-tune              skip the per-degree timing of kernel variants\n"
+        "  --watchdog-mins <N>    exit with status 3 if nothing progresses for N\n"
+        "                         minutes, e.g. a hung GPU (default %d; 0 = off)\n"
         "examples:\n"
         "  %s 136279841 2-46 out2-46\n"
         "  %s 136279841 47 out47 --load-survivors out2-46.survivors.txt\n",
-        prog, prog, CKPT_DEFAULT_MINS, prog, prog);
+        prog, prog, CKPT_DEFAULT_MINS, WD_DEFAULT_MINS, prog, prog);
 }
 
 // "D" or "D1-D2", 2 <= D1 <= D2 <= KEY_MAX_DEGREE
@@ -3356,7 +3920,27 @@ int main(int argc, char **argv) {
     // of the inner tower (tests); default: automatic
     if (const char *e = getenv("COARSE_TOWER_SUBN")) g_tower_sub = atoi(e);
     if (const char *e = getenv("COARSE_TEST_ETA")) g_test_eta = atoi(e) != 0;
-    if (const char *e = getenv("COARSE_PIPE")) { g_pipe = atoi(e) != 0; g_pipe_fixed = true; }
+    if (const char *e = getenv("COARSE_PIPE")) {
+        char *end = nullptr;
+        const long o = strtol(e, &end, 10);
+        if (end == e || *end || o < 0 || o > 2) {
+            fprintf(stderr, "COARSE_PIPE=%s: expected 0 (round 5's loop order, "
+                    "the default), 1 (round 6's) or 2 (grouped)\n", e);
+            return 1;
+        }
+        g_pipe = (int)o;
+        g_pipe_fixed = true;
+    }
+    if (const char *e = getenv("COARSE_LDCG")) g_ldcg = atoi(e) != 0;
+    if (const char *e = getenv("COARSE_TEST_TP_CHOICE")) g_test_tp_choice = atoi(e) != 0;
+    if (const char *e = getenv("COARSE_TOWER_TP")) {
+        if (!strcmp(e, "global")) g_tower_tp = 1;
+        else if (!strcmp(e, "shared")) g_tower_tp = 0;
+        else if (strcmp(e, "auto")) {
+            fprintf(stderr, "COARSE_TOWER_TP=%s: expected auto, shared or global\n", e);
+            return 1;
+        }
+    }
     if (const char *e = getenv("COARSE_FILL")) {
         char *end = nullptr;
         const long f = strtol(e, &end, 10);
@@ -3415,6 +3999,15 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[a], "--no-checkpoint")) no_ckpt = true;
         else if (!strcmp(argv[a], "--fresh")) fresh = true;
         else if (!strcmp(argv[a], "--no-tune")) g_tune = false;
+        else if (!strcmp(argv[a], "--watchdog-mins") && more) {
+            char *end = nullptr;
+            const double m = strtod(argv[++a], &end);
+            if (end == argv[a] || *end || m < 0) {
+                fprintf(stderr, "--watchdog-mins %s: expected minutes >= 0\n", argv[a]);
+                return 1;
+            }
+            g_wd_limit_s = m * 60.0;
+        }
         else {
             fprintf(stderr, "unknown or incomplete option '%s'\n", argv[a]);
             usage(argv[0]);
@@ -3442,6 +4035,10 @@ int main(int argc, char **argv) {
     // COARSE_TEST_STOP_AFTER_CHUNKS=N acts as a stop signal after N chunks
     if (const char *e = getenv("COARSE_TEST_STOP_AFTER_CHUNKS"))
         g_ckpt.test_stop_after = atol(e);
+    // test hooks of the watchdog (round 8): its limit in seconds, and a hang
+    if (const char *e = getenv("COARSE_TEST_WATCHDOG_SECS")) g_wd_limit_s = atof(e);
+    if (const char *e = getenv("COARSE_TEST_HANG_AFTER_CHUNKS"))
+        g_test_hang_after = atol(e);
 
     std::vector<ull> seed;
     u64 seed_hash = 0;
@@ -3498,6 +4095,7 @@ int main(int argc, char **argv) {
                 d_from = ci.d;
                 rs.next = ci.next; rs.nchunks = ci.nchunks;
                 rs.method = ci.method; rs.sub = ci.sub; rs.pipe = ci.pipe;
+                rs.tpg = ci.tpg ? 1 : 0;
                 rs.classes = ci.classes;
                 rs.deg_s = ci.deg_known ? ci.deg_s : -1;
                 g_ckpt.run_before_s = ci.run_known ? ci.run_s : 0;
@@ -3524,20 +4122,27 @@ int main(int argc, char **argv) {
             g_ckpt.base = seed;                  // the delta baseline
         }
         // the first SIGINT/SIGTERM saves and exits at the next chunk
-        // boundary; a second one (SA_RESETHAND) kills at once -- the
-        // checkpoint file is replaced atomically, so that is safe too
+        // boundary; a second one kills at once (after unlinking the lock
+        // file: ckpt_signal_handler) -- the checkpoint file is replaced
+        // atomically, so that is safe too
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);
         sa.sa_handler = ckpt_signal_handler;
-        sa.sa_flags = SA_RESETHAND;
+        sa.sa_flags = 0;                         // (round 7: SA_RESETHAND)
         sigaction(SIGTERM, &sa, nullptr);
         sigaction(SIGINT, &sa, nullptr);
         fprintf(stderr, "checkpointing to %s (%s)", ckpt_path,
                 loadsurv_path ? "delta vs the seed" : "full image");
         if (g_ckpt.period_s > 0)
             fprintf(stderr, " every %.1f min", g_ckpt.period_s / 60.0);
-        fprintf(stderr, "; SIGTERM/SIGINT saves and exits (twice: exit now)\n");
+        fprintf(stderr, "; SIGTERM/SIGINT saves and exits (twice: exit now)");
+        if (g_wd_limit_s > 0) {
+            if (g_wd_limit_s >= 60) fprintf(stderr, "; watchdog %.0f min", g_wd_limit_s / 60);
+            else fprintf(stderr, "; watchdog %.0f s", g_wd_limit_s);
+        }
+        fprintf(stderr, "\n");
     }
+    wd_start();                                  // (round 8; --watchdog-mins)
     if (!have_start && loadsurv_path) { start.swap(seed); have_start = true; }
     if (d_from <= d_hi && d_from <= 49 && d_hi >= 49)
         fprintf(stderr, "note: degree 49 uses the RR engine: first a table of "

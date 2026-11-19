@@ -71,9 +71,14 @@ sieve_ref: sieve_ref.cpp gf2_small_field.h gf2_field_setup.h
 gf2_dlog_selftest: gf2_dlog_selftest.cpp gf2_dlog.h gf2_wide_field.h gf2_wide_setup.h
 	$(CXX) $(CXXFLAGS) -std=c++17 $(INC) -o $@ $<
 
-# (~80 kernel instantiations: expect a few minutes)
+# (~110 kernel instantiations: expect several minutes; -pthread for the
+# watchdog thread, round 8)
 coarse_sieve: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h
-	$(NVCC) $(NVFLAGS) -std=c++17 $(INC) -o $@ $<
+	$(NVCC) $(NVFLAGS) -std=c++17 $(INC) -o $@ $< -Xcompiler -pthread
+
+# the diagnostic build of round 8: per-phase timing of the batched kernel
+coarse_sieve_prof: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h
+	$(NVCC) $(NVFLAGS) -std=c++17 -DCOARSE_PHASE_TIMING $(INC) -o $@ $< -Xcompiler -pthread
 
 cantor_ref: cantor_ref.cpp gf2_cantor_core.h gf2_cantor_engine.h
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
@@ -120,7 +125,7 @@ emul-coarse_sieve:
 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
 	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
 	$(SEDLAUNCH) $$(find . sieve -maxdepth 1 -name 'coarse_sieve.cu' 2>/dev/null | head -1) > build_emul/coarse_sieve.cpp
-	$(CXX) $(CXXFLAGS) -std=c++17 -x c++ -Ibuild_emul -o build_emul/coarse_sieve build_emul/coarse_sieve.cpp
+	$(CXX) $(CXXFLAGS) -std=c++17 -x c++ -Ibuild_emul -pthread -o build_emul/coarse_sieve build_emul/coarse_sieve.cpp
 
 emul-tsfactor:
 	@echo "== $(NTLMSG) =="
