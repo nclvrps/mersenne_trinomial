@@ -27,6 +27,11 @@ static inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int) 
        : a == cudaDevAttrMaxSharedMemoryPerBlockOptin ? 65536 : 0; return 0; }
 template <class F> static inline cudaError_t
 cudaOccupancyMaxActiveBlocksPerMultiprocessor(int* n, F, int, size_t) { *n = 2; return 0; }
+// (round 10: the device's identity, for the checkpoint's tuning record)
+struct cudaDeviceProp { char name[256]; int major, minor, multiProcessorCount; };
+static inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* p, int) {
+    memset(p, 0, sizeof *p); strcpy(p->name, "emulated GPU");
+    p->major = 7; p->minor = 5; p->multiProcessorCount = 4; return 0; }
 enum cudaFuncAttribute { cudaFuncAttributeMaxDynamicSharedMemorySize = 8 };
 template <class F> static inline cudaError_t
 cudaFuncSetAttribute(F, cudaFuncAttribute, int) { return 0; }

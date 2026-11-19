@@ -7,7 +7,7 @@
 #   NVCC=/path/to/nvcc ARCH=sm_75 NVLIB=-L/path/to/cuda/lib \
 #       nvcc/build_check.sh [extra nvcc flags, e.g. -DCOARSE_PHASE_TIMING]
 # (A workspace without CUDA: see the README for nvcc from pip.)
-ROOT=$(cd "$(dirname "$0")/.." && pwd); S=$ROOT/src/r9; O=$ROOT/build/nvcc
+ROOT=$(cd "$(dirname "$0")/.." && pwd); S=$ROOT/src/r10; O=$ROOT/build/nvcc
 NVCC=${NVCC:-nvcc}; ARCH=${ARCH:-sm_75}
 mkdir -p $O && cd $O || exit 1
 cp $S/coarse_sieve.cu $S/gf2_dlog.h $S/gf2_wide_field.h $S/gf2_wide_setup.h .

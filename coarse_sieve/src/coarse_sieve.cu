@@ -1,4 +1,4 @@
-// coarse_sieve.cu  (round 9)
+// coarse_sieve.cu  (round 10)
 // GPU coarse sieve for the least-degree irreducible factors of the
 // trinomials x^r + x^s + 1 over GF(2), all s in [1, floor(r/2)], factor
 // degrees d <= 55.
@@ -11,19 +11,21 @@
 //                           of GF2X factor.cpp; certs of consecutive runs
 //                           concatenate into a full record)
 //   <prefix>.survivors.txt  the s with no factor of degree <= the run's top
-//                           degree: the next run's --load-survivors seed
+//                           degree: the next run's --load seed
 //
 // USAGE
 //   coarse_sieve <r> <degrees> <out_prefix> [options]
 //     <degrees>  D1-D2 for degrees D1..D2, or D for degree D alone.  A run
 //                from scratch starts at 2; a run starting at D1 > 2 needs
-//                --load-survivors with the survivors of the run that ended
+//                --load with the survivors of the run that ended
 //                at D1-1:
 //                  coarse_sieve 136279841 2-46 out2-46
 //                  coarse_sieve 136279841 47 out47
-//                               --load-survivors out2-46.survivors.txt
+//                               --load out2-46.survivors.txt
 //   options
-//     --load-survivors <f>    the seed: survivors of a run through D1-1
+//     --load <f>              the seed: survivors of a run through D1-1
+//                             (round 10; before: --load-survivors, still
+//                             accepted)
 //     --no-cert, --no-survivors   skip that output file
 //     --checkpoint <f>        checkpoint file (default <out_prefix>.ckpt)
 //     --checkpoint-mins <N>   save every N minutes (default 15; 0: on signals
@@ -34,6 +36,9 @@
 //     --gpus <N>              use N GPUs (default: all; chunks are dealt out,
 //                             results merged by minimum; no peer access needed)
 //     --no-tune               skip the per-degree timing of kernel variants
+//     --retune                time them again when resuming a degree (round
+//                             10; done anyway when the checkpoint's choice
+//                             was made by another round or on another GPU)
 //     --watchdog-mins <N>     exit with status 3 when nothing progresses for N
 //                             minutes, e.g. a hung GPU (default 30; 0: off;
 //                             see WATCHDOG)
@@ -140,10 +145,16 @@
 // the subfield tower with its table TP in global memory too ("TP-global";
 // tower_tp_choice) -- and sieves with the fastest; the "[tune ...]" line
 // reports ns per class for each.  All variants compute identical results.
+// Round 10: the loop orders of a variant are timed in turn, three times
+// over (COARSE_TUNE_REPS), each keeping its median, after ~0.5 s of warm-up.
 // --no-tune (COARSE_TUNE=0) turns this off.  The choice is stored in
-// checkpoints, so a resumed degree keeps it without re-timing.
+// checkpoints, and (round 10) so is who made it: a resumed degree keeps it
+// without re-timing if this binary on this GPU made it, and is tuned again
+// if another round or another GPU did, or with --retune.  The done line
+// (round 10, d >= 30) ends with the degree's time per class, comparable
+// with the tune line's.
 //
-// CHECKPOINTS (format v4, rounds 6-9)
+// CHECKPOINTS (format v4, rounds 6-10)
 // Every run saves to <out_prefix>.ckpt (or --checkpoint <file>) every 15
 // minutes, at a chunk boundary, and on SIGTERM or SIGINT: the first signal
 // saves and exits after the chunk in flight (seconds), a second exits at
@@ -174,6 +185,9 @@
 // same results), and rounds 6-8 read round 9's -- except in the middle of
 // a degree sieved with the cubic tower (engine tag 4), which they refuse
 // ("the checkpoint's engine is not possible here"); round 9 continues it.
+// Round 10 appends a trailer after best[], which earlier rounds never read
+// (so they read round 10's files as before, and round 10 reads theirs): who
+// chose the degree's engine and order, "round 10 on <GPU 0> (sm_XY, N SMs)".
 //
 // WATCHDOG (round 8)
 // If no chunk, tuner sample, table-building launch or checkpoint write
@@ -225,12 +239,22 @@
 //                         d >= 40 on the GPU, other degrees fall back to 0)
 //   COARSE_LDCG=0         the random table reads (tower T, RR L) through L1,
 //                         as before round 8 (default 1: past L1, __ldcg)
-//   COARSE_PREFETCH=0     no L1 prefetches of the local arrays (round 9:
-//                         g^u's exponent planes two groups ahead, the batch
-//                         arrays two classes ahead forward, four backward)
-//   COARSE_SYNC=poll      wait for each chunk by polling its event every
-//                         millisecond (round 9; default block: sleep in the
-//                         driver -- which under WSL2 seems to spin a core)
+//   COARSE_PREFETCH=1     L1 prefetches of the local arrays (round 9's
+//                         default: g^u's exponent planes two groups ahead,
+//                         the batch arrays two classes ahead forward, four
+//                         backward; off since round 10, as the 2070 SUPER
+//                         ran 0-4% faster without them)
+//   COARSE_SYNC=auto|block|poll   how the host waits for the chunks: block
+//                         sleeps in the driver (under WSL2 that spins a
+//                         core); poll (round 9) polls an event every ms --
+//                         since round 10 with one GPU once per round of up
+//                         to 8 chunks, queued back to back; auto (round 10,
+//                         the default): poll under WSL2, else block
+//   COARSE_TUNE_REPS=n    timings per tuner candidate, median kept (round
+//                         10; default 3)
+//   COARSE_TEST_OSRELEASE=s   the kernel release to test for WSL2 (instead
+//                         of /proc/sys/kernel/osrelease)
+//   COARSE_TEST_GPU_NAME=s    GPU 0's name in the tuning record (round 10)
 //   COARSE_TOWER_TP=shared|global   fix where the subfield tower's TP lives
 //                         (default auto: shared memory if it fits; the tuner
 //                         also times global at d = 48, 52)
@@ -269,7 +293,11 @@
 // (d = 54), round 9's loop order (replacing round 6's), the grouped order
 // with rolled loops and the fill's state parked across its batches, g^u's
 // exponent planes loaded three steps ahead, and the inversion's check
-// (inv * prod J == 1).
+// (inv * prod J == 1); round 10 --load (for --load-survivors, still
+// accepted), a resumed degree tuned again when another round or GPU chose
+// its variant (--retune: always), the tuner's repeated timings, polling by
+// default under WSL2, in rounds of 8 queued chunks, the L1 prefetches off
+// by default, and the rate on the done line.
 
 // the CPU emulation (make emul-coarse_sieve) runs the lanes of each warp in
 // lockstep, for the batched kernel's warp intrinsics (cuda_emul.h)
@@ -283,6 +311,8 @@
 #include <cstring>
 #include <cinttypes>
 #include <cmath>
+#include <cctype>
+#include <algorithm>
 #include <vector>
 #include <string>
 #include <chrono>
@@ -317,7 +347,7 @@ typedef unsigned long long ull;
 //   48 <= d <= 55: (0xF << 60) | ((d - 48) << 56) | mask
 // Keys increase with (d, mask), every d <= 47 key is below every d >= 48 key,
 // and all are below the UINT64_MAX "no factor" marker (and above the 0 that
-// --load-survivors uses for "factor of a lower degree").
+// --load uses for "factor of a lower degree").
 #define KEY_MAX_DEGREE 55
 GF2_HD ull key_pack(int d, u64 mask) {
     return d <= 47 ? ((ull)d << 48) | mask
@@ -346,7 +376,7 @@ struct Heavy { u64 s_first, n, packed; };
 // True if some best[s'] on the progression s, s+n, ... <= smax can still be
 // lowered by a degree-d key.  Every degree-d key is >= key_floor(d); entries
 // already below that (a smaller-degree factor, or the 0 sentinel that
-// --load-survivors uses for non-survivors) can never change, and best[] only
+// --load uses for non-survivors) can never change, and best[] only
 // ever decreases (atomicMin), so a stale read can only cause extra work,
 // never a wrong skip.  Lets the caller skip the d^2-multiply minimal
 // polynomial for the ~95% of in-range hits that land on s values which
@@ -955,12 +985,14 @@ __device__ __forceinline__ void logs_mark_pair(const LogsParams &L, bool irreg,
     }
 }
 
-// Round 9 (L.prefetch, COARSE_PREFETCH): L1 prefetches of the batch arrays ahead
-// of their loads -- two classes ahead in the forward loops (each class's
-// log takes ~600-1300 instructions), LOGS_PF_BACK in the backward ones
-// (~100-200 per class), whose loads made 12-17% of the round-7 stall
-// samples: the values were written a whole forward pass earlier, and are
-// back in L2 or DRAM.
+// Round 9 (L.prefetch, COARSE_PREFETCH=1; off by default since round 10): L1
+// prefetches of the batch arrays ahead of their loads -- two classes ahead
+// in the forward loops (each class's log takes ~600-1300 instructions),
+// LOGS_PF_BACK in the backward ones (~100-200 per class), whose loads made
+// 12-17% of the round-7 stall samples: the values were written a whole
+// forward pass earlier, and are back in L2 or DRAM.  On the 2070 SUPER the
+// tuner's candidates ran 0-4% faster without them (round 9's A/B), so the
+// lines they fetch were evidently evicted again before their loads.
 #define LOGS_PF_BACK 4
 
 template <int D, int METHOD>
@@ -1705,9 +1737,35 @@ static int g_pipe = 0;                   // the loop order (COARSE_PIPE): 0 roun
                                          // 6's, 2 grouped (round 8)
 static int g_fill = FILL_POOL;           // COARSE_FILL=0..3 (round 7)
 static int g_ldcg = 1;                   // COARSE_LDCG=0: table reads via L1
-static int g_pf = 1;                     // COARSE_PREFETCH=0: no L1 prefetches
-static bool g_sync_poll = false;         // COARSE_SYNC=poll: poll chunk events
+static int g_pf = 0;                     // COARSE_PREFETCH=1: L1 prefetches (round 9's
+                                         // default; off since round 10)
+static bool g_sync_poll = false;         // poll chunk events (COARSE_SYNC=poll;
+                                         // round 10: the default under WSL2)
 static bool g_pipe_fixed = false;        // COARSE_PIPE set: the tuner keeps it
+static int g_tune_reps = 3;              // COARSE_TUNE_REPS (round 10)
+static bool g_retune = false;            // --retune (round 10)
+
+// Round 10: which binary and GPU made a degree's choice of engine and loop
+// order -- "round 10 on <GPU 0's name> (sm_XY, N SMs)" -- recorded in the
+// checkpoint, so that a degree resumed by another round or on another GPU
+// is tuned again (the tuner runs on GPU 0 only, so GPU 0 is what counts)
+#define COARSE_ROUND 10
+static std::string g_fp;
+
+// Round 10: under WSL2 a blocking wait spins a CPU core (round 9's test:
+// ~100% CPU, against 1-3% polling), so there COARSE_SYNC defaults to poll.
+// WSL kernels name themselves: "5.15.167.4-microsoft-standard-WSL2".
+static bool running_under_wsl() {
+    char buf[256] = "";
+    if (const char *e = getenv("COARSE_TEST_OSRELEASE"))     // test hook
+        snprintf(buf, sizeof buf, "%s", e);
+    else if (FILE *f = fopen("/proc/sys/kernel/osrelease", "r")) {
+        if (!fgets(buf, sizeof buf, f)) buf[0] = '\0';
+        fclose(f);
+    }
+    for (char *p = buf; *p; p++) *p = (char)tolower((unsigned char)*p);
+    return strstr(buf, "microsoft") != nullptr;
+}
 
 #define GPU_MEM_RESERVE (256ull << 20)  // headroom for allocator/context overhead
 
@@ -1740,6 +1798,9 @@ struct CkptCtx {
     int snap_pipe = 1;                   // and loop order (LogsParams::pipe)
     int snap_tpg = 0, cur_tpg = 0;       // round 8: TP from global memory (the
                                          // snapshot's; the current degree's)
+    std::string snap_fp, cur_fp;         // round 10: who chose the degree's
+                                         // engine and order (g_fp's format;
+                                         // "" unknown: an earlier round's)
     u64 snap_classes = 0;                // classes covered by those chunks
     double snap_deg_s = 0;               // time on degree snap_d so far
     // round 7: time in all runs, as one uninterrupted run would show it --
@@ -1779,7 +1840,12 @@ extern "C" void ckpt_signal_handler(int sig) {
 // there and ignores them, and its readers ignore the flags it does not
 // know): the degree's time so far as an IEEE double (flag CKPT_F_DEGTIME),
 // the time of the run's earlier degrees as a float (CKPT_F_RUNTIME).
+// Round 10 appends a trailer after the payload, which rounds 6-9 never read:
+// CKPT_FP_MAGIC, u32 length, then who chose the degree's engine and loop
+// order (g_fp: "round 10 on <GPU> (sm_XY, N SMs)").  Without it (an earlier
+// round's file, or a damaged trailer) that is unknown.
 static const char CKPT_MAGIC[8] = {'G','F','2','S','V','C','K','4'};
+static const char CKPT_FP_MAGIC[8] = {'G','F','2','S','V','F','P','1'};
 #define CKPT_N32 12
 #define CKPT_N64 8
 #define CKPT_F_DELTA   1u
@@ -1798,6 +1864,8 @@ struct CkptInfo {
     u64 r = 0, smax = 0, period_s = 0, seed_hash = 0, ndelta = 0, written = 0,
         classes = 0;
     double deg_s = 0, run_s = 0;
+    bool fp_known = false;                      // round 10: the trailer
+    std::string fp;
 };
 
 // the header (and the seed path); *f_out is left at the payload if given
@@ -1860,6 +1928,7 @@ static void ckpt_snapshot(int d, int next, int nchunks, int method, int sub,
     g_ckpt.snap_sub = sub;
     g_ckpt.snap_pipe = pipe;
     g_ckpt.snap_tpg = method == LM_TOWER ? g_ckpt.cur_tpg : 0;
+    g_ckpt.snap_fp = method == LM_NONE ? g_fp : g_ckpt.cur_fp;
     g_ckpt.snap_classes = classes;
     g_ckpt.snap_deg_s = deg_s;
     g_ckpt.snap_run_s = g_ckpt.run_before_s;
@@ -1940,6 +2009,11 @@ static void ckpt_write() {
         else
             ok = fwrite(g_ckpt.snap.data() + 1, sizeof(ull), g_ckpt.smax, f) ==
                  g_ckpt.smax;
+    }
+    if (ok) {                                   // round 10: the trailer
+        const u32 flen = (u32)g_ckpt.snap_fp.size();
+        ok = fwrite(CKPT_FP_MAGIC, 1, 8, f) == 8 && fwrite(&flen, 4, 1, f) == 1 &&
+             (!flen || fwrite(g_ckpt.snap_fp.data(), 1, flen, f) == flen);
     }
     if (fflush(f) != 0) ok = false;
     fclose(f);
@@ -2030,7 +2104,7 @@ static std::string ckpt_mismatch(const CkptInfo &ci, u64 r, u64 smax, int d_lo,
                  "is %d-%d", ci.d_lo, ci.d_hi, d_lo, d_hi);
     else if (ci.seed != seed || (seed && ci.seed_hash != seed_hash))
         snprintf(b, sizeof b, "it started from %s%s, this run from %s",
-                 ci.seed ? "--load-survivors " : "no seed file",
+                 ci.seed ? "--load " : "no seed file",
                  ci.seed ? ci.seed_path.c_str() : "",
                  !seed ? "no seed file" : ci.seed ? "a file with different "
                  "contents" : "a seed file");
@@ -2079,6 +2153,22 @@ static bool ckpt_load_payload(FILE *f, const CkptInfo &ci, u64 smax,
     return fread(best.data() + 1, sizeof(ull), smax, f) == smax;
 }
 
+// Round 10's trailer (after the payload): who chose the degree's engine and
+// loop order.  Absent (rounds 6-9) or damaged: unknown, which re-tunes.
+static void ckpt_read_trailer(FILE *f, CkptInfo &c) {
+    c.fp_known = false;
+    c.fp.clear();
+    char m[8];
+    u32 len = 0;
+    if (fread(m, 1, 8, f) != 8 || memcmp(m, CKPT_FP_MAGIC, 8) ||
+        fread(&len, 4, 1, f) != 1 || len > 1024)
+        return;
+    std::string fp(len, '\0');
+    if (len && fread(&fp[0], 1, len, f) != len) return;
+    c.fp = fp;
+    c.fp_known = true;
+}
+
 // The newest usable generation of `path` for this run.  1: loaded (ci, best,
 // gen); 0: no checkpoint; -1: files exist but none is readable; -2: the
 // newest readable one belongs to another run (*why says how).
@@ -2095,7 +2185,7 @@ static int ckpt_resume(const char *path, u64 r, u64 smax, int d_lo, int d_hi,
         CkptInfo c;
         if (!ckpt_peek(g.c_str(), c, &f)) {
             fprintf(stderr, "checkpoint %s: not a readable checkpoint (format "
-                    "v4, rounds 6-9)\n", g.c_str());
+                    "v4, rounds 6-10)\n", g.c_str());
             continue;
         }
         if (!checked) {                          // the newest readable one
@@ -2107,6 +2197,7 @@ static int ckpt_resume(const char *path, u64 r, u64 smax, int d_lo, int d_hi,
             continue;
         }
         const bool ok = ckpt_load_payload(f, c, smax, base, best);
+        if (ok) ckpt_read_trailer(f, c);
         fclose(f);
         if (ok) {
             if (i) fprintf(stderr, "note: newer checkpoint generations were "
@@ -2322,6 +2413,8 @@ static void logs_geometry(int d, u64 &total, u64 &run, u64 &chunk,
 // ones, so those blocks hold almost no classes.  (Any order gives the same
 // result: best[] is merged by atomicMin.)
 #define CHUNK_BLOCK 8
+#define POLL_US 1000                    // COARSE_SYNC=poll: the poll interval
+#define POLL_ROUND CHUNK_BLOCK          // and the chunks queued per wait (round 10)
 static u64 chunk_at(int p, int nchunks) {
     if (nchunks <= CHUNK_BLOCK || nchunks % CHUNK_BLOCK) return (u64)p;
     const u64 nb = (u64)(nchunks / CHUNK_BLOCK);
@@ -3556,9 +3649,71 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
     int cur_m = -1, cur_sub = -1, cur_tpg = -1;  // tables set up for these
     LogsParams Lcur;
     bool timed_any = false;
-    for (size_t ci = 0; ci < cand.size(); ci++) {
+    // one timing of candidate c on the sample: ns per class (partners
+    // included), the sample's classes in cls; *ms_out its milliseconds
+    auto time_once = [&](const TuneCand &c, LogsBatchFn kfn, float *ms_out) -> double {
+        Lcur.pipe = c.pipe;                     // (no new tables for this)
+        Lcur.runctr = G.d_runctr;
+        u64 uhi = ulo + ((u64)1 << lb); if (uhi > total) uhi = total;
+        int blocks, threads;
+        size_t shm;
+        // round 7: runs of the sample short enough for ~16 per lane of
+        // the whole wave (with runs of krun, 2^27 u held ~3.2 runs per
+        // lane: some lanes had 4, the rest 3, and the sample's time
+        // came out ~25% high -- ~10% for PH, whose wave has half the
+        // lanes)
+        logs_batch_dims(kfn, ~(u64)0 >> 2, c.method, Lcur, blocks, threads, shm);
+        const u64 lanes = (u64)blocks * (u64)threads;
+        u64 trun = (uhi - ulo + 16 * lanes - 1) / (16 * lanes);
+        if (trun < 64) trun = 64;
+        if (trun > krun) trun = krun;
+        logs_batch_dims(kfn, (uhi - ulo + trun - 1) / trun, c.method, Lcur,
+                        blocks, threads, shm);
+        CUCHK(cudaMemcpy(G.d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
+        CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
+        CUCHK(cudaMemcpy(G.d_runctr, &zero64, 8, cudaMemcpyHostToDevice));
+        CUCHK(cudaEventRecord(e0));
+        kfn<<<blocks, threads, shm>>>(Lcur, G.dgp, ulo, uhi, trun, G.d_best,
+                                      G.d_heavy, G.d_nheavy, G.d_overflow,
+                                      G.d_nsurv, G.d_nerr);
+        CUCHK(cudaEventRecord(e1));
+        CUCHK(cudaEventSynchronize(e1));
+        CUCHK(cudaGetLastError());
+        wd_progress();
+        float ms = 0;
+        CUCHK(cudaEventElapsedTime(&ms, e0, e1));
+        CUCHK(cudaMemcpy(&cls, G.d_nsurv, 8, cudaMemcpyDeviceToHost));
+        CUCHK(cudaMemcpy(&nerr, G.d_nerr, 8, cudaMemcpyDeviceToHost));
+        CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
+        CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
+        if (nerr) {
+            fprintf(stderr, "d=%d: %llu discrete-log consistency errors "
+                    "while tuning -- results are NOT trustworthy; "
+                    "stopping\n", d, nerr);
+            exit(1);
+        }
+        if (ms_out) *ms_out = ms;
+        return cls ? ms * 1e6 / (double)cls : 0;
+    };
+    // Round 10: the candidates that share a set of tables (a variant's loop
+    // orders, which round 9's tuner timed once each, one after another) are
+    // timed in turn, g_tune_reps times over (COARSE_TUNE_REPS, default 3),
+    // and each keeps its median -- so that a drift of the GPU's clocks
+    // during the tune, or one disturbed timing, cannot decide between
+    // orders a few % apart (round 9 on the 2070 SUPER: d=44's grouped order
+    // timed 3-4% under round 9's in one tune and 3% over in another, and
+    // its pass ran 4% slower).  Before the first timing the first candidate
+    // runs for ~0.5 s (at most 8 times), so that the GPU's clocks have left
+    // idle; that warm-up also lengthens the sample while it has fewer than
+    // 2^25 classes.
+    size_t ci = 0;
+    while (ci < cand.size()) {
+        size_t cj = ci + 1;                     // cand[ci..cj): the same tables
+        while (cj < cand.size() && cand[cj].method == cand[ci].method &&
+               cand[cj].sub_n == cand[ci].sub_n && cand[cj].tpg == cand[ci].tpg)
+            cj++;
+        for (size_t k = ci; k < cj; k++) cand[k].ns = -1;    // n/a unless timed
         TuneCand &c = cand[ci];
-        c.ns = -1;
         if (c.method != cur_m || c.sub_n != cur_sub || c.tpg != cur_tpg) {
             // (re)build the tables
             if (cur_m >= 0) {
@@ -3569,10 +3724,10 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
             }
             cur_m = cur_sub = cur_tpg = -1;
             if (c.method == LM_RR && rrL.empty() && !rr_build_table(d, q, r, pl, rrL))
-                continue;
-            if (c.method == LM_CUBIC && !cubic_prepare(d, q, r, pl)) continue;
+                { ci = cj; continue; }
+            if (c.method == LM_CUBIC && !cubic_prepare(d, q, r, pl)) { ci = cj; continue; }
             TowerHost W;
-            if (c.method == LM_TOWER && !tower_build_host(d, q, W, c.sub_n)) continue;
+            if (c.method == LM_TOWER && !tower_build_host(d, q, W, c.sub_n)) { ci = cj; continue; }
             LogsPlan pc = pl;
             pc.method = c.method;
             pc.tp_global = c.tpg;
@@ -3586,58 +3741,40 @@ static void logs_tune(int d, u64 q, u64 r, u64 smax, LogsPlan &pl,
             cur_sub = c.sub_n;
             cur_tpg = c.tpg;
         }
-        const LogsBatchFn kfn = logs_batch_fn(d, c.method, c.pipe == 2);
-        if (!kfn) continue;                     // (c.ns stays -1: n/a)
-        Lcur.pipe = c.pipe;                     // (no new tables for this)
-        Lcur.runctr = G.d_runctr;
-        for (int rep = timed_any ? 1 : 0; rep < 2; rep++) {   // first: warm-up
-            u64 uhi = ulo + ((u64)1 << lb); if (uhi > total) uhi = total;
-            int blocks, threads;
-            size_t shm;
-            // round 7: runs of the sample short enough for ~16 per lane of
-            // the whole wave (with runs of krun, 2^27 u held ~3.2 runs per
-            // lane: some lanes had 4, the rest 3, and the sample's time
-            // came out ~25% high -- ~10% for PH, whose wave has half the
-            // lanes)
-            logs_batch_dims(kfn, ~(u64)0 >> 2, c.method, Lcur, blocks, threads, shm);
-            const u64 lanes = (u64)blocks * (u64)threads;
-            u64 trun = (uhi - ulo + 16 * lanes - 1) / (16 * lanes);
-            if (trun < 64) trun = 64;
-            if (trun > krun) trun = krun;
-            logs_batch_dims(kfn, (uhi - ulo + trun - 1) / trun, c.method, Lcur,
-                            blocks, threads, shm);
-            CUCHK(cudaMemcpy(G.d_nsurv, &zero64, 8, cudaMemcpyHostToDevice));
-            CUCHK(cudaMemcpy(G.d_nerr, &zero64, 8, cudaMemcpyHostToDevice));
-            CUCHK(cudaMemcpy(G.d_runctr, &zero64, 8, cudaMemcpyHostToDevice));
-            CUCHK(cudaEventRecord(e0));
-            kfn<<<blocks, threads, shm>>>(Lcur, G.dgp, ulo, uhi, trun, G.d_best,
-                                          G.d_heavy, G.d_nheavy, G.d_overflow,
-                                          G.d_nsurv, G.d_nerr);
-            CUCHK(cudaEventRecord(e1));
-            CUCHK(cudaEventSynchronize(e1));
-            CUCHK(cudaGetLastError());
-            wd_progress();
-            float ms = 0;
-            CUCHK(cudaEventElapsedTime(&ms, e0, e1));
-            CUCHK(cudaMemcpy(&cls, G.d_nsurv, 8, cudaMemcpyDeviceToHost));
-            CUCHK(cudaMemcpy(&nerr, G.d_nerr, 8, cudaMemcpyDeviceToHost));
-            CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
-            CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
-            if (nerr) {
-                fprintf(stderr, "d=%d: %llu discrete-log consistency errors "
-                        "while tuning -- results are NOT trustworthy; "
-                        "stopping\n", d, nerr);
-                exit(1);
-            }
-            c.ns = cls ? ms * 1e6 / (double)cls : 0;
-            // at least ~2^25 classes (a twice longer dense stretch)
-            if (rep == 0 && cls < ((u64)1 << 25) && lb + 1 <= d - 4 && ms < 2000) {
-                lb++;
-                ulo = logs_dense_stretch(d, lb);
-                rep--;
+        if (!timed_any) {                       // the warm-up
+            for (size_t k = ci; k < cj; k++) {
+                const LogsBatchFn kfn = logs_batch_fn(d, cand[k].method, cand[k].pipe == 2);
+                if (!kfn) continue;
+                const double tw0 = now_s();
+                for (int w = 0; w < 8 && (w == 0 || now_s() - tw0 < 0.5); w++) {
+                    float ms = 0;
+                    time_once(cand[k], kfn, &ms);
+                    // at least ~2^25 classes (a twice longer dense stretch)
+                    if (cls < ((u64)1 << 25) && lb + 1 <= d - 4 && ms < 2000) {
+                        lb++;
+                        ulo = logs_dense_stretch(d, lb);
+                        w = -1;                 // (again, the longer sample)
+                    }
+                }
+                break;
             }
         }
-        timed_any = true;
+        std::vector<std::vector<double>> tk(cj - ci);
+        for (int rep = 0; rep < g_tune_reps; rep++)
+            for (size_t k = ci; k < cj; k++) {
+                const LogsBatchFn kfn = logs_batch_fn(d, cand[k].method, cand[k].pipe == 2);
+                if (!kfn) continue;             // (its ns stays -1: n/a)
+                tk[k - ci].push_back(time_once(cand[k], kfn, nullptr));
+                timed_any = true;
+            }
+        for (size_t k = ci; k < cj; k++) {
+            std::vector<double> &v = tk[k - ci];
+            if (v.empty()) continue;
+            std::sort(v.begin(), v.end());
+            cand[k].ns = v.size() % 2 ? v[v.size() / 2]
+                                      : 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
+        }
+        ci = cj;
     }
     if (cur_m >= 0) {
         logs_free_device(G);
@@ -3685,6 +3822,8 @@ struct ResumePos {
     int tpg = 0;                        // round 8: the tower's TP from global
     u64 classes = 0;
     double deg_s = -1;                  // time on the degree so far (< 0: unknown)
+    bool fp_known = false;              // round 10: who chose the engine and
+    std::string fp;                     //   order (unknown: an earlier round)
 };
 
 #if defined(COARSE_PHASE_TIMING)
@@ -3759,7 +3898,38 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
     std::vector<u64> Th;                        // T, built once per degree
     std::vector<u64> rrL;                       // RR: the table, host copy
     int sub_use = g_tower_sub, pipe_use = g_pipe, tp_use = g_tower_tp > 0;
-    if (mid && rs->method != LM_NONE) {
+    // Round 10: a resumed degree keeps its recorded choice of engine and
+    // loop order only if this binary on this GPU (g_fp) made it; otherwise,
+    // or with --retune, it is tuned again.  (Safe at any point of a pass:
+    // all variants compute the same results, and the tuner's sample only
+    // marks what the pass marks anyway.)
+    const bool have_choice = mid && rs->method != LM_NONE;
+    bool retune = false;
+    if (have_choice && g_tune && d >= g_tune_min) {
+        const TuneCand rc = {rs->method, rs->method == LM_CUBIC ? d / 3 : rs->sub,
+                             rs->pipe, 0, rs->tpg};
+        char nm[64];
+        tune_name(rc, nm, sizeof nm);
+        if (g_retune) {
+            retune = true;
+            fprintf(stderr, "d=%d: --retune: tuning again (the checkpoint's "
+                    "choice: %s)\n", d, nm);
+        } else if (!rs->fp_known) {
+            retune = true;
+            fprintf(stderr, "d=%d: the checkpoint's choice, %s, was made by an "
+                    "earlier round (6-9); tuning again (--no-tune keeps it)\n",
+                    d, nm);
+        } else if (rs->fp != g_fp) {
+            retune = true;
+            fprintf(stderr, "d=%d: the checkpoint's choice, %s, was made by %s; "
+                    "this is %s: tuning again (--no-tune keeps it)\n", d, nm,
+                    rs->fp.c_str(), g_fp.c_str());
+        }
+    }
+    // who made the choice the checkpoints will record
+    g_ckpt.cur_fp = have_choice && !retune ? (rs->fp_known ? rs->fp : std::string())
+                                           : g_fp;
+    if (have_choice && !retune) {
         // the degree's engine and subfield, as recorded: no re-tuning
         if (rs->method != pl.method) {
             const bool ok = rs->method == LM_RR ? pl.rr_ok
@@ -3866,15 +4036,27 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
 
     // One blocking-sync event per device: the host thread sleeps in the
     // driver until its chunk is done and wakes at once -- no polling delay
-    // between chunks and no busy-waiting CPU core.  (Under WSL2 the wait
-    // appears to spin a core anyway; COARSE_SYNC=poll, round 9, polls the
-    // event every millisecond instead: ~0.1% of a chunk.)
+    // between chunks and no busy-waiting CPU core.  Under WSL2 that wait
+    // spins a core, so there (round 10; COARSE_SYNC=poll anywhere) the host
+    // polls the events instead.  Round 9 polled every millisecond, which
+    // woke it ~0.7 ms late on average and cost ~2% of a 37 ms chunk (d=44),
+    // as only one chunk per GPU is in flight, and most chunks are short: at
+    // d=55 about five in six hold no class at all (their 24-bit prefix can't
+    // start a Lyndon word: only 1.47M of the 8.4M prefixes are prenecklaces),
+    // while the rest hold ~6x the mean.  So round 10, polling with one GPU, queues a round of
+    // up to POLL_ROUND chunks -- separate launches back to back, each its
+    // own run counter -- and waits once for the lot: by a simulation of
+    // d=55's chunk sizes ~0.1-0.2% of the time lost instead of 0.3-2.3%,
+    // with the same ~1000 polls a second.  (One launch per chunk still, as
+    // a display GPU's watchdog -- 2 s under Windows, so under WSL2 too --
+    // could stop a launch of several dense chunks.)
     std::vector<cudaEvent_t> ev(NG);
     for (int g = 0; g < NG; g++) {
         CUCHK(cudaSetDevice(g_gpus[g].dev));
         CUCHK(cudaEventCreateWithFlags(&ev[g], cudaEventBlockingSync |
                                                cudaEventDisableTiming));
     }
+    const int poll_round = g_sync_poll && NG == 1 ? POLL_ROUND : 1;
 
     const int dot_every = nchunks > 64 ? (nchunks + 63) / 64 : 1;
     for (int c = 0; c < start_chunk; c += dot_every) fputc('=', stderr);
@@ -3898,7 +4080,7 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
     auto deg_time = [&]() {
         return deg_before < 0 ? -1.0 : deg_before + (now_s() - t_count);
     };
-    for (int base = start_chunk; base < nchunks; base += NG) {
+    for (int base = start_chunk; base < nchunks; ) {
         // round boundary: every chunk < base is complete on every device
         const u64 classes_now = classes_before + classes_run;
         if (ckpt_stop_due()) {
@@ -3915,34 +4097,43 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
                           classes_now, deg_time());
             ckpt_write();
         }
-        int used = 0;
-        for (int g = 0; g < NG && base + g < nchunks; g++) {
+        // the round: pass positions base .. base+used-1, the first ngpu GPUs
+        // one each -- or (round 10: polling, one GPU) up to poll_round of
+        // them queued on GPU 0, each with its own run counter
+        int used = 0, ngpu = 0;
+        for (int g = 0; g < NG && base + used < nchunks; g++) {
             GpuCtx &G = g_gpus[g];
             CUCHK(cudaSetDevice(G.dev));
-            u64 ulo = chunk_at(base + g, nchunks) * chunk;
-            u64 uhi = ulo + chunk; if (uhi > total) uhi = total;
+            const int nq = poll_round < nchunks - base ? poll_round : nchunks - base;
             CUCHK(cudaMemcpy(G.d_nheavy, &zero, 4, cudaMemcpyHostToDevice));
             CUCHK(cudaMemcpy(G.d_overflow, &zero, 4, cudaMemcpyHostToDevice));
-            CUCHK(cudaMemset(G.d_runctr, 0, 8));
-            // runs of krun = run/8 u-values: ~50 per thread, so threads
-            // finish together (the chunk itself is unchanged; with FILL_POOL
-            // a lane takes its next run when it needs one)
-            const u64 krun = run >= 512 ? run / 8 : run;
-            int blocks, threads;
-            size_t shm;
-            logs_batch_dims(kfn, (uhi - ulo + krun - 1) / krun, pl.method,
-                            Lg[g], blocks, threads, shm);
-            kfn<<<blocks, threads, shm>>>(Lg[g], G.dgp, ulo, uhi, krun,
-                                          G.d_best, G.d_heavy, G.d_nheavy,
-                                          G.d_overflow, G.d_nsurv, G.d_nerr);
+            CUCHK(cudaMemset(G.d_runctr, 0, 8 * (size_t)nq));
+            for (int k = 0; k < nq; k++) {
+                u64 ulo = chunk_at(base + used, nchunks) * chunk;
+                u64 uhi = ulo + chunk; if (uhi > total) uhi = total;
+                // runs of krun = run/8 u-values: ~50 per thread, so threads
+                // finish together (the chunk itself is unchanged; with
+                // FILL_POOL a lane takes its next run when it needs one)
+                const u64 krun = run >= 512 ? run / 8 : run;
+                int blocks, threads;
+                size_t shm;
+                logs_batch_dims(kfn, (uhi - ulo + krun - 1) / krun, pl.method,
+                                Lg[g], blocks, threads, shm);
+                LogsParams Lk = Lg[g];
+                Lk.runctr = G.d_runctr + k;
+                kfn<<<blocks, threads, shm>>>(Lk, G.dgp, ulo, uhi, krun,
+                                              G.d_best, G.d_heavy, G.d_nheavy,
+                                              G.d_overflow, G.d_nsurv, G.d_nerr);
+                used++;
+            }
             CUCHK(cudaEventRecord(ev[g], 0));
-            used++;
+            ngpu++;
         }
-        for (int g = 0; g < used; g++) {        // a chunk is seconds at most
+        for (int g = 0; g < ngpu; g++) {        // a chunk is seconds at most
             CUCHK(cudaSetDevice(g_gpus[g].dev));
             if (g_sync_poll) {
                 cudaError_t qe;
-                while ((qe = cudaEventQuery(ev[g])) == cudaErrorNotReady) usleep(1000);
+                while ((qe = cudaEventQuery(ev[g])) == cudaErrorNotReady) usleep(POLL_US);
                 CUCHK(qe);
             } else {
                 CUCHK(cudaEventSynchronize(ev[g]));
@@ -3956,7 +4147,7 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
             unsigned long long nbad = 0, ncls = 0;
             CUCHK(cudaMemcpy(&ncls, G.d_nsurv, 8, cudaMemcpyDeviceToHost));
             classes_run += ncls;
-            if (g >= used) continue;
+            if (g >= ngpu) continue;
             CUCHK(cudaMemcpy(&nheavy, G.d_nheavy, 4, cudaMemcpyDeviceToHost));
             CUCHK(cudaMemcpy(&overflow, G.d_overflow, 4, cudaMemcpyDeviceToHost));
             CUCHK(cudaMemcpy(&nbad, G.d_nerr, 8, cudaMemcpyDeviceToHost));
@@ -3967,6 +4158,14 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
             }
             // checked every round, so no checkpoint ever includes a chunk
             // in which an inconsistency was seen
+            if (nbad && used > ngpu) {          // (a queued round, GPU 0)
+                fprintf(stderr, "\nd=%d: %llu discrete-log consistency "
+                        "errors in the chunks at pass positions %d-%d (GPU 0) "
+                        "-- results are NOT trustworthy; stopping (no output "
+                        "written; any checkpoint predates these chunks)\n", d,
+                        nbad, base, base + used - 1);
+                exit(1);
+            }
             if (nbad) {
                 fprintf(stderr, "\nd=%d: %llu discrete-log consistency "
                         "errors in chunk %" PRIu64 " (pass position %d, GPU %d) "
@@ -4002,6 +4201,7 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
                 }
             }
         fflush(stderr);
+        base += used;
     }
     fprintf(stderr, "\n");
     g_ckpt.eta_s = -1;
@@ -4051,6 +4251,11 @@ static void sieve_degree_gpu_logs(int d, u64 r, u64 smax, const LogsPlan &pl_in,
         snprintf(tb, sizeof tb, "%.2fs in this run (resumed at chunk %d of %d; "
                  "the checkpoint, from round 6, has no time for the runs before)",
                  t_this, start_chunk, nchunks);
+    // round 10: and the rate, from degree 30 up (below, set-up dominates)
+    const double t_rate = mid ? t_all : t_this;
+    if (d >= 30 && t_rate > 0 && classes_all)
+        snprintf(tb + strlen(tb), sizeof tb - strlen(tb), ", %.3f ns/class",
+                 t_rate * 1e9 / (double)classes_all);
     fprintf(stderr, "d=%2d done (logs/%s, %d chunks): %" PRIu64 " classes, %llu "
             "heavy progressions, %s\n", d, mname, nchunks, classes_all,
             total_heavy, tb);
@@ -4075,7 +4280,8 @@ static int run_gpu(u64 r, int d_from, int d_hi, u64 smax, std::vector<ull> &best
         CUCHK(cudaMalloc(&G.d_heavy, HEAVY_CAP * sizeof(Heavy)));
         CUCHK(cudaMalloc(&G.d_nheavy, 4));
         CUCHK(cudaMalloc(&G.d_overflow, 4));
-        CUCHK(cudaMalloc(&G.d_runctr, 8));
+        CUCHK(cudaMalloc(&G.d_runctr, 8 * POLL_ROUND));   // (round 10: a slot
+                                                          // per queued chunk)
         if (start) {
             CUCHK(cudaMemcpy(G.d_best, start->data(), (smax + 1) * sizeof(ull),
                              cudaMemcpyHostToDevice));
@@ -4268,9 +4474,9 @@ static void usage(const char *prog) {
         "       %s --selftest [tower|ph|rr]\n"
         "  <degrees>  D1-D2 (degrees D1..D2) or D (degree D alone); a run from\n"
         "             scratch starts at 2, a run starting at D1 > 2 needs\n"
-        "             --load-survivors with the survivors of a run through D1-1\n"
+        "             --load with the survivors of a run through D1-1\n"
         "options:\n"
-        "  --load-survivors <file>  the seed: survivors of the run through D1-1\n"
+        "  --load <file>          the seed: survivors of the run through D1-1\n"
         "  --no-cert              do not write <out_prefix>.found.cert\n"
         "  --no-survivors         do not write <out_prefix>.survivors.txt\n"
         "  --checkpoint <file>    checkpoint file (default <out_prefix>.ckpt); the\n"
@@ -4281,11 +4487,13 @@ static void usage(const char *prog) {
         "  --fresh                set an existing checkpoint aside (*.old), start over\n"
         "  --gpus <N>             use N GPUs (default: all present)\n"
         "  --no-tune              skip the per-degree timing of kernel variants\n"
+        "  --retune               time them again when resuming a degree (done\n"
+        "                         anyway when another round or GPU chose them)\n"
         "  --watchdog-mins <N>    exit with status 3 if nothing progresses for N\n"
         "                         minutes, e.g. a hung GPU (default %d; 0 = off)\n"
         "examples:\n"
         "  %s 136279841 2-46 out2-46\n"
-        "  %s 136279841 47 out47 --load-survivors out2-46.survivors.txt\n",
+        "  %s 136279841 47 out47 --load out2-46.survivors.txt\n",
         prog, prog, CKPT_DEFAULT_MINS, WD_DEFAULT_MINS, prog, prog);
 }
 
@@ -4327,13 +4535,27 @@ int main(int argc, char **argv) {
     }
     if (const char *e = getenv("COARSE_LDCG")) g_ldcg = atoi(e) != 0;
     if (const char *e = getenv("COARSE_PREFETCH")) g_pf = atoi(e) != 0;
-    if (const char *e = getenv("COARSE_SYNC")) {
-        if (!strcmp(e, "poll")) {
-            g_sync_poll = true;
-            fprintf(stderr, "COARSE_SYNC=poll: chunks are waited for by polling their "
-                    "events every millisecond\n");
-        } else if (strcmp(e, "block")) {
-            fprintf(stderr, "COARSE_SYNC=%s: expected block (the default) or poll\n", e);
+    {   // round 10: auto (the default) polls under WSL2, else blocks
+        int sync = -1;
+        if (const char *e = getenv("COARSE_SYNC")) {
+            if (!strcmp(e, "poll")) sync = 1;
+            else if (!strcmp(e, "block")) sync = 0;
+            else if (strcmp(e, "auto")) {
+                fprintf(stderr, "COARSE_SYNC=%s: expected auto (the default: poll "
+                        "under WSL2, block elsewhere), block or poll\n", e);
+                return 1;
+            }
+        }
+        g_sync_poll = sync < 0 ? running_under_wsl() : sync == 1;
+        if (g_sync_poll)
+            fprintf(stderr, "%s: chunks are waited for by polling their events "
+                    "(COARSE_SYNC=block: in the driver)\n",
+                    sync < 0 ? "WSL2" : "COARSE_SYNC=poll");
+    }
+    if (const char *e = getenv("COARSE_TUNE_REPS")) {
+        g_tune_reps = atoi(e);
+        if (g_tune_reps < 1 || g_tune_reps > 99) {
+            fprintf(stderr, "COARSE_TUNE_REPS=%s: expected 1..99 (default 3)\n", e);
             return 1;
         }
     }
@@ -4398,13 +4620,15 @@ int main(int argc, char **argv) {
         const bool more = a + 1 < argc;
         if (!strcmp(argv[a], "--no-cert")) write_cert = false;
         else if (!strcmp(argv[a], "--no-survivors")) write_survivors = false;
-        else if (!strcmp(argv[a], "--load-survivors") && more) loadsurv_path = argv[++a];
+        else if ((!strcmp(argv[a], "--load") || !strcmp(argv[a], "--load-survivors")) && more)
+            loadsurv_path = argv[++a];       // (round 10: --load; the old name too)
         else if (!strcmp(argv[a], "--checkpoint") && more) ckpt_path = argv[++a];
         else if (!strcmp(argv[a], "--checkpoint-mins") && more) ckpt_mins = atof(argv[++a]);
         else if (!strcmp(argv[a], "--gpus") && more) want_gpus = atoi(argv[++a]);
         else if (!strcmp(argv[a], "--no-checkpoint")) no_ckpt = true;
         else if (!strcmp(argv[a], "--fresh")) fresh = true;
         else if (!strcmp(argv[a], "--no-tune")) g_tune = false;
+        else if (!strcmp(argv[a], "--retune")) g_retune = true;
         else if (!strcmp(argv[a], "--watchdog-mins") && more) {
             char *end = nullptr;
             const double m = strtod(argv[++a], &end);
@@ -4423,18 +4647,22 @@ int main(int argc, char **argv) {
     // the seed: required exactly when the run starts above degree 2
     if (d_lo > 2 && !loadsurv_path) {
         fprintf(stderr, "degrees %s: a run starting at degree %d needs "
-                "--load-survivors <file> with the survivors of a run through "
+                "--load <file> with the survivors of a run through "
                 "degree %d (for a run from scratch, write 2-%d)\n", argv[2],
                 d_lo, d_lo - 1, d_hi);
         return 1;
     }
     if (d_lo == 2 && loadsurv_path) {
-        fprintf(stderr, "--load-survivors: a run from degree 2 has no lower "
+        fprintf(stderr, "--load: a run from degree 2 has no lower "
                 "degrees to take from a seed file\n");
         return 1;
     }
     if (no_ckpt && (ckpt_path || fresh)) {
         fprintf(stderr, "--no-checkpoint conflicts with --checkpoint / --fresh\n");
+        return 1;
+    }
+    if (g_retune && !g_tune) {
+        fprintf(stderr, "--retune conflicts with --no-tune (or COARSE_TUNE=0)\n");
         return 1;
     }
     // test hook (deterministic checkpoint testing without a real signal):
@@ -4504,6 +4732,8 @@ int main(int argc, char **argv) {
                 rs.tpg = ci.tpg ? 1 : 0;
                 rs.classes = ci.classes;
                 rs.deg_s = ci.deg_known ? ci.deg_s : -1;
+                rs.fp_known = ci.fp_known;
+                rs.fp = ci.fp;
                 g_ckpt.run_before_s = ci.run_known ? ci.run_s : 0;
                 g_ckpt.run_known = ci.run_known;
                 resumed = true;
@@ -4565,6 +4795,19 @@ int main(int argc, char **argv) {
                 ndev);
     g_gpus.assign(use, GpuCtx());
     for (int g = 0; g < use; g++) g_gpus[g].dev = g;
+    {   // round 10: this binary and GPU 0, for the tuning record
+        cudaDeviceProp p;
+        char b[400];
+        if (cudaGetDeviceProperties(&p, g_gpus[0].dev) == cudaSuccess) {
+            p.name[sizeof p.name - 1] = '\0';
+            const char *nm = getenv("COARSE_TEST_GPU_NAME");   // test hook
+            snprintf(b, sizeof b, "round %d on %s (sm_%d%d, %d SMs)", COARSE_ROUND,
+                     nm ? nm : p.name, p.major, p.minor, p.multiProcessorCount);
+        } else {
+            snprintf(b, sizeof b, "round %d on an unidentified GPU", COARSE_ROUND);
+        }
+        g_fp = b;
+    }
     if (use > 1)
         fprintf(stderr, "using %d GPUs (chunks dealt out, results merged by "
                 "minimum)\n", use);
