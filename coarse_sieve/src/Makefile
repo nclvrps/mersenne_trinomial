@@ -50,7 +50,7 @@ NTLMSG = NTL: FAILED -- '$(CXX) $(NTLCHK) $(NTLLIB)' does not link.  Install lib
 endif
 endif
 
-CPU  = sieve_ref cantor_ref
+CPU  = sieve_ref cantor_ref gf2_dlog_selftest
 CUDA = coarse_sieve coarse_sieve_wide cantor_cuda trinomial_stage2 trinomial_scan tsfactor
 
 all: cpu cuda
@@ -66,10 +66,14 @@ ntl-diag:
 sieve_ref: sieve_ref.cpp gf2_small_field.h gf2_field_setup.h
 	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
 
+# host self-test of the discrete-log engines used by coarse_sieve_wide
+gf2_dlog_selftest: gf2_dlog_selftest.cpp gf2_dlog.h gf2_wide_field.h gf2_wide_setup.h
+	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
+
 coarse_sieve: coarse_sieve.cu gf2_small_field.h gf2_field_setup.h
 	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
 
-coarse_sieve_wide: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h
+coarse_sieve_wide: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h
 	$(NVCC) $(NVFLAGS) -DWIDE_FIELD $(INC) -o $@ $<
 
 cantor_ref: cantor_ref.cpp gf2_cantor_core.h gf2_cantor_engine.h
@@ -110,6 +114,15 @@ emul-%:
 	$(SEDLAUNCH) $$(find . sieve cantor stage2 -maxdepth 1 -name '$*.cu' 2>/dev/null | head -1) > build_emul/$*.cpp
 	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul -o build_emul/$* build_emul/$*.cpp
 
+# the -DWIDE_FIELD build of coarse_sieve.cu (logs path included)
+emul-coarse_sieve_wide:
+	mkdir -p build_emul
+	for h in gf2_small_field.h gf2_field_setup.h gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h cuda_emul.h; do \
+	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
+	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
+	$(SEDLAUNCH) $$(find . sieve -maxdepth 1 -name 'coarse_sieve.cu' 2>/dev/null | head -1) > build_emul/coarse_sieve_wide.cpp
+	$(CXX) $(CXXFLAGS) -x c++ -DWIDE_FIELD -Ibuild_emul -o build_emul/coarse_sieve_wide build_emul/coarse_sieve_wide.cpp
+
 emul-tsfactor:
 	@echo "== $(NTLMSG) =="
 	mkdir -p build_emul
@@ -133,9 +146,10 @@ emul-trinomial_scan:
 	@if [ "$(NTL_OK)" = "1" ]; then cp $$(ls common/gf2_gcd_ntl.cpp 2>/dev/null || ls gf2_gcd_ntl.cpp) build_emul/; fi
 	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul $(NTLDEF) -pthread -o build_emul/trinomial_scan build_emul/trinomial_scan.cpp $(NTLSRC_EMUL) $(NTLLIB)
 
-emultest: emul-coarse_sieve emul-cantor_cuda emul-trinomial_stage2 emul-trinomial_scan emul-tsfactor
+emultest: emul-coarse_sieve emul-coarse_sieve_wide emul-cantor_cuda emul-trinomial_stage2 emul-trinomial_scan emul-tsfactor
 	./build_emul/cantor_cuda selftest
 	./build_emul/coarse_sieve --selftest
+	./build_emul/coarse_sieve_wide --selftest-logs
 	./build_emul/trinomial_stage2 selftest
 	./build_emul/trinomial_scan --selftest
 	./build_emul/tsfactor --selftest
