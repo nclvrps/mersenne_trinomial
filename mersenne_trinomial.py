@@ -12,7 +12,8 @@ import argparse
 # ==========================================
 # Hardcoded constants
 # ==========================================
-r_val = 136279841
+DEFAULT_R_VAL = 136279841
+r_val = DEFAULT_R_VAL   # may be overridden on the command line (see main())
 
 # ==========================================
 # Global state
@@ -23,11 +24,15 @@ config_params = {
     'q': 16,
     'batchsize': 10,
     'instances': 1,
-    'sched_g_global': None,
-    'sched_g_specific': {},
     'tsfactor_env': None
 }
 ranges = []
+
+# Command-line overrides (set in main())
+cli_ranges = None        # list of (start, end) tuples, or None if --range not given
+cli_tsfactor_env = None  # dict, or None if --tsfactor_env not given
+exe_dir = "."            # directory containing factor_ec / tsfactor
+library_path = None      # value to put in LD_LIBRARY_PATH for the executables
 
 # State for survivors and dispatching
 unprocessed_survivors = []  
@@ -122,6 +127,33 @@ def parse_range_line(val):
             
     return None
 
+def parse_env_string(val):
+    """Parse 'export A=1 B=2' / 'A=1 B=2' into a dict. Raises ValueError if malformed."""
+    cleaned = val.strip().removeprefix("export ").strip()
+    if not cleaned:
+        return {}
+    return {k: v for k, v in (item.split("=", 1) for item in cleaned.split())}
+
+def exe_path(name):
+    return os.path.join(exe_dir, name)
+
+def check_exe(name):
+    p = exe_path(name)
+    if not (os.path.isfile(p) and os.access(p, os.X_OK)):
+        print(f"Error: '{p}' executable not found (or not executable).", file=sys.stderr)
+        sys.exit(1)
+    return p
+
+def make_exe_env(extra=None):
+    """Environment for factor_ec / tsfactor subprocesses."""
+    env = dict(os.environ)
+    if extra:
+        env.update(extra)
+    if library_path:
+        existing = env.get("LD_LIBRARY_PATH")
+        env["LD_LIBRARY_PATH"] = library_path + (":" + existing if existing else "")
+    return env
+
 def check_overlaps(rngs):
     sorted_r = sorted(rngs)
     for i in range(len(sorted_r) - 1):
@@ -141,8 +173,6 @@ def read_config():
         'q': 16,
         'batchsize': 10,
         'instances': 1,
-        'sched_g_global': None,
-        'sched_g_specific': {},
         'tsfactor_env': None
     }
     
@@ -166,32 +196,28 @@ def read_config():
             val = val.strip()
             
             if key == 'range':
-                r_tuple = parse_range_line(val)
-                if r_tuple:
-                    new_ranges.append(r_tuple)
+                if cli_ranges is None:   # --range on the command line overrides config ranges
+                    r_tuple = parse_range_line(val)
+                    if r_tuple:
+                        new_ranges.append(r_tuple)
             elif key in ['instances', 'm', 'q', 'batchsize']:
                 try:
                     new_params[key] = int(val)
                 except ValueError:
                     pass
-            elif key in ['sched-g', 'sched_g']:
-                parts = [p.strip() for p in val.split(',')]
-                if len(parts) == 2:
-                    try:
-                        new_params['sched_g_specific'][int(parts[0])] = parts[1]
-                    except ValueError:
-                        pass
-                elif len(parts) == 1:
-                    new_params['sched_g_global'] = parts[0]
             elif key in ['tsfactor_env', 'tsfactor-env']:
-                cleaned_env = val.removeprefix("export ").strip()
-                if cleaned_env:
+                if cli_tsfactor_env is None:   # command-line value overrides config
                     try:
-                        new_params['tsfactor_env'] = {
-                            k: v for k, v in (item.split("=", 1) for item in cleaned_env.split())
-                        }
+                        parsed_env = parse_env_string(val)
+                        if parsed_env:
+                            new_params['tsfactor_env'] = parsed_env
                     except ValueError:
                         print(f"WARNING: Malformed environment string format in config: '{val}'", file=sys.stderr)
+
+    if cli_ranges is not None:
+        new_ranges = list(cli_ranges)
+    if cli_tsfactor_env is not None:
+        new_params['tsfactor_env'] = dict(cli_tsfactor_env)
 
     physical_cores = get_linux_physical_cores()
     if new_params['instances'] > physical_cores:
@@ -348,14 +374,14 @@ def worker_thread():
             
         computed_maxd = local_k + m * q * 1 * (1 + 1) // 2
 
-        cmd = ["./factor_ec", "-v", "-p", "-f", "1", "-s0", "101", "-s1", "100",
+        cmd = [exe_path("factor_ec"), "-v", "-p", "-f", "1", "-s0", "101", "-s1", "100",
                "-k", str(local_k), "-skip", str(local_k), "-m", str(m), "-q", str(q), "-maxd", str(computed_maxd), str(r_val)]
-               
+
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
-                    start_new_session=True)
+                    start_new_session=True, env=make_exe_env())
         except FileNotFoundError:
-            print("Error: 'factor_ec' executable not found in PATH.", file=sys.stderr)
+            print(f"Error: '{exe_path('factor_ec')}' executable not found.", file=sys.stderr)
             sys.exit(1)
             
         try:
@@ -420,10 +446,7 @@ def worker_thread():
 def run_factor_ec_mode():
     global unprocessed_survivors, pending_survivors
 
-    import shutil
-    if not shutil.which("./factor_ec"):
-        print("Error: 'factor_ec' executable not found.", file=sys.stderr)
-        sys.exit(1)
+    check_exe("factor_ec")
 
     survivors_set = fetch_base_survivors()
     if not survivors_set:
@@ -478,10 +501,7 @@ def run_factor_ec_mode():
     print("Notice: All requested processing is complete.", file=sys.stderr)
 
 def run_tsfactor_mode():
-    import shutil
-    if not shutil.which("./tsfactor"):
-        print("Error: './tsfactor' executable not found.", file=sys.stderr)
-        sys.exit(1)
+    tsfactor_exe = check_exe("tsfactor")
 
     while not sigterm_received:
         if drawdown_mode:
@@ -533,21 +553,11 @@ def run_tsfactor_mode():
             if sigterm_received or drawdown_mode:
                 break
 
-            cmd = ["./tsfactor", str(r_val), "/dev/stdin", "--skip", str(maxd),
-                   "--sched", "opt", "--out", "remnants", "--ckpt-mins", "30",
+            cmd = [tsfactor_exe, str(r_val), "/dev/stdin", "--skip", str(maxd),
+                   "--sched", "opt", "--gpu-gcd", "--out", "remnants", "--ckpt-mins", "30",
                    "--gcd-threads", "1", "--pend-max", "1", "-v", "-v", "-v"]
 
-            sched_g = config_params['sched_g_specific'].get(maxd)
-            if sched_g is None:
-                sched_g = config_params['sched_g_global']
-                
-            if sched_g is not None:
-                cmd.extend(["--sched-G", str(sched_g)])
-                
-            if config_params['tsfactor_env'] is not None:
-                ts_env = {**os.environ, **config_params['tsfactor_env']}
-            else:
-                ts_env = os.environ
+            ts_env = make_exe_env(config_params['tsfactor_env'])
 
             try:
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True, bufsize=1, env=ts_env)
@@ -563,7 +573,7 @@ def run_tsfactor_mode():
                           "(exit status 3); see remnants.ec.log. Stopping.", file=sys.stderr)
                     sys.exit(3)
             except FileNotFoundError:
-                print("Error: './tsfactor' executable not found during execution.", file=sys.stderr)
+                print(f"Error: '{tsfactor_exe}' executable not found during execution.", file=sys.stderr)
                 sys.exit(1)
             except IOError:
                 pass 
@@ -571,9 +581,44 @@ def run_tsfactor_mode():
         time.sleep(1)
 
 def main():
-    parser = argparse.ArgumentParser(description="Mersenne Trinomial processing script")
+    global r_val, cli_ranges, cli_tsfactor_env, exe_dir, library_path
+
+    parser = argparse.ArgumentParser(description="Mersenne Trinomial processing script",
+                                     allow_abbrev=False)
+    parser.add_argument("r", nargs="?", type=int, default=DEFAULT_R_VAL,
+                        help=f"Mersenne exponent r (default: {DEFAULT_R_VAL})")
     parser.add_argument("--tsfactor", action="store_true", help="Run in tsfactor mode")
+    parser.add_argument("--tsfactor_env", "--tsfactor-env", dest="tsfactor_env", default=None,
+                        metavar="ENV",
+                        help="Environment for tsfactor, e.g. 'A=1 B=2' (overrides config file)")
+    parser.add_argument("--range", dest="ranges", action="append", default=None, metavar="RANGE",
+                        help="Range of s values, same syntax as config 'range:' lines; may be "
+                             "given multiple times; overrides all config-file ranges")
+    parser.add_argument("--path", default=".", metavar="DIR",
+                        help="Directory containing factor_ec / tsfactor (default: current directory)")
+    parser.add_argument("--library-path", dest="library_path", default=None, metavar="DIR",
+                        help="Directory to put in LD_LIBRARY_PATH for factor_ec / tsfactor")
     args = parser.parse_args()
+
+    if args.r <= 0:
+        parser.error("r must be a positive integer")
+    r_val = args.r
+    exe_dir = args.path
+    library_path = args.library_path
+
+    if args.tsfactor_env is not None:
+        try:
+            cli_tsfactor_env = parse_env_string(args.tsfactor_env)
+        except ValueError:
+            parser.error(f"malformed --tsfactor_env value: '{args.tsfactor_env}'")
+
+    if args.ranges is not None:
+        cli_ranges = []
+        for rv in args.ranges:
+            r_tuple = parse_range_line(rv)
+            if r_tuple is None:
+                parser.error(f"malformed --range value: '{rv}'")
+            cli_ranges.append(r_tuple)
 
     signal.signal(signal.SIGINT, handle_sigint)
     signal.signal(signal.SIGTERM, handle_sigterm)
