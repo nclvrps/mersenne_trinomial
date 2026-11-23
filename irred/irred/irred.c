@@ -1,50 +1,39 @@
 /* irred.c                                      irred version forked from 3.15
 
 ***********************************************************
-Forked version (2026):
+Version 0.21 of forked version (2026):
     https://github.com/nclvrps/mersenne_trinomial irred subdirectory
 
-Cleaned up with the assistance of Claude (chatbot)
-to create a version suited for 64-bit machines
-and modern optimizing compilers,
-and to remove functionality now better performed by another program.
-
-This forked version removes all sieving for polynomial factors,
-and just does the irreducibility test for a single trinomial
-x^r + x^s + 1, given as two command-line arguments r and s.
+This version includes Gerbicz-style error checking,
+and includes checkpointing and resuming from checkpoint after interruption.
 
 A 64-bit hexadecimal residue is printed if the trinomial is not
 irreducible (version 0.14 and earlier printed only the low 32 bits;
 the low 8 hex digits of the new residue are the old residue).
 
-Sieving was removed because the GF2X package has the program "factor"
-in the apps directory of its source code,
-which is much better at finding polynomial factors.
-(Not to be confused with the common GNU utility for factoring integers,
-which is also called "factor")
 
-For very large r where the "factor" program
-has not found any polynomial factor for a trinomial with some value of s
+Cleaned up with the assistance of Claude (chatbot)
+to create a version suited for 64-bit machines
+and modern optimizing compilers,
+and to remove functionality now better performed by other programs.
+
+This version removes all sieving for polynomial factors,
+and just does the irreducibility test for a single trinomial
+x^r + x^s + 1, given as two command-line arguments r and s.
+Note: r must be prime, s and (r-s) must both be >= 128.
+
+Sieving can be done instead with the factor_ec and tsfactor programs
+in the https://github.com/nclvrps/mersenne_trinomial tsfactor subdirectory
+
+For very large r where those programs have not found
+any polynomial factor for a trinomial with some value of s
 after searching candidate polynomials up to a very large degree d,
-it will be faster to use this program to do an irreducibility test
+it may be faster to use this program to do an irreducibility test
 rather than continuing to seek a factor.
 
-Nonetheless, if this test does confirm non-irreducibility, it is desirable
+Nonetheless, if this program does confirm non-irreducibility, it is desirable
 to take the time (eventually) to find a factor, for ease of verification.
 
-For r equal to any Mersenne prime exponent up to 74207281,
-all of the irreducible trinomials have already been found by Brent et al.
-in 2016 and earlier.
-
-For all non-irreducible trinomials (millions of them),
-polynomials factors were found and recorded in certificate files.
-
-Those certificate files are linked from:
-https://maths-people.anu.edu.au/~brent/trinom.html
-
-The check-ntl program is linked from the same page,
-and it can be used to check non-irreducibility very quickly
-by verifying the known factors listed in the certificate files.
 
 Richard Brent's page about the original version of this program is at:
 https://maths-people.anu.edu.au/~brent/irred.html
@@ -63,6 +52,14 @@ https://maths-people.anu.edu.au/~brent/ftp/trinom/irred315.tar.gz
 |  version 2, June 1991, as published by the Free Software Foundation.   |
 |  For details see http://www.gnu.org/copyleft/gpl.html .                |
 |                                                                        |
+|  Copyright (C) 2026 Gord Palameta.                                     |
+|                                                                        |
+|  This program is free software: you can redistribute it and/or         |
+|  modify it under the terms of the GNU General Public License           |
+|  as published by the Free Software Foundation,                         |
+|  either version 3 of the License,                                      |
+|  or (at your option) any later version.                                |
+|                                                                        |
 ==========================================================================
 
 Author: Richard P. Brent (rpb@comlab.ox.ac.uk)
@@ -70,6 +67,9 @@ Author: Richard P. Brent (rpb@comlab.ox.ac.uk)
         Samuli Larvala and Paul Zimmermann
 
 Dates:  20000528..20030328 (version 3.15)
+
+Author: Gord Palameta (for copyright purposes; actually Claude AI)
+Dates:  May to November 2026 (version 0.21 of forked version)
 
 Summary:
 

@@ -1,3 +1,18 @@
+/*
+Copyright (C) 2026  Gord Palameta
+(actual author: Claude AI)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Some code may have been inspired by:
+  GF2X library
+  factor.cpp and other files in GF2X library apps subdirectory
+  NTL library
+*/
+
 // tsfactor.cu
 // Synthesis of gf2x/apps/factor.cpp (Brent/Gaudry/Thome/Zimmermann,
 // GPL) and trinomial_scan.cu: finds the smallest-degree irreducible

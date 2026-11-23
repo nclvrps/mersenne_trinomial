@@ -1,3 +1,18 @@
+/*
+Copyright (C) 2026  Gord Palameta
+(actual author: Claude AI)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Some code may have been inspired by:
+  GF2X library
+  factor.cpp and other files in GF2X library apps subdirectory
+  NTL library
+*/
+
 // gf2_gcd.h
 // Host-side GCD and small-factor utilities for GF(2)[x] bit arrays
 // (little-endian u64 words, bit i of word w = coefficient 64w + i).

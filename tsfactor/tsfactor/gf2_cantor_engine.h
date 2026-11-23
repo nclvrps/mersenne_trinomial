@@ -1,3 +1,18 @@
+/*
+Copyright (C) 2026  Gord Palameta
+(actual author: Claude AI)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+Some code may have been inspired by:
+  GF2X library
+  factor.cpp and other files in GF2X library apps subdirectory
+  NTL library
+*/
+
 // gf2_cantor_engine.h
 // Host-side engine for GF(2)[x] multiplication by additive FFT over
 // GF(2^64) on a Cantor basis (Cantor 1989; Gao-Mateer 2010 recursion,

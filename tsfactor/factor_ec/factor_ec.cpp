@@ -1,7 +1,10 @@
-/* This file is part of the gf2x library.
+/* The original version (2019) of this file is part of the gf2x library.
 
    Copyright 2007, 2008, 2009, 2013, 2016, 2019
    Richard Brent, Pierrick Gaudry, Emmanuel Thome', Paul Zimmermann
+
+   Copyright (C) 2026  Gord Palameta
+   (actual author: Claude AI)
 
    This program is free software; you can redistribute it and/or modify it
    under the terms of the GNU General Public License as published by the
@@ -19,9 +22,14 @@
    02111-1307, USA.
 */
 
+/*
+Version bumped from 2.01 to 3.00:
+  Modified 2026 to add Gerbicz-style error checking
+*/
+
 /* Finds smallest irreducible factor of trinomial over GF(2) */
 
-#define GF2X_FACTOR_VERSION 2.01
+#define GF2X_FACTOR_VERSION 3.00
 
 #include <stdio.h>
 #include <stdlib.h>
