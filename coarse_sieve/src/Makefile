@@ -50,8 +50,8 @@ NTLMSG = NTL: FAILED -- '$(CXX) $(NTLCHK) $(NTLLIB)' does not link.  Install lib
 endif
 endif
 
-CPU  = sieve_ref cantor_ref gf2_dlog_selftest
-CUDA = coarse_sieve cantor_cuda trinomial_stage2 trinomial_scan tsfactor
+CPU  = gf2_dlog_selftest
+CUDA = coarse_sieve
 
 all: cpu cuda
 cpu: $(CPU)
@@ -62,9 +62,6 @@ ntl-diag:
 	@$(CXX) $(NTLCHK) $(NTLLIB) -o /tmp/ntl_diag_bin && \
 	  echo "OK: NTL links and runs" && /tmp/ntl_diag_bin && \
 	  rm -f /tmp/ntl_diag_bin || true
-
-sieve_ref: sieve_ref.cpp gf2_small_field.h gf2_field_setup.h
-	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
 
 # host self-test of the discrete-log engines used by coarse_sieve
 # (gf2_dlog.h needs C++17: the bit-sliced arithmetic is expanded by folds)
@@ -79,29 +76,6 @@ coarse_sieve: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h
 # the diagnostic build of round 8: per-phase timing of the batched kernel
 coarse_sieve_prof: coarse_sieve.cu gf2_wide_field.h gf2_wide_setup.h gf2_dlog.h
 	$(NVCC) $(NVFLAGS) -std=c++17 -DCOARSE_PHASE_TIMING $(INC) -o $@ $< -Xcompiler -pthread
-
-cantor_ref: cantor_ref.cpp gf2_cantor_core.h gf2_cantor_engine.h
-	$(CXX) $(CXXFLAGS) $(INC) -o $@ $<
-
-cantor_cuda: cantor_cuda.cu gf2_cantor_cuda.h gf2_cantor_core.h gf2_cantor_engine.h
-	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
-
-trinomial_stage2: trinomial_stage2.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_small_field.h
-	$(NVCC) $(NVFLAGS) $(INC) -o $@ $<
-
-trinomial_scan: trinomial_scan.cu gf2_trinomial_cuda.h gf2_gcd.h
-	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ $< $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
-
-tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_ntl.cpp
-	@echo "== $(NTLMSG) =="
-	@if [ "$(NTL_OK)" != "1" ] && [ "$(ALLOW_NO_NTL)" != "1" ]; then \
-	  echo "ERROR: tsfactor needs NTL for factor resolution (CanZass)."; \
-	  echo "  Kernel-testing-only override: make ALLOW_NO_NTL=1 tsfactor"; \
-	  exit 1; fi
-	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ tsfactor.cu $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
-
-check_ref: check_ref.cpp
-	g++ -O2 -std=c++17 -o $@ $<
 
 # Functional single-threaded CPU emulation of the CUDA programs (no GPU
 # needed): kernel launches become sequential loops via cuda_emul.h.
@@ -127,35 +101,8 @@ emul-coarse_sieve:
 	$(SEDLAUNCH) $$(find . sieve -maxdepth 1 -name 'coarse_sieve.cu' 2>/dev/null | head -1) > build_emul/coarse_sieve.cpp
 	$(CXX) $(CXXFLAGS) -std=c++17 -x c++ -Ibuild_emul -pthread -o build_emul/coarse_sieve build_emul/coarse_sieve.cpp
 
-emul-tsfactor:
-	@echo "== $(NTLMSG) =="
-	mkdir -p build_emul
-	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h; do \
-	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
-	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
-	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
-	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
-	$(SEDLAUNCH) tsfactor.cu > build_emul/tsfactor.cpp
-	@if [ "$(NTL_OK)" = "1" ]; then cp $$(ls common/gf2_gcd_ntl.cpp 2>/dev/null || ls gf2_gcd_ntl.cpp) build_emul/; fi
-	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul $(NTLDEF) -pthread -o build_emul/tsfactor build_emul/tsfactor.cpp $(NTLSRC_EMUL) $(NTLLIB)
-
-emul-trinomial_scan:
-	mkdir -p build_emul
-	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h; do \
-	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
-	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
-	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
-	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
-	$(SEDLAUNCH) $$(find . sieve cantor stage2 scan -maxdepth 1 -name 'trinomial_scan.cu' 2>/dev/null | head -1) > build_emul/trinomial_scan.cpp
-	@if [ "$(NTL_OK)" = "1" ]; then cp $$(ls common/gf2_gcd_ntl.cpp 2>/dev/null || ls gf2_gcd_ntl.cpp) build_emul/; fi
-	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul $(NTLDEF) -pthread -o build_emul/trinomial_scan build_emul/trinomial_scan.cpp $(NTLSRC_EMUL) $(NTLLIB)
-
-emultest: emul-coarse_sieve emul-cantor_cuda emul-trinomial_stage2 emul-trinomial_scan emul-tsfactor
-	./build_emul/cantor_cuda selftest
+emultest: emul-coarse_sieve
 	./build_emul/coarse_sieve --selftest
-	./build_emul/trinomial_stage2 selftest
-	./build_emul/trinomial_scan --selftest
-	./build_emul/tsfactor --selftest
 
 clean:
 	rm -rf $(CPU) $(CUDA) build_emul
