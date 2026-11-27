@@ -1,0 +1,7 @@
+tests/bug014_test.sh
+4423 3015: true x95868bc52f115a6e | 0.14 xe25996b6 | bug + chain only: x0423c7a7e25996b6 (0 check failures) | with map check: exit 3
+4423 2247: true xd7951e1a96d918fc | 0.14 xfa1fcb08 | bug + chain only: xc0d4b519fa1fcb08 (0 check failures) | with map check: exit 3
+4423 1991: true x3aea5edbedc0df84 | 0.14 x0ef4cf9c | bug + chain only: xfc5f3dcd0ef4cf9c (0 check failures) | with map check: exit 3
+4423 1000 (deltaq != 0): true y6b0463063ed3a0e8, bug copy y6b0463063ed3a0e8
+4423 2098 (deltaq != 0): true irreducible, bug copy irreducible
+0.14 bug: invisible to the chain, caught by the map check

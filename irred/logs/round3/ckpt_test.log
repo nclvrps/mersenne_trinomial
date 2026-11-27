@@ -1,0 +1,34 @@
+== reference run (no checkpoints)
+   result xa3cbe3b7b97817ce
+== SIGINT, then resume
+PASS: exit status 2 after SIGINT
+PASS: signal: block finished and verified first
+PASS: checkpoints are of verified states
+PASS: three generations
+PASS: resumed
+PASS: resumed result matches
+PASS: all squarings checked
+PASS: progress residues match the uninterrupted run
+PASS: files removed at the end
+== corrupted newest checkpoint -> falls back to .ckpt.1
+PASS: damaged .ckpt skipped, .ckpt.1 used
+PASS: result after fallback matches
+== mismatched and foreign files are ignored
+PASS: mismatch / foreign files ignored, fresh start
+PASS: --ckpt-mins 0: only the signal checkpoint
+== lock
+PASS: second process refused
+== a run started by irred 0.20 (version 1 checkpoint) is not overwritten
+PASS: v1 checkpoint: refuses to start (exit 1)
+PASS: v1 files untouched
+== --stop-after N
+PASS: --stop-after: stops (exit 2) with a verified checkpoint
+PASS: --stop-after: resumed, result matches
+PASS: --stop-after with --no-ckpt: timing run, no files
+== --no-ec segment, then checked
+PASS: --no-ec squarings counted (261325)
+== faults in a checkpointed run
+PASS: sq fault: detected, redone, result right
+PASS: damaged verified state: detected, result right
+     The verified state at 524286 was damaged in memory; falling back to the last checkpoint
+checkpoint tests: 22 passed, 0 failed

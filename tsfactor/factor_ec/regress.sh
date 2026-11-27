@@ -7,6 +7,7 @@
 #   2. the default and -noec against each other
 #   3. two threads (-mt 2)
 #   4. the production sieving command line, s values on stdin
+#   5. -Z (3.01): the same answers as without it
 W=$(mktemp -d fec_regress.XXXXXX)
 fail=0
 cmp_run() {   # label, reference file, factor_ec args...
@@ -34,6 +35,14 @@ cmp_run "r=4423 -mt 2 -m 8" $W/ro.txt -mt 2 -m 8 -s0 100 -s1 400 4423
 OPTS="-p -f 1 -s0 101 -s1 100 -k 5 -skip 5 -m 6 -q 4 -maxd 279"
 ./factor $OPTS 9689 < surv9689.txt 2>/dev/null | grep -v thread > $W/ro.txt
 cmp_run "r=9689 production options, stdin" $W/ro.txt $OPTS 9689 < surv9689.txt
+# -Z q1 (3.01) caps the number of blocks but never gives up, so the answers
+# are the same as without it -- also when q0 > q1 and with -f 0, the two
+# cases factor_modified 2.02 got wrong
+./factor -s0 100 -s1 400 4423 2>/dev/null | grep -v thread > $W/ro.txt
+cmp_run "r=4423 -Z 3"                $W/ro.txt -Z 3           -s0 100 -s1 400 4423
+cmp_run "r=4423 -q 8 -Z 3 (q0 > q1)" $W/ro.txt -q 8 -Z 3      -s0 100 -s1 400 4423
+cmp_run "r=4423 -f 0 -q 8 -Z 3"      $W/ro.txt -f 0 -q 8 -Z 3 -s0 100 -s1 400 4423
+cmp_run "r=4423 -z 2 -Z 3 (-Z wins)" $W/ro.txt -z 2 -Z 3      -s0 100 -s1 400 4423
 [ $fail = 0 ] && echo "  ---- all regressions identical to the original factor ----" && rm -rf $W
 [ $fail = 0 ] || echo "  ---- FAILURES; files kept in $W ----"
 exit $fail

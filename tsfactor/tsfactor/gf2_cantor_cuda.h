@@ -39,7 +39,11 @@ Some code may have been inspired by:
 // Fused (register-tile) transform path: default ON.  Toggled by the
 // test drivers to A/B against the legacy per-level kernels.
 static bool gf2c_use_fused = true;
-// Runtime tuning (see also --bench FFT autotune in tsfactor):
+// Runtime tuning.  tsfactor sets these from its tuning record: it times
+// the variants when a run starts (or adopts the choice stored in the
+// checkpoint it resumes from, if this binary on this GPU made it), so no
+// environment variables are involved any more (round 10; GF2C_FFT,
+// GF2C_TAYLOR_LV, GF2C_BFLY_LV and GF2C_FUSE_MAX_CH are no longer read).
 //   gf2c_taylor_lv / gf2c_bfly_lv: cascade levels fused per pass
 //     (register cost per thread: 2^(tlv+1) resp. 2^blv u64 -- large
 //     values spill and strangle occupancy on some architectures).
@@ -47,8 +51,6 @@ static bool gf2c_use_fused = true;
 //     reaches this bound run the legacy streaming kernels instead
 //     (their long-stride register-tile gathers defeat DRAM locality);
 //     0 = no limit.
-// Environment overrides, read at CudaFFT::init: GF2C_FFT=legacy|fused,
-// GF2C_TAYLOR_LV, GF2C_BFLY_LV, GF2C_FUSE_MAX_CH.
 #ifndef GF2C_TAYLOR_LV_DEFAULT
 #define GF2C_TAYLOR_LV_DEFAULT 3
 #endif
@@ -58,17 +60,7 @@ static bool gf2c_use_fused = true;
 static int gf2c_taylor_lv = GF2C_TAYLOR_LV_DEFAULT;
 static int gf2c_bfly_lv = GF2C_BFLY_LV_DEFAULT;
 static u64 gf2c_fuse_max_ch = 0;
-static inline void gf2c_read_env() {
-    static bool done = false;
-    if (done) return;
-    done = true;
-    const char *e;
-    if ((e = getenv("GF2C_FFT")))
-        gf2c_use_fused = (e[0] != 'l' && e[0] != 'L' && e[0] != '0');
-    if ((e = getenv("GF2C_TAYLOR_LV"))) gf2c_taylor_lv = atoi(e);
-    if ((e = getenv("GF2C_BFLY_LV"))) gf2c_bfly_lv = atoi(e);
-    if ((e = getenv("GF2C_FUSE_MAX_CH")))
-        gf2c_fuse_max_ch = strtoull(e, 0, 10);
+static inline void gf2c_clamp_config() {
     if (gf2c_taylor_lv < 1) gf2c_taylor_lv = 1;
     if (gf2c_taylor_lv > 5) gf2c_taylor_lv = 5;
     if (gf2c_bfly_lv < 1) gf2c_bfly_lv = 1;
@@ -379,7 +371,7 @@ struct CudaFFT {
     u64 *dW = nullptr;
 
     void init(int m_, const CantorBasis &B) {
-        gf2c_read_env();
+        gf2c_clamp_config();
         m = m_;
         n = (size_t)1 << m;
         CantorFFT ref;                 // reuse validated host twiddle build

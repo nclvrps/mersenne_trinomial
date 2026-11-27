@@ -1,7 +1,7 @@
 /* irred.c                                      irred version forked from 3.15
 
 ***********************************************************
-Version 0.21 of forked version (2026):
+Version 0.22 of forked version (2026):
     https://github.com/nclvrps/mersenne_trinomial irred subdirectory
 
 This version includes Gerbicz-style error checking,
@@ -120,11 +120,16 @@ Usage:
                                  a build with -fopenmp; used only for
                                  r > about 5 million.  Measure 1..cores:
                                  1.7x with 2 at r = 136279841 on a Xeon.
-        --nt                     non-temporal (streaming) stores in the
-                                 AVX2/AVX-512 interleave.  2x slower where
-                                 the data fit in the L3 cache; may help where
-                                 they do not (Zen 2 at r = 136279841?):
-                                 measure.
+        --nt, --no-nt            non-temporal (streaming) stores in the
+                                 AVX2/AVX-512 interleave, or not.  Default:
+                                 on when the two squaring buffers (r/4
+                                 bytes) do not fit in the L3 cache, where
+                                 they are faster (Zen 2, r = 136279841:
+                                 1.76 instead of 2.40 ms per squaring); off
+                                 when they fit, where they are 2x slower
+        --stop-after N           stop after N squarings, as if SIGTERM had
+                                 arrived then (checkpoint, exit status 2):
+                                 for timing runs and tests
         --isa auto|avx512|avx2|generic
                                  which interleave code to use; the default
                                  picks the best the CPU has (for testing)
@@ -165,8 +170,7 @@ Output:
         gives the low 64 bits of x^(2^k) mod (x^r + x^sodd + 1).
 
         Before the result, a line says whether all r squarings were
-        error-checked (a run resumed from a 0.20 checkpoint, or run with
-        --no-ec, reports how many were not).
+        error-checked (a run with --no-ec reports how many were not).
 
         Exit status: 0 = finished, 1 = error, 2 = stopped by SIGINT or
         SIGTERM after writing a checkpoint (run the same command to resume),
@@ -210,8 +214,7 @@ Checkpoints:
         directory at the same time.  With error checking (the default), a
         checkpoint holds the last verified state, and a signal first
         finishes and verifies the current block.  Checkpoints written by
-        0.20 (format version 1) are read too; 0.20 cannot read the version 2
-        files written by this version.
+        0.20 (format version 1) are not read any more; 0.21 reads them.
 
 Comments on timing and memory requirements:
 
@@ -292,6 +295,12 @@ Comments on different versions:
       - --nt: optional streaming stores in the SIMD interleave
       - github location moved to nclvrps/mersenne_trinomial (irred/)
 
+    Forked version 0.22 (2026-11-25):
+      - checkpoints of format version 1 (0.20) are no longer read
+      - --nt is chosen automatically: on when the squaring buffers do not
+        fit in the L3 cache (--no-nt / --nt to override)
+      - --stop-after N, for timing runs and tests (no `timeout` needed)
+
 Compile with, e.g.,
         gcc -O3 -march=native -fopenmp -o irred irred.c -lm
 (-fopenmp only matters for --threads; without it the program is the same,
@@ -318,8 +327,8 @@ single-threaded.)
 #include <omp.h>
 #endif
 
-#define IRRED_VERSION "0.21"
-#define IRRED_DATE    "20261119"
+#define IRRED_VERSION "0.22"
+#define IRRED_DATE    "20261125"
 
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 #define HAVE_X86_SIMD 1
@@ -635,7 +644,8 @@ static void interlvf_avx512_nt(const uint64_t *restrict a, uint64_t *restrict b,
 typedef void (*ilv_fn)(const uint64_t *restrict, uint64_t *restrict,
                        long, long);
 static ilv_fn ilv = interlvf;
-static bool ilv_nt = false;             /* --nt */
+static bool ilv_nt = false;             /* --nt (see main for the default) */
+static int nt_mode = -1;                /* --nt 1, --no-nt 0, automatic -1 */
 static const char *ilv_name = "portable C";
 
 static bool comparex(const uint64_t *a)
@@ -670,6 +680,38 @@ static bool choose_interleave(const char *isa)
     }
 #endif
   return strcmp(isa, "auto") == 0 || strcmp(isa, "generic") == 0;
+  }
+
+/* Size of the L3 cache one core sees (one instance: a Zen CCX, not the
+   whole chip), in bytes, or -1 if unknown. */
+static long l3_cache_bytes(void)
+  {
+  for (int i = 0; i < 8; i++) {
+    char path[96], buf[64];
+    long level = 0, size = -1;
+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu0/cache/index%d/level", i);
+    FILE *f = fopen(path, "r");
+    if (f == NULL) break;
+    if (fgets(buf, sizeof buf, f)) level = strtol(buf, NULL, 10);
+    fclose(f);
+    if (level != 3) continue;
+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu0/cache/index%d/size", i);
+    f = fopen(path, "r");
+    if (f == NULL) break;
+    if (fgets(buf, sizeof buf, f)) {
+      char *end;
+      size = strtol(buf, &end, 10);
+      if (*end == 'K') size <<= 10;
+      else if (*end == 'M') size <<= 20;
+      }
+    fclose(f);
+    if (size > 0) return size;
+    }
+#ifdef _SC_LEVEL3_CACHE_SIZE
+  long v = sysconf(_SC_LEVEL3_CACHE_SIZE);
+  if (v > 0) return v;
+#endif
+  return -1;
   }
 
 /* ------------------------------------------------------------------------ */
@@ -988,26 +1030,11 @@ static bool map_check(uint64_t *A, uint64_t *B, int n)
    carry a CRC-32.  Written to <file>.tmp, fsync'ed, the older generations
    rotated (.ckpt -> .ckpt.1 -> .ckpt.2), then renamed into place.
 
-   Format version 2 (0.21) adds error-checking bookkeeping to the header.
-   Version 1 files (0.20) are still read, so a run started by 0.20 can be
-   continued by this version. */
+   Format version 2 (0.21 and later) carries the error-checking
+   bookkeeping.  Version 1 files (0.20) are not read since 0.22. */
 
 #define CKPT_MAGIC   "IRREDCKP"         /* 8 bytes, no terminating NUL used */
 #define CKPT_VERSION 2u
-
-struct ckpt_hdr_v1 {                    /* irred 0.20 */
-  char     magic[8];
-  uint32_t version;
-  uint32_t hdr_bytes;
-  uint64_t r, s, sodd;
-  uint64_t k;
-  uint64_t nwords;
-  double   wall;
-  double   cpu;
-  int64_t  written;
-  uint32_t data_crc;
-  uint32_t hdr_crc;
-};
 
 struct ckpt_hdr {                       /* version 2 */
   char     magic[8];
@@ -1020,7 +1047,7 @@ struct ckpt_hdr {                       /* version 2 */
   double   cpu;                 /* CPU seconds in all runs so far */
   int64_t  written;             /* time(NULL) when written */
   uint64_t unchecked;           /* of the k squarings, how many were done
-                                   without error checking (0.20, --no-ec) */
+                                   without error checking (--no-ec) */
   uint64_t ec_checks;           /* windows verified, all runs */
   uint64_t ec_failures;         /* failed checks (recovered), all runs */
   uint64_t reserved[5];
@@ -1033,6 +1060,20 @@ static double ckpt_secs = CKPT_DEFAULT_MINS * 60.0;
 static char ckpt_name[3][128];  /* .ckpt, .ckpt.1, .ckpt.2 */
 static char ckpt_tmp[128], lock_name[128];
 static volatile sig_atomic_t stop_requested = 0;
+static bool found_v1 = false;           /* a 0.20 checkpoint for this r, s */
+#define STOP_AFTER_N (-1)               /* stop_requested by --stop-after */
+static uint64_t stop_after = 0;         /* --stop-after N (0 = none) */
+
+/* "Received signal 15 after ..." or "Stopping after ... (--stop-after)" */
+static void stop_note(uint64_t k, const char *tail)
+  {
+  if (stop_requested == STOP_AFTER_N)
+    printf("Stopping after %" PRIu64 "/%d squarings (--stop-after)%s\n", k,
+           r, tail);
+  else
+    printf("Received signal %d after %" PRIu64 "/%d squarings%s\n",
+           (int)stop_requested, k, r, tail);
+  }
 
 static void on_signal(int sig)
   {
@@ -1153,14 +1194,12 @@ static bool ckpt_write(const uint64_t *a, uint64_t k, uint32_t want_crc,
   }
 
 /* Try to load one checkpoint file into a.  Returns true if it is a valid
-   checkpoint for this (r, s); otherwise prints why it is not used.  Reads
-   format versions 1 and 2; H is filled in as version 2. */
+   checkpoint for this (r, s); otherwise prints why it is not used. */
 static bool ckpt_load_one(const char *name, uint64_t *a, struct ckpt_hdr *H)
   {
   FILE *f = fopen(name, "rb");
   if (f == NULL) return false;          /* silently: no such file */
   unsigned char raw[sizeof(struct ckpt_hdr)];
-  struct ckpt_hdr_v1 H1;
   memset(H, 0, sizeof *H);
   size_t got = fread(raw, 1, 16, f);
   if (got != 16 || memcmp(raw, CKPT_MAGIC, 8) != 0) {
@@ -1172,27 +1211,21 @@ static bool ckpt_load_one(const char *name, uint64_t *a, struct ckpt_hdr *H)
   memcpy(&ver, raw + 8, 4);
   memcpy(&hb, raw + 12, 4);
   bool ok = false;
-  if (ver == 1 && hb == sizeof H1 &&
-      fread(raw + 16, 1, sizeof H1 - 16, f) == sizeof H1 - 16) {
-    memcpy(&H1, raw, sizeof H1);
-    if (crc32_buf(&H1, offsetof(struct ckpt_hdr_v1, hdr_crc)) == H1.hdr_crc) {
-      memcpy(H->magic, H1.magic, 8);
-      H->version = 1;
-      H->r = H1.r; H->s = H1.s; H->sodd = H1.sodd;
-      H->k = H1.k; H->nwords = H1.nwords;
-      H->wall = H1.wall; H->cpu = H1.cpu; H->written = H1.written;
-      H->unchecked = H1.k;              /* 0.20 had no error checking */
-      H->data_crc = H1.data_crc;
-      ok = true;
-      }
-    }
-  else if (ver == CKPT_VERSION && hb == sizeof *H &&
+  if (ver == CKPT_VERSION && hb == sizeof *H &&
            fread(raw + 16, 1, sizeof *H - 16, f) == sizeof *H - 16) {
     memcpy(H, raw, sizeof *H);
     ok = crc32_buf(H, offsetof(struct ckpt_hdr, hdr_crc)) == H->hdr_crc;
     }
-  if (!ok) {
+  if (!ok && ver == 1) {
+    uint64_t rs[2] = {0, 0};            /* r and s sit at bytes 16..31 */
+    if (fseek(f, 16, SEEK_SET) == 0 && fread(rs, 8, 2, f) == 2 &&
+        rs[0] == (uint64_t)r && rs[1] == (uint64_t)s)
+      found_v1 = true;
+    printf("Ignoring %s: format version 1 (irred 0.20)\n", name);
+    }
+  else if (!ok)
     printf("Ignoring %s: unknown format version or damaged header\n", name);
+  if (!ok) {
     fclose(f);
     return false;
     }
@@ -1236,10 +1269,7 @@ static bool ckpt_resume(uint64_t *a, uint64_t *k, struct history *h)
       printf("Resuming from %s (written %s): %" PRIu64 "/%d squarings done "
              "(%.2f%%) in %s, residue %016" PRIx64 "\n", ckpt_name[g], when,
              H.k, r, 100.0 * (double)H.k / r, took, a[0]);
-      if (H.version == 1)
-        printf("  (a version 1 checkpoint from irred 0.20: its %" PRIu64
-               " squarings were done without error checking)\n", H.k);
-      else if (H.unchecked > 0)
+      if (H.unchecked > 0)
         printf("  (%" PRIu64 " of these squarings were done without error "
                "checking)\n", H.unchecked);
       *k = H.k;
@@ -1394,6 +1424,8 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
     uint64_t *t = a; a = b; b = t;
     k++;
     maybe_fault(F_SQ, a);
+    if (stop_after && k - k0 >= stop_after && !stop_requested)
+      stop_requested = STOP_AFTER_N;
 
     if (progress > 0 && k % (uint64_t)progress == 0) {
       double now = wall_now();
@@ -1415,8 +1447,7 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
                  k < (uint64_t)r && wall_now() - last_ckpt >= ckpt_secs;
       if (stop_requested || due) {
         if (stop_requested)
-          printf("Received signal %d after %" PRIu64 "/%d squarings\n",
-                 (int)stop_requested, k, r);
+          stop_note(k, "");
         struct history hh;
         HIST_NOW(hh);
         hh.unchecked = h0.unchecked + (k - k0);
@@ -1432,9 +1463,7 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
       }
 
     if (stop_requested && !stop_msg) {
-      printf("Received signal %d after %" PRIu64 "/%d squarings: finishing "
-             "the block and verifying before stopping\n",
-             (int)stop_requested, k, r);
+      stop_note(k, ": finishing the block and verifying before stopping");
       stop_msg = true;
       }
 
@@ -1705,8 +1734,11 @@ static void usage(FILE *f)
     "  --selftest                 run small known cases (with injected faults)\n"
     "  --threads N                threads per squaring (default 1; needs a\n"
     "                             build with -fopenmp; used for r > ~5 million)\n"
-    "  --nt                       streaming stores in the interleave (try on\n"
-    "                             machines where r is memory-bound; measure)\n"
+    "  --nt, --no-nt              streaming stores in the interleave, or not\n"
+    "                             (default: on when the squaring buffers do\n"
+    "                             not fit in the L3 cache)\n"
+    "  --stop-after N             stop after N squarings, as if SIGTERM had\n"
+    "                             arrived then (exit status 2; for timing)\n"
     "  --isa auto|avx512|avx2|generic\n"
     "                             interleave code to use (default auto)\n"
     "  -h, --help                 this message\n"
@@ -1720,7 +1752,8 @@ static void usage(FILE *f)
     "  --ec-fault SITE:N          TEST: inject a fault (sq acc chk ver map)\n"
     "Checkpoint files: irred_r<r>_s<s>.ckpt[.1|.2] in the current directory;\n"
     "rerunning the same command resumes.  Exit status 2: stopped by a signal\n"
-    "after writing a checkpoint; 3: error check failed.\n", CKPT_DEFAULT_MINS);
+    "or --stop-after (after writing a checkpoint); 3: error check failed.\n",
+    CKPT_DEFAULT_MINS);
   }
 
 static bool parse_long(const char *str, long lo, long hi, long *out)
@@ -1807,7 +1840,18 @@ int main(int argc, char *argv[])
     else if (!strcmp(arg, "--no-ec"))
       ec_enabled = false;
     else if (!strcmp(arg, "--nt"))
-      ilv_nt = true;
+      nt_mode = 1;
+    else if (!strcmp(arg, "--no-nt"))
+      nt_mode = 0;
+    else if (!strcmp(arg, "--stop-after")) {
+      long v;
+      NEED_VALUE();
+      if (!parse_long(val, 1, 0x7FFFFFFF, &v)) {
+        fprintf(stderr, "bad value for --stop-after: %s\n", val);
+        return EXIT_FAILURE;
+        }
+      stop_after = (uint64_t)v;
+      }
     else if (!strcmp(arg, "--threads") || !strcmp(arg, "--mt-min-words")) {
       long v;
       NEED_VALUE();
@@ -1882,6 +1926,7 @@ int main(int argc, char *argv[])
   printf("This is irred (forked github.com/nclvrps/mersenne_trinomial/ version %s, %s)\n",
          IRRED_VERSION, IRRED_DATE);
 
+  ilv_nt = (nt_mode == 1);
   if (!choose_interleave(isa)) {
     fprintf(stderr, "--isa %s: not available on this CPU/build (use auto, "
             "avx512, avx2 or generic)\n", isa);
@@ -1930,6 +1975,19 @@ int main(int argc, char *argv[])
            "reducible; testing anyway to compute the residue\n");
 
   setup_params();
+  if (nt_mode < 0) {            /* automatic: streaming stores when the two
+                                   squaring buffers do not fit in L3 */
+    long l3 = l3_cache_bytes();
+    double need = 2.0 * (double)nwords * 8.0;
+    if (l3 > 0 && need > (double)l3) {
+      ilv_nt = true;
+      choose_interleave(isa);
+      if (strstr(ilv_name, "streaming"))
+        printf("Streaming stores: on (squaring buffers %.0f MB > %ld MB L3 "
+               "cache; --no-nt turns them off)\n", need / 1048576.0,
+               l3 >> 20);
+      }
+    }
   if (verbose)
     printf("sodd %d, delta %d (%d words + %d bits), %zu words per polynomial"
            ", %s interleave\n", sodd, delta, deltaw, deltaq, nwords, ilv_name);
@@ -1969,6 +2027,14 @@ int main(int argc, char *argv[])
     ckpt_setup_names();
     ckpt_lock();
     if (!ckpt_resume(Vb, &k0, &h)) {
+      if (found_v1) {           /* never overwrite days of 0.20 work */
+        printf("ERROR: a checkpoint of irred 0.20 (format version 1) for "
+               "this r and s is here.\nThis version cannot continue it: "
+               "finish the run with irred 0.21, or delete\n%s* to start "
+               "again from the beginning.\n", ckpt_name[0]);
+        free_all(buf);
+        return EXIT_FAILURE;
+        }
       memset(Vb, 0, bufwords * sizeof(uint64_t));
       k0 = 0;
       }

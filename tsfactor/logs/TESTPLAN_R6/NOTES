@@ -1,0 +1,4 @@
+Step 3: Upon completion there was r6.results.txt but also r6.lock
+Step 4: The "kept for later" message appeared, although it is a bit hard to spot among the other information.
+Step 5: The total wall clock time seems somewhat similar between tsfactor_cpu and factor_ec, at least for this s-value.
+Step 6: Perhaps the idea behind mersenne_trinomial.py needs to be rethought before modifying it, I might add some thoughts to the chat conversation.

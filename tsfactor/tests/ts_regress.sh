@@ -26,6 +26,10 @@
 T=${1:?usage: ts_regress.sh NEW_TSFACTOR [ORIG_TSFACTOR]}
 ORIG=$2
 [ -x "$T" ] || { echo "not executable: $T"; exit 2; }
+# round 10: the same script tests the CPU build (tsfactor_cpu); its rows
+# that need the GPU multiplier are skipped
+CPUBUILD=0
+"$T" --version 2>/dev/null | grep -q "CPU build" && CPUBUILD=1
 W=$(mktemp -d ts_regress.XXXXXX)
 fail=0
 note() { echo "$*"; }
@@ -54,6 +58,9 @@ for R in 3217 4423 9689; do
     i=0
     while read -r name opts; do
         i=$((i + 1))
+        if [ $CPUBUILD = 1 ] && [ $name = gpugcd ]; then
+            printf "  %-9s skipped (CPU build)\n" "$name"; continue
+        fi
         run ${name}_$R $C $opts
         st=$?
         d=$(detections ${name}_$R)
@@ -78,6 +85,7 @@ ntl       --gcd-ntl
 dup       --ecg-dup
 gpugcd    --gpu-gcd --gpu-gcd-min-bits 512 --gcd-finish-bits 256
 opt       --sched opt --sched-G 40 --eci0 --ect --pend-max 1
+linear    --sched linear --pend-max 2
 mt        --gcd-mt 3 --gcd-finish-bits 256
 EOF
 done
@@ -158,7 +166,7 @@ done
 "$T" $C --out "$W/kill" >> "$W/kill.out" 2>> "$W/kill.err"
 st=$?
 nres=$(grep -c "^Resumed" "$W/kill.out")
-left=$(ls "$W"/kill.ckpt* 2>/dev/null | wc -l)
+left=$(ls "$W"/kill_r*.ckpt* 2>/dev/null | wc -l)
 if cmp -s "$W/kref.results.txt" "$W/kill.results.txt" && [ $st -eq 0 ] && [ "$nres" -ge 1 ] && [ "$left" -eq 0 ]; then
     note "interrupt/resume: stopped 3 times, $nres mid-interval resume(s) from checkpoint, results identical, no checkpoint file left behind"
 elif [ "$left" -ne 0 ]; then

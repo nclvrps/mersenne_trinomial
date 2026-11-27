@@ -1,0 +1,57 @@
+r=3217: 92 reference results (original binary)
+  noec      identical  
+  ec        identical  2584 blocks and 567 h-table chain windows verified
+  chain     identical  891 blocks and 407 h-table chain windows verified
+  chainold  identical  821 blocks and 396 h-table chain windows verified
+  ecw1      identical  784 blocks and 911 h-table chain windows verified
+  xgcd      identical  3274 blocks and 685 h-table chain windows verified
+  ntl       identical  1073 blocks and 405 h-table chain windows verified
+  dup       identical  2230 blocks and 582 h-table chain windows verified
+  gpugcd    skipped (CPU build)
+  opt       identical  776 blocks and 273 h-table chain windows verified
+  linear    identical  1326 blocks and 499 h-table chain windows verified
+  mt        identical  990 blocks and 416 h-table chain windows verified
+r=4423: 121 reference results (original binary)
+  noec      identical  
+  ec        identical  3408 blocks and 766 h-table chain windows verified
+  chain     identical  1120 blocks and 505 h-table chain windows verified
+  chainold  identical  1131 blocks and 548 h-table chain windows verified
+  ecw1      identical  1004 blocks and 1177 h-table chain windows verified
+  xgcd      identical  3711 blocks and 802 h-table chain windows verified
+  ntl       identical  2315 blocks and 611 h-table chain windows verified
+  dup       identical  3280 blocks and 853 h-table chain windows verified
+  gpugcd    skipped (CPU build)
+  opt       identical  1048 blocks and 364 h-table chain windows verified
+  linear    identical  1665 blocks and 641 h-table chain windows verified
+  mt        identical  1228 blocks and 524 h-table chain windows verified
+r=9689: 81 reference results (original binary)
+  noec      identical  
+  ec        identical  5218 blocks and 939 h-table chain windows verified
+  chain     identical  1470 blocks and 438 h-table chain windows verified
+  chainold  identical  1891 blocks and 471 h-table chain windows verified
+  ecw1      identical  919 blocks and 1034 h-table chain windows verified
+  xgcd      identical  5099 blocks and 922 h-table chain windows verified
+  ntl       identical  2145 blocks and 517 h-table chain windows verified
+  dup       identical  4385 blocks and 837 h-table chain windows verified
+  gpugcd    skipped (CPU build)
+  opt       identical  880 blocks and 280 h-table chain windows verified
+  linear    identical  1277 blocks and 464 h-table chain windows verified
+  mt        identical  1312 blocks and 426 h-table chain windows verified
+TSFACTOR_ARGS: options taken from the environment, results identical
+  --ec-fault h:40      injected, caught (EC FAIL [h-table chain]), results identical
+  --ec-fault hmid:25   injected, caught (EC FAIL [h-table chain]), results identical
+  --ec-fault t:60      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault red:33    injected, caught (EC FAIL [reduction mod T]), results identical
+  --ec-fault a:17      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault c:21      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault init:2    injected, caught (EC FAIL [h-table initialisation]), results identical
+  --ec-fault idle:4    injected, caught (EC FAIL [idle h-table]), results identical
+  --ec-fault xferh:2   injected, caught (re-read), results identical
+  --ec-fault xfera:5   injected, caught (re-read), results identical
+  --ec-fault snap:2    injected into state that was never read again: harmless
+  the same kind of flip with --no-ec (4 runs): 0 gave wrong results, silently
+  persistent fault: exit status 3, no wrong line written
+interrupt/resume: stopped 3 times, 1 mid-interval resume(s) from checkpoint, results identical, no checkpoint file left behind
+fault after a resume: detected, results identical
+
+ts_regress: all PASS

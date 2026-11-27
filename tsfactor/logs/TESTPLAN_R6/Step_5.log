@@ -1,0 +1,208 @@
+$ ./tsfactor_cpu --bench 136279841 588
+bench r=136279841 s=588 (CPU build, 1 squaring thread)
+  squaring (BLZ, s even)                  3.527 ms
+  squaring (generic spread+fold)         12.014 ms
+  h-table advance (m=12 x 12)           510.676 ms
+    = per squaring                        3.546 ms
+  Horner (m=12)                          25.451 ms
+  modmul (gf2x product + reduce)        941.172 ms
+    product only                        981.398 ms
+    fold reduce (2 passes)                5.239 ms
+error checking (per block unless noted):
+  EC h-table pass (m=12)                 27.093 ms
+  EC product + result folds               7.863 ms
+  EC chain check (per window)            59.967 ms
+per-degree projection (m*t_sq + (t_mul + t_horner(m))/m), and the error-checking overhead at --ecw 8:
+  m=4      251.60 ms/degree   + EC  4.848 ms (1.93%)
+  m=6      180.26 ms/degree   + EC  4.193 ms (2.33%)
+  m=8      148.14 ms/degree   + EC  3.865 ms (2.61%)
+  m=10     131.70 ms/degree   + EC  3.669 ms (2.79%)
+  m=12     123.11 ms/degree   + EC  3.538 ms (2.87%)
+  m=14     119.00 ms/degree   + EC  3.444 ms (2.89%)
+  m=16     117.69 ms/degree   + EC  3.374 ms (2.87%)
+  m=20     120.11 ms/degree   + EC  3.276 ms (2.73%)
+  m=24     126.45 ms/degree   + EC  3.210 ms (2.54%)
+  m=32     145.02 ms/degree   + EC  3.128 ms (2.16%)
+recommended m: 16 (analytic 16); expect ~117.7 ms/degree
+
+
+$ cd ../factor_ec && make factor_ec && cd ../tsfactor
+g++ -O4 -march=native -fomit-frame-pointer -funroll-loops -fopenmp -DHAVE_CONFIG_H -I.     -Wall -W -MT factor_ec.o -MD -MP -c -o factor_ec.o factor_ec.cpp
+g++ -O4 -march=native -fomit-frame-pointer -funroll-loops -fopenmp -DHAVE_CONFIG_H -I.     -Wall -W -MT halfgcd.o -MD -MP -c -o halfgcd.o halfgcd.cpp
+g++ -O4 -march=native -fomit-frame-pointer -funroll-loops -fopenmp -Wall -W -o factor_ec factor_ec.o halfgcd.o -lntl -lgf2x -lgmp
+
+
+$ time ../factor_ec/factor_ec -v -k 55 -skip 55 -m 14 -q 16 -maxd 279 -s0 588 -s1 589 136279841
+../factor_ec/factor_ec -v -k 55 -skip 55 -m 14 -q 16 -maxd 279 -s0 588 -s1 589 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=16 block(s)
+Use fine DDF above 530450
+Using 1 thread(s)
+Using reciprocal trinomial
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Maximal degree checked reduced to 279
+Degree 2: skip
+Degree 3: skip
+Degree 4: skip
+Degree 5: skip
+Degree 6: skip
+Degree 7: skip
+Degree 8: skip
+Degree 9: skip
+Degree 10: skip
+Degree 11: skip
+Degree 12: skip
+Degree 13: skip
+Degree 14: skip
+Degree 15: skip
+Degree 16: skip
+Degree 17: skip
+Degree 18: skip
+Degree 19: skip
+Degree 20: skip
+Degree 21: skip
+Degree 22: skip
+Degree 23: skip
+Degree 24: skip
+Degree 25: skip
+Degree 26: skip
+Degree 27: skip
+Degree 28: skip
+Degree 29: skip
+Degree 30: skip
+Degree 31: skip
+Degree 32: skip
+Degree 33: skip
+Degree 34: skip
+Degree 35: skip
+Degree 36: skip
+Degree 37: skip
+Degree 38: skip
+Degree 39: skip
+Degree 40: skip
+Degree 41: skip
+Degree 42: skip
+Degree 43: skip
+Degree 44: skip
+Degree 45: skip
+Degree 46: skip
+Degree 47: skip
+Degree 48: skip
+Degree 49: skip
+Degree 50: skip
+Degree 51: skip
+Degree 52: skip
+Degree 53: skip
+Degree 54: skip
+Degree 55: skip
+Exponentiation took 4.960290
+Current q 16
+Interval 56..279:
+   squares/products took 27.1 (wct 27.2), per term 0.121 (wct 0.121)
+   gcd took 42.524023
+588 irreducible
+Error checking: 0 detection(s) / recovery(ies)
+
+real    1m14.899s
+user    1m10.839s
+sys     0m3.930s
+
+
+$ echo 588 > /tmp/s588.txt
+
+$ time ./tsfactor_cpu 136279841 /tmp/s588.txt --
+skip 55 --maxd 279 --out c588 -v -v
+tsfactor_cpu round 10 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to c588.ec.log
+1 survivors from /tmp/s588.txt
+tuning: m=17 (t_sq 3.278 ms per slot, t_mul 945.8 ms) (3.4 s)
+memory: h-table 292 MB, scratch 227 MB, snapshots 276 MB each (up to 7, --hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (300 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=55 m=17 gcd-threads=1 pend-max=1
+== s=588 ==
+Maximal degree checked reduced to 279
+Exponentiation took 5.543963
+Current q 14
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Reducing q to 14
+Interval 56..293:
+   squares/products took 29.3 (wct 29.3), per term 0.123 (wct 0.123)
+   [components cumulative: sq 14.3  horner 0.5  mul 13.8]
+   gcd 56..293 took 36.569331
+588 u
+== s=588 done in 71.7 s (238 degrees) ==
+error checking: 14 blocks and 3 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 1 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    1m15.476s
+user    1m11.485s
+sys     0m3.866s
+
+
+
+# Running factor_ec again:
+
+Exponentiation took 4.966033
+Current q 16
+Interval 56..279:
+   squares/products took 27.1 (wct 27.2), per term 0.121 (wct 0.121)
+   gcd took 42.606445
+588 irreducible
+Error checking: 0 detection(s) / recovery(ies)
+
+real    1m14.966s
+user    1m11.016s
+sys     0m3.845s
+
+
+# Running tsfactor_cpu again with --maxd 279 as before:
+
+== s=588 ==
+Maximal degree checked reduced to 279
+Exponentiation took 5.544721
+Current q 14
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Reducing q to 14
+Interval 56..293:
+   squares/products took 29.7 (wct 29.7), per term 0.125 (wct 0.125)
+   [components cumulative: sq 14.5  horner 0.5  mul 13.9]
+   gcd 56..293 took 36.573076
+588 u
+== s=588 done in 72.0 s (238 degrees) ==
+error checking: 14 blocks and 3 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 1 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    1m15.809s
+user    1m11.655s
+sys     0m4.006s
+
+# Running tsfactor_cpu again, but now with --maxd 293:
+
+== s=588 ==
+Maximal degree checked reduced to 293
+Exponentiation took 5.540267
+Current q 14
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 56..293:
+   squares/products took 29.6 (wct 29.6), per term 0.124 (wct 0.124)
+   [components cumulative: sq 14.4  horner 0.5  mul 14.0]
+   gcd 56..293 took 36.628514
+588 u
+== s=588 done in 72.0 s (238 degrees) ==
+error checking: 14 blocks and 3 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 1 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    1m15.798s
+user    1m11.425s
+sys     0m4.217s

@@ -2,3 +2,9 @@
 *.o
 factor
 factor_ec
+gecsim
+ecbench
+ectest
+ectest2
+fec_regress.*
+fec_sweep.*

@@ -1,0 +1,151 @@
+$ cd ../tests
+
+$ ./ts_regress.sh ../tsfactor/tsfactor
+r=3217: 92 reference results (--no-ec)
+  noec      identical
+  ec        identical  787 blocks and 636 h-table chain windows verified
+  chain     identical  666 blocks and 640 h-table chain windows verified
+  chainold  identical  593 blocks and 664 h-table chain windows verified
+  ecw1      identical  541 blocks and 826 h-table chain windows verified
+  xgcd      identical  656 blocks and 616 h-table chain windows verified
+  ntl       identical  570 blocks and 663 h-table chain windows verified
+  dup       identical  640 blocks and 656 h-table chain windows verified
+  gpugcd    identical  3405 blocks and 759 h-table chain windows verified
+  opt       identical  776 blocks and 273 h-table chain windows verified
+  linear    identical  819 blocks and 402 h-table chain windows verified
+  mt        identical  588 blocks and 660 h-table chain windows verified
+r=4423: 121 reference results (--no-ec)
+  noec      identical
+  ec        identical  930 blocks and 902 h-table chain windows verified
+  chain     identical  911 blocks and 869 h-table chain windows verified
+  chainold  identical  1008 blocks and 835 h-table chain windows verified
+  ecw1      identical  751 blocks and 1140 h-table chain windows verified
+  xgcd      identical  849 blocks and 969 h-table chain windows verified
+  ntl       identical  1072 blocks and 816 h-table chain windows verified
+  dup       identical  984 blocks and 802 h-table chain windows verified
+  gpugcd    identical  8690 blocks and 1569 h-table chain windows verified
+  opt       identical  1048 blocks and 364 h-table chain windows verified
+  linear    identical  1087 blocks and 523 h-table chain windows verified
+  mt        identical  834 blocks and 862 h-table chain windows verified
+r=9689: 81 reference results (--no-ec)
+  noec      identical
+  ec        identical  1080 blocks and 512 h-table chain windows verified
+  chain     identical  755 blocks and 652 h-table chain windows verified
+  chainold  identical  822 blocks and 746 h-table chain windows verified
+  ecw1      identical  659 blocks and 962 h-table chain windows verified
+  xgcd      identical  1312 blocks and 507 h-table chain windows verified
+  ntl       identical  745 blocks and 629 h-table chain windows verified
+  dup       identical  708 blocks and 618 h-table chain windows verified
+  gpugcd    identical  7205 blocks and 1180 h-table chain windows verified
+  opt       identical  880 blocks and 280 h-table chain windows verified
+  linear    identical  920 blocks and 384 h-table chain windows verified
+  mt        identical  743 blocks and 670 h-table chain windows verified
+TSFACTOR_ARGS: options taken from the environment, results identical
+  --ec-fault h:40      injected, caught (EC FAIL [h-table chain]), results identical
+  --ec-fault hmid:25   injected, caught (EC FAIL [h-table chain]), results identical
+  --ec-fault t:60      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault red:33    injected, caught (EC FAIL [reduction mod T]), results identical
+  --ec-fault a:17      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault c:21      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault init:2    injected, caught (EC FAIL [h-table initialisation]), results identical
+  --ec-fault idle:4    injected, caught (EC FAIL [idle h-table]), results identical
+  --ec-fault xferh:2   injected, caught (re-read), results identical
+  --ec-fault xfera:5   injected, caught (re-read), results identical
+  --ec-fault snap:2    injected into state that was never read again: harmless
+  the same kind of flip with --no-ec (4 runs): 1 gave wrong results, silently
+  persistent fault: exit status 3, no wrong line written
+interrupt/resume: stopped 3 times, 1 mid-interval resume(s) from checkpoint, results identical, no checkpoint file left behind
+fault after a resume: detected, results identical
+
+ts_regress: all PASS
+
+
+$ ./ts_regress.sh ../tsfactor/tsfactor_cpu
+r=3217: 92 reference results (--no-ec)
+  noec      identical
+  ec        identical  1583 blocks and 442 h-table chain windows verified
+  chain     identical  880 blocks and 406 h-table chain windows verified
+  chainold  identical  884 blocks and 389 h-table chain windows verified
+  ecw1      identical  732 blocks and 867 h-table chain windows verified
+  xgcd      identical  1564 blocks and 433 h-table chain windows verified
+  ntl       identical  1076 blocks and 446 h-table chain windows verified
+  dup       identical  1162 blocks and 461 h-table chain windows verified
+  gpugcd    skipped (CPU build)
+  opt       identical  776 blocks and 273 h-table chain windows verified
+  linear    identical  1289 blocks and 477 h-table chain windows verified
+  mt        identical  938 blocks and 403 h-table chain windows verified
+r=4423: 121 reference results (--no-ec)
+  noec      identical
+  ec        identical  3004 blocks and 683 h-table chain windows verified
+  chain     identical  1275 blocks and 516 h-table chain windows verified
+  chainold  identical  1214 blocks and 519 h-table chain windows verified
+  ecw1      identical  1009 blocks and 1179 h-table chain windows verified
+  xgcd      identical  3057 blocks and 705 h-table chain windows verified
+  ntl       identical  1634 blocks and 584 h-table chain windows verified
+  dup       identical  1685 blocks and 587 h-table chain windows verified
+  gpugcd    skipped (CPU build)
+  opt       identical  1048 blocks and 364 h-table chain windows verified
+  linear    identical  1728 blocks and 629 h-table chain windows verified
+  mt        identical  1225 blocks and 513 h-table chain windows verified
+r=9689: 81 reference results (--no-ec)
+  noec      identical
+  ec        identical  5080 blocks and 918 h-table chain windows verified
+  chain     identical  1225 blocks and 442 h-table chain windows verified
+  chainold  identical  1317 blocks and 425 h-table chain windows verified
+  ecw1      identical  883 blocks and 1003 h-table chain windows verified
+  xgcd      identical  5050 blocks and 916 h-table chain windows verified
+  ntl       identical  2506 blocks and 568 h-table chain windows verified
+  dup       identical  2711 blocks and 610 h-table chain windows verified
+  gpugcd    skipped (CPU build)
+  opt       identical  880 blocks and 280 h-table chain windows verified
+  linear    identical  1280 blocks and 450 h-table chain windows verified
+  mt        identical  1222 blocks and 445 h-table chain windows verified
+TSFACTOR_ARGS: options taken from the environment, results identical
+  --ec-fault h:40      injected, caught (EC FAIL [h-table chain]), results identical
+  --ec-fault hmid:25   injected, caught (EC FAIL [h-table chain]), results identical
+  --ec-fault t:60      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault red:33    injected, caught (EC FAIL [reduction mod T]), results identical
+  --ec-fault a:17      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault c:21      injected, caught (EC FAIL [A*C product / Horner]), results identical
+  --ec-fault init:2    injected, caught (EC FAIL [h-table initialisation]), results identical
+  --ec-fault idle:4    injected, caught (EC FAIL [idle h-table]), results identical
+  --ec-fault xferh:2   injected, caught (re-read), results identical
+  --ec-fault xfera:5   injected, caught (re-read), results identical
+  --ec-fault snap:2    injected into state that was never read again: harmless
+  the same kind of flip with --no-ec (4 runs): 1 gave wrong results, silently
+  persistent fault: exit status 3, no wrong line written
+interrupt/resume: stopped 3 times, 1 mid-interval resume(s) from checkpoint, results identical, no checkpoint file left behind
+fault after a resume: detected, results identical
+
+ts_regress: all PASS
+
+
+$ ./ts_ckpt10.sh ../tsfactor/tsfactor ../tsfactor/tsfactor_cpu
+survivors used: 84 105 170
+interrupted s=84: checkpoint a_r9689_s84.ckpt
+a list without s=84: the other two done, its checkpoint kept and reported
+the set-aside s=84 resumed later: results identical, no checkpoint left
+two interrupted survivors resumed by one run (first), results identical
+tuning: timed at a fresh start, taken from the checkpoint on resume, timed again with --retune
+schedule: [schedule costs from the checkpoint: gcd 0.00125 s, 0.248 ms/degree: G 5 degrees]
+lock: a second run with the same --out refuses (status 1)
+cross-build resume: tsfactor -> tsfactor_cpu: tuned again, state carried over, results identical
+ts_ckpt10: all PASS
+
+
+$ ./ts_ckpt10.sh ../tsfactor/tsfactor_cpu ../tsfactor/tsfactor
+survivors used: 84 105 170
+interrupted s=84: checkpoint a_r9689_s84.ckpt
+a list without s=84: the other two done, its checkpoint kept and reported
+the set-aside s=84 resumed later: results identical, no checkpoint left
+two interrupted survivors resumed by one run (first), results identical
+tuning: timed at a fresh start, taken from the checkpoint on resume, timed again with --retune
+schedule: [schedule costs from the checkpoint: gcd 0.0013 s, 0.00347 ms/degree: G 374 degrees]
+lock: a second run with the same --out refuses (status 1)
+cross-build resume: tsfactor_cpu -> tsfactor: tuned again, state carried over, results identical
+ts_ckpt10: all PASS
+
+
+######## Step 3
+
+

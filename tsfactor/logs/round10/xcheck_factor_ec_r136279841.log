@@ -1,0 +1,38 @@
+# Full-size cross-check: six random s at r=136279841, --skip 1 --maxd 40
+# factor_ec 3.01: factor_ec -p -f 1 -s0 101 -s1 100 -k 1 -skip 1 -m 10 -q 4 -maxd 40 136279841 < s6.txt
+# tsfactor_cpu (final round-10 code): tsfactor_cpu 136279841 s6.txt --skip 1 --maxd 40 --out cpu2 -v
+## s values
+1276517
+42285672
+60755586
+32875215
+4964132
+53245849
+## factor_ec (sorted)
+1276517 3 pb
+32875215 14 p648b
+42285672 4 p13
+4964132 16 p16f2b
+53245849 2 p7
+60755586 10 p409
+## tsfactor_cpu (sorted)
+1276517 3 pb
+32875215 14 p648b
+42285672 4 p13
+4964132 16 p16f2b
+53245849 2 p7
+60755586 10 p409
+## diff: identical
+## tsfactor_cpu stderr
+tsfactor_cpu round 10 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to cpu2.ec.log
+6 survivors from s6.txt
+tuning: m=19 (t_sq 3.344 ms per slot, t_mul 1167.6 ms) (3.9 s)
+memory: h-table 325 MB, scratch 227 MB, snapshots 309 MB each (up to 6, --hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (300 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=1 m=19 gcd-threads=1 pend-max=1
+error checking: 18 blocks and 12 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 6 gcd(s) certified, 0 not certified
+done: 6 found, 0 u

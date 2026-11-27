@@ -1,0 +1,43 @@
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.22, 20261125)
+Interleave: AVX-512BW
+selftest CRC slice-by-8: ok
+selftest r=  607 s=  105 checked  : ok
+selftest r= 1279 s=  418 checked  : ok
+selftest r= 1279 s=  500 checked  : ok
+selftest r= 1279 s=  438 checked  : ok
+selftest r= 4423 s= 1000 checked  : ok
+selftest r= 4423 s= 3015 checked  : ok
+selftest r= 4423 s= 2247 checked  : ok
+selftest r= 4423 s= 2098 checked  : ok
+selftest r= 9689 s= 4187 checked  : ok
+selftest r=  607 s=  105 unchecked: ok
+selftest r= 1279 s=  418 unchecked: ok
+selftest r= 1279 s=  500 unchecked: ok
+selftest r= 1279 s=  438 unchecked: ok
+selftest r= 4423 s= 1000 unchecked: ok
+selftest r= 4423 s= 3015 unchecked: ok
+selftest r= 4423 s= 2247 unchecked: ok
+selftest r= 4423 s= 2098 unchecked: ok
+selftest r= 9689 s= 4187 unchecked: ok
+[ec-fault: flipped bit 60 of word 73 at sq #100]
+ERROR CHECK FAILED for squarings 1..1024 (32 blocks of 32): hardware or software fault; redoing them
+selftest fault sq:100 (r=9689 s=4187): ok (1 check failure, result right)
+[ec-fault: flipped bit 32 of word 1 at sq #4000]
+ERROR CHECK FAILED for squarings 3073..4096 (32 blocks of 32): hardware or software fault; redoing them
+selftest fault sq:4000 (r=4423 s=1000): ok (1 check failure, result right)
+[ec-fault: flipped bit 1 of word 31 at sq #4423]
+ERROR CHECK FAILED for squarings 4417..4423 (1 blocks of 7): hardware or software fault; redoing them
+selftest fault sq:4423 (r=4423 s=1000): ok (1 check failure, result right)
+[ec-fault: flipped bit 37 of word 49 at acc #3]
+ERROR CHECK FAILED for squarings 1..1024 (32 blocks of 32): hardware or software fault; redoing them
+selftest fault acc:3 (r=9689 s=4187): ok (1 check failure, result right)
+[ec-fault: flipped bit 46 of word 68 at chk #2]
+ERROR CHECK FAILED for squarings 1025..2048 (32 blocks of 32): hardware or software fault; redoing them
+selftest fault chk:2 (r=4423 s=1000): ok (1 check failure, result right)
+[ec-fault: flipped bit 46 of word 83 at ver #2]
+ERROR CHECK FAILED for squarings 2049..3072 (32 blocks of 32): hardware or software fault; redoing them
+The verified state at 2048 was damaged in memory; falling back to the last checkpoint
+No checkpoint to fall back on: restarting from the beginning
+selftest fault ver:2 (r=9689 s=4187): ok (1 check failure, result right)
+selftest linear bug: ok (Gerbicz chain cannot see it, map check catches it)
+selftest passed

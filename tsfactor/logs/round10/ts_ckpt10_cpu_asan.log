@@ -1,0 +1,9 @@
+survivors used: 84 105 170
+interrupted s=84: checkpoint a_r9689_s84.ckpt
+a list without s=84: the other two done, its checkpoint kept and reported
+the set-aside s=84 resumed later: results identical, no checkpoint left
+two interrupted survivors resumed by one run (first), results identical
+tuning: timed at a fresh start, taken from the checkpoint on resume, timed again with --retune
+schedule: [schedule costs from the checkpoint: gcd 0.00132 s, 0.0292 ms/degree: G 45 degrees]
+lock: a second run with the same --out refuses (status 1)
+ts_ckpt10: all PASS

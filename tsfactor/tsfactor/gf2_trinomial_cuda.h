@@ -24,13 +24,8 @@ Some code may have been inspired by:
 #ifndef GF2_TRINOMIAL_CUDA_H
 #define GF2_TRINOMIAL_CUDA_H
 #include "gf2_cantor_cuda.h"
+#include "gf2_trin_host.h"      // trin_now_s and the host oracles
 #include <vector>
-#include <chrono>
-
-static inline double trin_now_s() {
-    using namespace std::chrono;
-    return duration<double>(steady_clock::now().time_since_epoch()).count();
-}
 
 // ---------------------------------------------------------------------------
 // spread 32 bits to 64 (interleave zeros): squaring of a GF(2)[x] poly
@@ -192,24 +187,6 @@ struct TrinGPU {
     }
 };
 
-// ---------------------------------------------------------------------------
-// CPU oracles for selftest
-static void cpu_mod_trinomial(std::vector<u64> &v, u64 bits, u64 r, u64 s) {
-    for (u64 e = bits; e-- > r;) {
-        if (!((v[e >> 6] >> (e & 63)) & 1)) continue;
-        v[e >> 6] ^= 1ULL << (e & 63);
-        u64 e1 = e - r, e2 = e - r + s;
-        v[e1 >> 6] ^= 1ULL << (e1 & 63);
-        v[e2 >> 6] ^= 1ULL << (e2 & 63);
-    }
-}
-static void cpu_square_mod(std::vector<u64> &a, u64 r, u64 s) {
-    size_t ow = mul_out_words(r, r);
-    std::vector<u64> sq(ow);
-    gf2x_naive_mul(a.data(), r, a.data(), r, sq.data());
-    cpu_mod_trinomial(sq, 2 * r - 1, r, s);
-    a.assign(bits_to_words(r), 0);
-    for (size_t i = 0; i < a.size(); i++) a[i] = sq[i];
-}
+// (the CPU oracles cpu_mod_trinomial / cpu_square_mod are in gf2_trin_host.h)
 
 #endif // GF2_TRINOMIAL_CUDA_H

@@ -1,0 +1,12 @@
+tests/ec_sweep_all.sh build/irred
+r=1279 s=500 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1275, harmless=4
+r=1279 s=418 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1279, harmless=0
+r=1279 s=500 site=sq opts='--ec-block 8 --ec-window 4': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1275, harmless=4
+r=4423 s=2098 site=sq opts='--isa generic': injected=4423 detected=4423 right=4423 wrong=0 | unchecked: silently wrong=4423, harmless=0
+r=1279 s=500 site=acc opts='--ec-block 8 --ec-window 4': injected=119 detected=119 right=119 wrong=0 
+r=4423 s=1000 site=acc opts='': injected=133 detected=133 right=133 wrong=0 
+r=1279 s=500 site=chk opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0 
+r=4423 s=1000 site=chk opts='': injected=6 detected=6 right=6 wrong=0 
+r=1279 s=500 site=ver opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0 
+r=4423 s=1000 site=ver opts='': injected=6 detected=6 right=6 wrong=0 
+fault sweep: all injected faults detected, all results right

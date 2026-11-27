@@ -1,0 +1,16 @@
+build/irred --selftest | tail -1
+selftest passed
+build/irred --selftest --isa avx2 | tail -1
+selftest passed
+build/irred --selftest --isa generic | tail -1
+selftest passed
+build/irred --selftest --nt | tail -1
+selftest passed
+build/irred_generic --selftest | tail -1
+selftest passed
+build/irred_asan --selftest | tail -1
+selftest passed
+build/irred --selftest --threads 2 | tail -1
+selftest passed
+build/irred_asan --selftest --threads 3 | tail -1
+selftest passed

@@ -1,0 +1,711 @@
+$ make
+== NTL: OK (-lntl -lgf2x -lgmp), gf2x called directly ==
+g++ -O3 -march=native -Wall -Wextra -fopenmp -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o tsfactor_cpu tsfactor_cpu.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -pthread
+== NTL: OK (-lntl -lgf2x -lgmp), gf2x called directly ==
+g++ -O2 -march=native -Wall -Wextra -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o gcdbench gcdbench.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -pthread
+g++ -O2 -march=native -Wall -Wextra -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o gcdstress gcdstress.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -pthread
+== NTL: OK (-lntl -lgf2x -lgmp), gf2x called directly ==
+nvcc -O3 -arch=native -Xcompiler -march=native -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o tsfactor tsfactor.cu gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -Xcompiler -pthread
+ts_core.h(3645): warning #550-D: variable "allow_no_ntl" was set but never used
+      bool allow_no_ntl = false;
+           ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+tsfactor.cu: In member function ‘virtual std::string GpuPlatform::fingerprint()’:
+tsfactor.cu:1321:23: warning: ‘%s’ directive output may be truncated writing up to 255 bytes into a region of size 155 [-Wformat-truncation=]
+ 1321 |             snprintf(b, sizeof b, "tsfactor %s on %s (sm_%d%d, %d SMs)",
+      |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In function ‘int snprintf(char*, size_t, const char*, ...)’,
+    inlined from ‘virtual std::string GpuPlatform::fingerprint()’ at tsfactor.cu:1321:9:
+/usr/include/x86_64-linux-gnu/bits/stdio2.h:68:32: note: ‘__builtin___snprintf_chk’ output between 37 and 322 bytes into a destination of size 176
+   68 |   return __builtin___snprintf_chk (__s, __n, __USE_FORTIFY_LEVEL - 1,
+      |        ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~                                     
+
+
+$ ./tsfactor --selftest
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3954) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 1440, fb 0, drained 0)   PASS
+EC: no false alarms (7084 blocks, 4347 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 165 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+
+
+$ ./tsfactor_cpu --selftest
+tsfactor_cpu selftest (round 10, CPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+CPU squaring: BLZ odd/even + generic vs host (3934) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+gcd engine vs NTL (CPU products)                  PASS
+end-to-end, gcd engine forced (drained 2)         PASS
+EC: no false alarms (17467 blocks, 7396 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (60 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 155 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+
+
+$ ./tsfactor --selftest --selftest-reps 10
+===== selftest run 1 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3954) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 2944, fb 0, drained 2)   PASS
+EC: no false alarms (8123 blocks, 4644 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 163 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 2 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3970) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 2784, fb 0, drained 1)   PASS
+EC: no false alarms (7565 blocks, 4477 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 165 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 3 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3960) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 3136, fb 0, drained 2)   PASS
+EC: no false alarms (8328 blocks, 4664 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 158 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 4 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3958) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 2912, fb 0, drained 0)   PASS
+EC: no false alarms (7834 blocks, 4599 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 174 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 5 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3960) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 2336, fb 0, drained 1)   PASS
+EC: no false alarms (8029 blocks, 4621 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 177 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 6 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3964) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 2752, fb 0, drained 1)   PASS
+EC: no false alarms (7132 blocks, 4342 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 180 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 7 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3966) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 3040, fb 0, drained 2)   PASS
+EC: no false alarms (8769 blocks, 4834 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 160 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 8 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3942) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 3168, fb 0, drained 0)   PASS
+EC: no false alarms (8757 blocks, 4819 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 174 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 9 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3954) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 3072, fb 0, drained 0)   PASS
+EC: no false alarms (8440 blocks, 4741 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 150 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== selftest run 10 of 10 =====
+tsfactor selftest (round 10, GPU build)
+GCD backend: NTL gf2x-backed (HalfGCD + CanZass)
+squaring: fused vs legacy vs host (50 cases)      PASS
+mul-by-x kernel vs host                            PASS
+FFT variants: legacy vs fused configs (m=12)   PASS
+CPU squaring: BLZ odd/even + generic vs host (3960) PASS
+CPU product mod T and mul-by-x vs host             PASS
+CPU fold pass: word runs vs windowed (77)         PASS
+CPU backend == GPU backend, step by step (10 cases) PASS
+schedule: DP == brute force, monotone at full size  PASS
+init_h + fused Horner vs host block product        PASS
+EC: table folds vs host (48 cases)                  PASS
+EC: block predictions vs real C, A*C, A*C mod T    PASS
+EC: one flipped bit trips the matching check       PASS
+EC: h-table chain, clean / one flip / idle flip    PASS
+EC: closed-form table digest (init verification)   PASS
+oracle r=4423: 104 survivors (102 found, 2 u, 3 ties)
+end-to-end vs oracle [m=4 q0=3]                PASS
+end-to-end vs oracle [m=8 q0=2]                PASS
+end-to-end vs oracle [m=6 const-q alt-sq]                PASS
+end-to-end vs oracle [m=14 q0=15]                PASS
+end-to-end vs oracle [m=3 q0=2]                PASS
+end-to-end vs oracle [m=6 sched-opt G=60]                PASS
+end-to-end vs oracle [m=5 sched-opt G=7]                PASS
+fineDDF bisection path (forced, both h paths)      PASS
+-z gives up / -Z caps and continues                PASS
+checkpoint kill/resume equivalence                 PASS
+fine DDF interrupt/resume (2 resumed)             PASS
+hybrid HGCD vs NTL (gpu-mults 618, fb 0)             PASS
+end-to-end, hybrid gcd forced (gpu-mults 3168, fb 0, drained 1)   PASS
+EC: no false alarms (7656 blocks, 4482 windows)        PASS
+  h      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  hmid   fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT 29 of 30
+  a      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  c      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  t      fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  red    fired 30  detected 30  wrong WITH checking 0  | wrong WITHOUT  1 of 30
+  idle   fired  5  detected  4  wrong WITH checking 0  | wrong WITHOUT  4 of  5
+  init   fired  7  detected  7  wrong WITH checking 0  | wrong WITHOUT  7 of  7
+  xferh  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  xfera  fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  0 of  0
+  snap   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  hold   fired  2  detected  1  wrong WITH checking 0  | wrong WITHOUT  1 of  2
+  job    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  1 of  5
+  gcd    fired  5  detected  5  wrong WITH checking 0  | wrong WITHOUT  5 of  5
+EC: single-fault sweep: 216 faults, 213 detected, 0 wrong answers;
+    the same faults unchecked: 81 of 206 wrong            PASS
+EC: faults under speculation (84 runs, 0 wrong)          PASS
+EC: persistent fault gives up cleanly              PASS
+EC: restart from a mid-interval verified state     PASS
+EC: idle flip repaired from the pre-wait snapshot  PASS
+EC: certified gcd == NTL (90 gcds)                  PASS
+EC: certified gcd under faults (600 runs, 191 caught) PASS
+EC: scans with certified gcd (78 scans, 159 gcds)    PASS
+EC: faults inside the gcd (21 scans, 21 re-runs)     PASS
+SELFTEST: all PASS
+===== 10 runs complete: all runs PASS =====

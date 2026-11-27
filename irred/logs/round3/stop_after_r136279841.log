@@ -1,0 +1,9 @@
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.22, 20261125)
+Testing x^136279841 + x^12338357 + 1
+Checkpointing disabled
+Error checking: Gerbicz XOR chain, blocks of 729 squarings, windows of up to 729 blocks; map check passed
+iter 2000/136279841 (  0.00%)  2.07 ms/iter  ETA 3.27 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  2.08 ms/iter  ETA 3.28 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  2 ms/iter  ETA 3.15 days  residue 48d654b6eef5b870  (verified to 0)
+Stopping after 6000/136279841 squarings (--stop-after): finishing the block and verifying before stopping
+exit status 2

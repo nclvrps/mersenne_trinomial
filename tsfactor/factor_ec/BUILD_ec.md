@@ -1,8 +1,51 @@
 # factor_ec: building and testing
 
 Naming: **`factor`** is the unmodified program from the gf2x `apps/`
-directory; **`factor_ec`** is that program with error checking
-(`factor_ec.cpp` = `factor.cpp` + `factor_ec.patch`).
+directory; **`factor_ec`** is that program with error checking and, since
+3.01, factor_modified's faster squaring and `-Z` (`factor_ec.cpp` =
+`factor.cpp` + `factor_ec.patch`).
+
+## What changed in 3.01 (round 6)
+
+factor_modified 2.02 (2026-08-30) merged in, without its whitespace changes:
+
+1. **The faster squaring** for CPUs without fast BMI2 (Zen 1, Zen 2): the
+   constants that depend only on r are computed once per run (`SqrConstR`),
+   the per-s ones once per call; the reduce loop is split into helpers that
+   the compiler can vectorise — the word-aligned case in runs of at most
+   `deltaw` words, never with `__restrict__` on the overlapping windows (the
+   comments say why); the interleave is a plain loop. `fastsqr`, `init_h`
+   and the error-checking code that squares (the closed-form init check and
+   the Gerbicz `sigma(D)`) all take the constants. In the sandbox the
+   squaring at r = 136279841 is 2.5–2.7 ms.
+2. **`-Z q1`**: cap the number of blocks per interval at q1 and keep going
+   (`-z q1` still gives up with "u"; the last of the two given applies). In
+   3.01 `-Z` caps q at q1. 2.02 kept the previous q instead, which breaks
+   when q0 > q1: with `-f 1` the first interval gets 0 blocks and the
+   program crashes (segmentation fault, seen at r = 4423 with `-q 8 -Z 3`),
+   and with `-f 0` the intervals are skipped without being scanned and
+   wrong answers come out (`103 irreducible` at r = 4423, where the truth is
+   a factor of degree 56). Production command lines (`-q 16` with a larger
+   `-Z`, or none) never met this case.
+3. The get_certificate fix (your patch; also in 2.02).
+4. Version 3.01; `certificate` initialised (silences the one g++ warning).
+
+`regress.sh` gained four `-Z` rows (same answers as without `-Z`, including
+`q0 > q1` and `-f 0`); the Makefile has `make test` and header
+dependencies, and no longer names the two tools whose sources are gone.
+`factor_ec.patch` is regenerated against `factor.cpp`.
+
+Validated: `regress.sh` (all rows identical to `factor`, 0 false alarms),
+`sweep.sh` (108 faults, 0 wrong answers with checking), a BMI2 build
+(`-DGF2X_HAVE_BMI2_SUPPORT`) identical at r = 4423, and r = 136279841:
+six survivors (skip 1, maxd 40) identical to tsfactor_cpu, and the
+production shape (`-skip 55 -k 55 -m 14 -q 16 -maxd 279`, s = 588) in 84 s
+with 0.135 s per degree (factor_modified 2.02: 83 s, 0.131 s per degree).
+
+For the CPU stage there is now also **tsfactor_cpu** (`../tsfactor`), the
+same program as tsfactor with the arithmetic on the CPU: automatic m, the
+optimal interval schedule, the certified gcd, per-survivor checkpoints.
+factor_ec stays as the factor-compatible reference.
 
 ## What changed in round 5
 
@@ -75,6 +118,7 @@ The production sieving command needs nothing added:
 
 ## Options
 
+    -Z q1      cap the number of blocks per interval at q1, keep scanning
     -noec      turn error checking off
     -ec        accepted; checking is the default
     -ecw w     Gerbicz check every w blocks (default 8)

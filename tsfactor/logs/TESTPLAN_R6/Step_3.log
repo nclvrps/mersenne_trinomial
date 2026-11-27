@@ -1,0 +1,197 @@
+$ ./tsfactor 136279841 /tmp/one.txt --skip 262 -
+-gpu-gcd --gcd-threads 1 \
+        --pend-max 1 -v -v -v --out r6
+tsfactor round 10 (GPU build)
+GCD backend: CERTIFIED half-gcd chain (GPU-offloaded mults, every step fold-verified) + verified XGCD finish
+gcd: 4 threads inside each gcd (--gcd-mt 4, chosen automatically)
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to r6.ec.log
+hint: with --gcd-threads 1, --pend-max 2 lets the scan run one interval
+ahead of the single GCD worker at no extra CPU cost
+1 survivors from /tmp/one.txt
+GPU-assisted GCD: on (GPU mults >= 2097152 bits; NTL finish <= 4194304 bits)
+FFT tuning (fwd+inv per configuration):
+  legacy per-level                      323.6 ms
+  fused tlv=2 blv=2 maxch=off           196.8 ms
+  fused tlv=2 blv=3 maxch=off           195.6 ms
+  fused tlv=2 blv=4 maxch=off           205.4 ms
+  fused tlv=3 blv=2 maxch=off           152.2 ms
+  fused tlv=3 blv=3 maxch=off           150.7 ms
+  fused tlv=3 blv=4 maxch=off           160.6 ms
+  fused tlv=4 blv=2 maxch=off           281.0 ms
+  fused tlv=4 blv=3 maxch=off           279.4 ms
+  fused tlv=4 blv=4 maxch=off           289.5 ms
+tuning: FFT fused tlv=3 blv=3 maxch=0, m=34 (t_sq 0.195 ms, t_mul 228.1 ms) (10.5 s)
+GPU memory (fixed at startup, independent of q/depth): h-tables 1105 MB, FFT 384 MB, scratch 146 MB, error checking 81 MB, +gcd hook ~610 MB
+host memory: h-table snapshot 552 MB each, up to 3 kept (--hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (1500 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=262 m=34 gcd-threads=1 pend-max=1
+== s=12337659 ==
+By Swan's theorem search at most to degree 45426613
+Exponentiation took 2.124347
+Current q 24
+   [schedule G 1500 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 263..1078:
+   squares/products took 10.6 (wct 10.6), per term 0.013 (wct 0.013)
+   [components cumulative: sq 5.0  horner 0.0  mul 5.5]
+   gcd 263..1078 took 18.239880
+Current q 48
+   [schedule G 1410 degrees: gcd 18.2 s, 12.93 ms/degree]
+Interval 1079..2710:
+   squares/products took 21.3 (wct 21.3), per term 0.013 (wct 0.013)
+   [components cumulative: sq 15.0  horner 0.1  mul 16.5]
+   gcd 1079..2710 took 19.838034
+Current q 78
+   [schedule G 1454 degrees: gcd 18.9 s, 12.98 ms/degree]
+Interval 2711..5362:
+   squares/products took 34.6 (wct 34.6), per term 0.013 (wct 0.013)
+   [components cumulative: sq 31.3  horner 0.2  mul 34.4]
+   gcd 2711..5362 took 18.352319
+Current q 111
+   [schedule G 1435 degrees: gcd 18.7 s, 13.01 ms/degree]
+Interval 5363..9136:
+   squares/products took 49.3 (wct 49.3), per term 0.013 (wct 0.013)
+   [components cumulative: sq 54.6  horner 0.4  mul 59.9]
+   gcd 5363..9136 took 17.654174  ** HIT **
+CanZass took 0.000001, total degree 5816, small degree 5816
+12337659 5816 p11a...
+== s=12337659 done in 192.8 s (8874 degrees) ==
+error checking: 261 blocks and 37 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 4 gcd(s) certified, 0 not certified
+done: 1 found, 0 u
+
+$ sha256sum r6.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  r6.results.txt
+
+
+# The above created and left behind r6.results.txt and r6.lock files
+
+# When re-running without removing either of the above files:
+
+$ ./tsfactor 136279841 /tmp/one.txt --skip 262 -
+-gpu-gcd --gcd-threads 1 \
+        --pend-max 1 -v -v -v --out r6
+tsfactor round 10 (GPU build)
+GCD backend: CERTIFIED half-gcd chain (GPU-offloaded mults, every step fold-verified) + verified XGCD finish
+gcd: 4 threads inside each gcd (--gcd-mt 4, chosen automatically)
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to r6.ec.log
+hint: with --gcd-threads 1, --pend-max 2 lets the scan run one interval
+ahead of the single GCD worker at no extra CPU cost
+1 survivors from /tmp/one.txt
+1 already completed in r6.results.txt
+GPU-assisted GCD: on (GPU mults >= 2097152 bits; NTL finish <= 4194304 bits)
+FFT tuning (fwd+inv per configuration):
+  legacy per-level                      323.6 ms
+  fused tlv=2 blv=2 maxch=off           197.2 ms
+  fused tlv=2 blv=3 maxch=off           195.5 ms
+  fused tlv=2 blv=4 maxch=off           205.4 ms
+  fused tlv=3 blv=2 maxch=off           152.1 ms
+  fused tlv=3 blv=3 maxch=off           151.0 ms
+  fused tlv=3 blv=4 maxch=off           160.7 ms
+  fused tlv=4 blv=2 maxch=off           280.9 ms
+  fused tlv=4 blv=3 maxch=off           279.9 ms
+  fused tlv=4 blv=4 maxch=off           289.3 ms
+tuning: FFT fused tlv=3 blv=3 maxch=0, m=34 (t_sq 0.200 ms, t_mul 228.6 ms) (10.5 s)
+GPU memory (fixed at startup, independent of q/depth): h-tables 1105 MB, FFT 384 MB, scratch 146 MB, error checking 81 MB, +gcd hook ~610 MB
+host memory: h-table snapshot 552 MB each, up to 3 kept (--hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (1500 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=262 m=34 gcd-threads=1 pend-max=1
+error checking: 0 blocks and 0 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 0 gcd(s) certified, 0 not certified
+done: 0 found, 0 u
+
+
+$ rm r6.results.txt r6.lock
+aspen@DESKTOP-URSGUFN:~/brent/mersenne_trinomial/tsfactor/tsfactor$ ./tsfactor 136279841 /tmp/one.txt --skip 262 --gpu-gcd --gcd-threads 1         --pend-max 1 -v -v -v --out r6
+tsfactor round 10 (GPU build)
+GCD backend: CERTIFIED half-gcd chain (GPU-offloaded mults, every step fold-verified) + verified XGCD finish
+gcd: 4 threads inside each gcd (--gcd-mt 4, chosen automatically)
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to r6.ec.log
+hint: with --gcd-threads 1, --pend-max 2 lets the scan run one interval
+ahead of the single GCD worker at no extra CPU cost
+1 survivors from /tmp/one.txt
+GPU-assisted GCD: on (GPU mults >= 2097152 bits; NTL finish <= 4194304 bits)
+FFT tuning (fwd+inv per configuration):
+  legacy per-level                      323.8 ms
+  fused tlv=2 blv=2 maxch=off           197.1 ms
+  fused tlv=2 blv=3 maxch=off           195.9 ms
+  fused tlv=2 blv=4 maxch=off           205.4 ms
+  fused tlv=3 blv=2 maxch=off           152.1 ms
+  fused tlv=3 blv=3 maxch=off           150.8 ms
+  fused tlv=3 blv=4 maxch=off           160.9 ms
+  fused tlv=4 blv=2 maxch=off           281.2 ms
+  fused tlv=4 blv=3 maxch=off           279.6 ms
+  fused tlv=4 blv=4 maxch=off           289.1 ms
+tuning: FFT fused tlv=3 blv=3 maxch=0, m=34 (t_sq 0.194 ms, t_mul 228.3 ms) (10.5 s)
+GPU memory (fixed at startup, independent of q/depth): h-tables 1105 MB, FFT 384 MB, scratch 146 MB, error checking 81 MB, +gcd hook ~610 MB
+host memory: h-table snapshot 552 MB each, up to 3 kept (--hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (1500 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=262 m=34 gcd-threads=1 pend-max=1
+== s=12337659 ==
+By Swan's theorem search at most to degree 45426613
+Exponentiation took 2.127813
+Current q 24
+   [schedule G 1500 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 263..1078:
+   squares/products took 10.6 (wct 10.6), per term 0.013 (wct 0.013)
+   [components cumulative: sq 5.0  horner 0.0  mul 5.5]
+   gcd 263..1078 took 18.311549
+Current q 48
+   [schedule G 1413 degrees: gcd 18.3 s, 12.95 ms/degree]
+Interval 1079..2710:
+   squares/products took 21.2 (wct 21.2), per term 0.013 (wct 0.013)
+   [components cumulative: sq 15.0  horner 0.1  mul 16.5]
+   gcd 1079..2710 took 19.181092
+Current q 77
+   [schedule G 1437 degrees: gcd 18.7 s, 12.98 ms/degree]
+Interval 2711..5328:
+   squares/products took 34.2 (wct 34.2), per term 0.013 (wct 0.013)
+   [components cumulative: sq 31.1  horner 0.2  mul 34.2]
+   gcd 2711..5328 took 18.451208
+Current q 109
+   [schedule G 1427 degrees: gcd 18.6 s, 13.01 ms/degree]
+Interval 5329..9034:
+^C  [checkpoint written: s=12337659 k_iv=5329 blk=5/109 r6_r136279841_s12337659.ckpt]
+error checking: 154 blocks and 24 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 3 gcd(s) certified, 0 not certified
+interrupted: 0 found, 0 u; exiting (in-flight GCDs abandoned)
+
+
+$ ./tsfactor 136279841 /tmp/one.txt --skip 262 --gpu-gcd --gcd-threads 1         --pend-max 1 -v -v -v --out r6
+tsfactor round 10 (GPU build)
+GCD backend: CERTIFIED half-gcd chain (GPU-offloaded mults, every step fold-verified) + verified XGCD finish
+gcd: 4 threads inside each gcd (--gcd-mt 4, chosen automatically)
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to r6.ec.log
+hint: with --gcd-threads 1, --pend-max 2 lets the scan run one interval
+ahead of the single GCD worker at no extra CPU cost
+1 survivors from /tmp/one.txt
+0 already completed in r6.results.txt
+1 survivor(s) of this list have checkpoints and go first
+GPU-assisted GCD: on (GPU mults >= 2097152 bits; NTL finish <= 4194304 bits)
+tuning: from the checkpoint of s=12337659 (made by this binary on this device): FFT fused tlv=3 blv=3 maxch=0, m=34 (t_sq 0.194 ms, t_mul 228.3 ms)
+GPU memory (fixed at startup, independent of q/depth): h-tables 1105 MB, FFT 384 MB, scratch 146 MB, error checking 81 MB, +gcd hook ~610 MB
+host memory: h-table snapshot 552 MB each, up to 3 kept (--hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (1500 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=262 m=34 gcd-threads=1 pend-max=1
+== s=12337659 ==
+By Swan's theorem search at most to degree 45426613
+Resumed s=12337659 at interval 5329 block 5/109
+   [schedule costs from the checkpoint: gcd 18.6 s, 13 ms/degree: G 1427 degrees]
+Current q 109
+   [schedule G 1427 degrees: gcd 18.6 s, 13.01 ms/degree]
+Interval 5329..9034:
+   squares/products took 46.1 (wct 46.1), per term 0.013 (wct 0.013)
+   [components cumulative: sq 21.9  horner 0.2  mul 23.8]
+   gcd 5329..9034 took 16.912905  ** HIT **
+CanZass took 0.000001, total degree 5816, small degree 5816
+12337659 5816 p11a...
+== s=12337659 done in 63.3 s (3536 degrees) ==
+error checking: 104 blocks and 14 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 1 gcd(s) certified, 0 not certified
+done: 1 found, 0 u
+
+$ sha256sum r6.results.txt
+8f7104e4f2a81c544e0b0fe02566efe3399318a227be345713464da198f5787c  r6.results.txt

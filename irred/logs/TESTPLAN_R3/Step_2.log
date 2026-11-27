@@ -1,0 +1,98 @@
+$ build/irred --no-ckpt --progress 2000 --stop-after 30000 1
+36279841 12338357
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.22, 20261125)
+Testing x^136279841 + x^12338357 + 1
+Streaming stores: on (squaring buffers 32 MB > 16 MB L3 cache; --no-nt turns them off)
+Checkpointing disabled
+Error checking: Gerbicz XOR chain, blocks of 729 squarings, windows of up to 729 blocks; map check passed
+iter 2000/136279841 (  0.00%)  1.73 ms/iter  ETA 2.74 days  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  1.74 ms/iter  ETA 2.74 days  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  1.74 ms/iter  ETA 2.75 days  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  1.74 ms/iter  ETA 2.74 days  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  1.75 ms/iter  ETA 2.76 days  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  1.73 ms/iter  ETA 2.74 days  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  1.74 ms/iter  ETA 2.75 days  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  1.75 ms/iter  ETA 2.75 days  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  1.74 ms/iter  ETA 2.75 days  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  1.74 ms/iter  ETA 2.74 days  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  1.74 ms/iter  ETA 2.75 days  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  1.73 ms/iter  ETA 2.73 days  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  1.74 ms/iter  ETA 2.74 days  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  1.74 ms/iter  ETA 2.74 days  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  1.74 ms/iter  ETA 2.74 days  residue 97b488763a1f6c36  (verified to 0)
+Stopping after 30000/136279841 squarings (--stop-after): finishing the block and verifying before stopping
+
+
+$ for nt in --no-nt --nt; do
+    for n in 1 2 4; do
+      echo "threads $n $nt"
+      build/irred --no-ckpt --progress 2000 --stop-after 30000 \
+          --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
+    done
+  done
+threads 1 --no-nt
+iter 30000/136279841 (  0.02%)  2.36 ms/iter  ETA 3.72 days  residue 97b488763a1f6c36  (verified to 0)
+threads 2 --no-nt
+iter 30000/136279841 (  0.02%)  1.83 ms/iter  ETA 2.88 days  residue 97b488763a1f6c36  (verified to 0)
+threads 4 --no-nt
+iter 30000/136279841 (  0.02%)  1.68 ms/iter  ETA 2.65 days  residue 97b488763a1f6c36  (verified to 0)
+threads 1 --nt
+iter 30000/136279841 (  0.02%)  1.67 ms/iter  ETA 2.63 days  residue 97b488763a1f6c36  (verified to 0)
+threads 2 --nt
+iter 30000/136279841 (  0.02%)  1.48 ms/iter  ETA 2.33 days  residue 97b488763a1f6c36  (verified to 0)
+threads 4 --nt
+iter 30000/136279841 (  0.02%)  1.47 ms/iter  ETA 2.31 days  residue 97b488763a1f6c36  (verified to 0)
+
+
+$ for nt in --no-nt --nt; do
+    for n in 1 2 4; do
+      echo "threads $n $nt";
+      build/irred           --progress 2000 --stop-after 30000 \
+          --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1;
+    done
+  done
+threads 1 --no-nt
+[checkpoint: 30618/136279841 squarings (0.02%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 30000/136279841 (  0.02%)  2.35 ms/iter  ETA 3.71 days  residue 97b488763a1f6c36  (verified to 0)
+threads 2 --no-nt
+[checkpoint: 61236/136279841 squarings (0.04%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 60000/136279841 (  0.04%)  1.8 ms/iter  ETA 2.84 days  residue 8eee3bae9652f5ac  (verified to 30618)
+threads 4 --no-nt
+[checkpoint: 91854/136279841 squarings (0.07%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 90000/136279841 (  0.07%)  1.67 ms/iter  ETA 2.63 days  residue 11b65d680ad5c83c  (verified to 61236)
+threads 1 --nt
+[checkpoint: 122472/136279841 squarings (0.09%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 122000/136279841 (  0.09%)  1.67 ms/iter  ETA 2.63 days  residue 41576e8d51dfcb9a  (verified to 91854)
+threads 2 --nt
+[checkpoint: 153090/136279841 squarings (0.11%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 152000/136279841 (  0.11%)  1.58 ms/iter  ETA 2.49 days  residue 47f0475a2d71514c  (verified to 122472)
+threads 4 --nt
+[checkpoint: 183708/136279841 squarings (0.13%), verified -> irred_r136279841_s12338357.ckpt, 0.03 s]
+iter 182000/136279841 (  0.13%)  1.48 ms/iter  ETA 2.33 days  residue 741b8238d473386e  (verified to 153090)
+
+
+$ for nt in --no-nt --nt; do
+    for n in 1 2 4; do
+      echo "threads $n $nt";
+      build/irred           --progress 2000 --stop-after 30000 \
+          --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1;
+    done
+  done
+threads 1 --no-nt
+[checkpoint: 214326/136279841 squarings (0.16%), verified -> irred_r136279841_s12338357.ckpt, 0.03 s]
+iter 214000/136279841 (  0.16%)  2.37 ms/iter  ETA 3.74 days  residue 122bb5cc4b9e62c2  (verified to 183708)
+threads 2 --no-nt
+[checkpoint: 244944/136279841 squarings (0.18%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 244000/136279841 (  0.18%)  1.87 ms/iter  ETA 2.95 days  residue 37ff605fe9548d78  (verified to 214326)
+threads 4 --no-nt
+[checkpoint: 275562/136279841 squarings (0.20%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 274000/136279841 (  0.20%)  1.71 ms/iter  ETA 2.69 days  residue d7a225ee6854e1a0  (verified to 244944)
+threads 1 --nt
+[checkpoint: 306180/136279841 squarings (0.22%), verified -> irred_r136279841_s12338357.ckpt, 0.03 s]
+iter 306000/136279841 (  0.22%)  1.73 ms/iter  ETA 2.72 days  residue f368e3be7dccff40  (verified to 275562)
+threads 2 --nt
+[checkpoint: 336798/136279841 squarings (0.25%), verified -> irred_r136279841_s12338357.ckpt, 0.03 s]
+iter 336000/136279841 (  0.25%)  1.51 ms/iter  ETA 2.37 days  residue 8cfe8a6091dc6274  (verified to 306180)
+threads 4 --nt
+[checkpoint: 367416/136279841 squarings (0.27%), verified -> irred_r136279841_s12338357.ckpt, 0.03 s]
+iter 366000/136279841 (  0.27%)  1.49 ms/iter  ETA 2.35 days  residue 0c8ff51995aeb5aa  (verified to 336798)

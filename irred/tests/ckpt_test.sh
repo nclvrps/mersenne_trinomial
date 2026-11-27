@@ -1,6 +1,8 @@
 #!/bin/bash
-# Checkpoint, resume, signal and compatibility tests.
+# Checkpoint, resume, signal, --stop-after and version-1 tests.
 # usage: tests/ckpt_test.sh path/to/irred path/to/irred020
+# (irred020 = irred 0.20, which writes the version 1 checkpoints that 0.22
+# must refuse to overwrite)
 B=$(readlink -f ${1:-build/irred}); OLD=$(readlink -f ${2:-build/irred020})
 W=$(mktemp -d /tmp/irred_ckpt_XXXX); cd $W
 R=1398269; S=300001; F=irred_r${R}_s${S}
@@ -57,13 +59,26 @@ kill -INT $P; wait $P
 [ $lrc = 1 ] && grep -q 'already testing' l.err && ok "second process refused" || bad "lock (rc=$lrc)"
 rm -f irred_*
 
-echo "== a run started by irred 0.20 (version 1 checkpoint) continues"
+echo "== a run started by irred 0.20 (version 1 checkpoint) is not overwritten"
 interrupt 4 INT $OLD --ckpt-mins 0.02 $R $S >/dev/null
-K1=$(grep -o 'after [0-9]*' int.out | awk '{print $2}')
-$B --progress 100000 $R $S > v1.out 2>/dev/null
-grep -q 'version 1 checkpoint from irred 0.20' v1.out && ok "v1 checkpoint recognised" || bad "v1 not recognised"
-[ "$(res v1.out)" = "$WANT" ] && ok "0.20 -> 0.21 result matches" || bad "0.20 -> 0.21 result $(res v1.out)"
-grep -q "Note: $K1 of the $R squarings were NOT error-checked" v1.out && ok "reports the $K1 unchecked squarings" || bad "unchecked report: $(grep -i 'checked' v1.out)"
+SUM=$(cat $F.ckpt* | md5sum)
+$B --progress 100000 $R $S > v1.out 2>/dev/null; v1rc=$?
+[ $v1rc = 1 ] && grep -q 'format version 1 (irred 0.20)' v1.out && grep -q 'cannot continue it' v1.out \
+  && ok "v1 checkpoint: refuses to start (exit 1)" || bad "v1 checkpoint: exit $v1rc"
+[ "$(cat $F.ckpt* | md5sum)" = "$SUM" ] && ok "v1 files untouched" || bad "v1 files changed"
+rm -f irred_*
+
+echo "== --stop-after N"
+$B --ckpt-mins 0 --progress 100000 --stop-after 300000 $R $S > sa1.out 2> sa1.err; sarc=$?
+[ $sarc = 2 ] && grep -q 'Stopping after 300000/' sa1.out && grep -q 'Checkpoint written' sa1.out \
+  && ok "--stop-after: stops (exit 2) with a verified checkpoint" || bad "--stop-after: exit $sarc"
+$B --ckpt-mins 0 --progress 100000 $R $S > sa2.out 2>/dev/null
+grep -q '^Resuming' sa2.out && [ "$(res sa2.out)" = "$WANT" ] \
+  && ok "--stop-after: resumed, result matches" || bad "--stop-after resume"
+$B --no-ckpt --progress 1000 --stop-after 5000 $R $S > sa3.out 2>/dev/null; sarc=$?
+[ $sarc = 2 ] && [ "$(grep -c '^iter' sa3.out)" -ge 5 ] && [ -z "$(ls irred_* 2>/dev/null)" ] \
+  && ok "--stop-after with --no-ckpt: timing run, no files" || bad "--stop-after --no-ckpt: exit $sarc"
+rm -f irred_*
 
 echo "== --no-ec segment, then checked"
 rm -f irred_*

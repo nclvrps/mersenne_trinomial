@@ -1,0 +1,6 @@
+gcdstress: word-level base case == reference on 16000 small pairs (12046 calls, 3116415 division steps)
+gcdstress: 400 cases up to 120000 bits (217 with a nontrivial gcd), 4 engines each vs NTL
+  chain certified in 400 of 400; chain declined on its own 0 time(s); 47 forced declines re-certified by XGCD
+  140 of the cases ran each gcd's products on 3 threads
+  word-level base case == reference on all 400 pairs, at 7 hand-over sizes
+  mismatches: 0   PASS

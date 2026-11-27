@@ -5,7 +5,8 @@
 #   make selftest   irred --selftest for every build
 #   make cmp        compare every build with the naive reference (many r, s)
 #   make sweep      exhaustive fault-injection sweep
-#   make ckpt       checkpoint / resume / signal / 0.20-compatibility tests
+#   make ckpt       checkpoint / resume / signal / --stop-after tests, and
+#                   0.20's checkpoints refused (never overwritten)
 #   make bug014     re-insert 0.14's bug: the chain misses it, the map check not
 #   make bench      timing, with and without error checking and threads
 #
@@ -48,7 +49,7 @@ $(B)/irred315: reference/irred315_orig.c reference/irred315_compile.patch | $(B)
 	mv $(B)/irred.c $(B)/irred315.c
 	$(CC) -O1 -w -o $@ $(B)/irred315.c
 
-# irred 0.20 (writes version 1 checkpoints) for the compatibility test
+# irred 0.20 (writes version 1 checkpoints, which 0.22 must refuse)
 $(B)/irred020: reference/irred_0.20.c | $(B)
 	$(CC) -O3 -march=native -w -o $@ $< -lm
 
@@ -56,6 +57,7 @@ selftest: $(B)/irred $(B)/irred_generic $(B)/irred_asan
 	$(B)/irred --selftest | tail -1
 	$(B)/irred --selftest --isa avx2 | tail -1
 	$(B)/irred --selftest --isa generic | tail -1
+	$(B)/irred --selftest --nt | tail -1
 	$(B)/irred_generic --selftest | tail -1
 	$(B)/irred_asan --selftest | tail -1
 	$(B)/irred --selftest --threads 2 | tail -1

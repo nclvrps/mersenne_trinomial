@@ -10,6 +10,12 @@ Deliverables: `factor_ec.cpp` (full modified source) and `factor_ec.patch`
 > (`sweep.sh`). Rounds 2–3 were also run by Gord at r = 136279841; round 5 has
 > not been yet. See `errorcheck_handoff.md` §13 for the full ledger.
 
+> **3.01 (round 6):** factor_modified 2.02's squaring and `-Z` are merged in
+> (see `BUILD_ec.md`); the error-checking hunks below are unchanged, except
+> that the code which squares now passes the precomputed `SqrConstR`. The
+> regenerated `factor_ec.patch` therefore also contains the squaring and
+> `-Z` hunks and the GPL header.
+
 Options (round 5: checking is ON by default):
 
 ```

@@ -1,0 +1,25 @@
+bench r=136279841 s=12338357 (CPU build, 1 squaring thread)
+  squaring (BLZ, s odd)                   2.985 ms
+  squaring (generic spread+fold)         14.384 ms
+  h-table advance (m=12 x 12)           416.730 ms
+    = per squaring                        2.894 ms
+  Horner (m=12)                          22.820 ms
+  modmul (gf2x product + reduce)       1104.633 ms
+    product only                       1128.327 ms
+    fold reduce (2 passes)                8.678 ms
+error checking (per block unless noted):
+  EC h-table pass (m=12)                 26.294 ms
+  EC product + result folds              18.029 ms
+  EC chain check (per window)            65.863 ms
+per-degree projection (m*t_sq + (t_mul + t_horner(m))/m), and the error-checking overhead at --ecw 8:
+  m=4      289.64 ms/degree   + EC  7.385 ms (2.55%)
+  m=6      203.37 ms/degree   + EC  5.882 ms (2.89%)
+  m=8      163.13 ms/degree   + EC  5.131 ms (3.15%)
+  m=10     141.30 ms/degree   + EC  4.680 ms (3.31%)
+  m=12     128.68 ms/degree   + EC  4.380 ms (3.40%)
+  m=14     121.32 ms/degree   + EC  4.165 ms (3.43%)
+  m=16     117.24 ms/degree   + EC  4.004 ms (3.42%)
+  m=20     115.01 ms/degree   + EC  3.779 ms (3.29%)
+  m=24     117.38 ms/degree   + EC  3.628 ms (3.09%)
+  m=32     129.03 ms/degree   + EC  3.441 ms (2.67%)
+recommended m: 20 (analytic 20); expect ~115.0 ms/degree

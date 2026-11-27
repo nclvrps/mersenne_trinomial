@@ -1558,3 +1558,297 @@ OPEN QUESTIONS / NEXT STEPS
     from the gcd.
   - Control-flow guards; fusing the EC table pass into the Horner kernel
     (1.36 ms vs 1.08 ms per block: that is most of the 0.6%).
+
+---------------------------------------------------------------------------
+## Round 10 (one driver, two backends: tsfactor_cpu; tuning at start; per-survivor checkpoints; the optimal schedule)
+
+Written in the error-checking conversation (its round 6), from Gord's
+message with the TESTPLAN_R5 logs, the news below, the public repository
+(github.com/nclvrps/mersenne_trinomial) and four requests.
+
+THE PRIMITIVE TRINOMIAL
+  x^136279841 + x^12338357 + 1 is PRIMITIVE.  tsfactor found no factor
+  (result line "12338357 primitive", i.e. none up to the Swan bound r/3),
+  and irred confirmed irreducibility; 2^136279841 - 1 is prime, so
+  irreducible means primitive.  An independent recheck by a second program
+  on other hardware is still worth having before any announcement (a GPU
+  irred, ~8 h instead of days, would be the fast way: see the irred
+  handoff).
+
+WHAT GORD'S RUN OF ROUND 9 SHOWED  (TESTPLAN_R5: RTX 2070 SUPER, 6-core Zen 2)
+  - nvcc builds warning-free; --selftest all PASS; gcdstress PASS.
+  - gcdbench 136279841 588 (several runs, spread under 1%):
+        NTL GCD                      51.0 s
+        CERTIFIED chain, 1 thread    36.3 s   (-29%; predicted ~40 s)
+        --gcd-mt 2                   23.7 s   (1.53x)
+        --gcd-mt 4                   17.0 s   (2.14x; predicted 12-15 s)
+        --gcd-mt 6                   17.1 s   (2.13x)
+    One thread came out as predicted; the threads saturate at ~2.1x from 4
+    on (the largest products are memory-bound; four of them at once fill
+    the memory system).  Recorded so it is not re-predicted.
+  - --bench-gcd inside tsfactor: CPU certified 21.7 s, --gpu-gcd 19.1 s.
+    --gpu-gcd stays in the recommended invocation (Gord uses it).
+  - The step-5 survivor (s=12337659, skip 262): same result line, three
+    gcds at 17 s -- but 342 s in all (Round 8: 305 s), because the third
+    interval, 5573..21862, scanned 16,000 degrees past the factor at 5816.
+    His question: "after resuming, G is reset to the default of 3000 --
+    intentional?"  No.  G was measured in-process only; it is now saved in
+    the checkpoint (5. below).  And the planning itself was the bigger
+    problem (5. below): with the Round 10 schedule this survivor would
+    take about 177 s.
+  - Results identical across the three step-5 runs and to Round 4.
+
+REQUESTS AND WHAT WAS DONE
+  a. Tune automatically at the start of a run, not when resuming unless
+     the version or platform changed; --retune as in coarse_sieve; no more
+     GF2C_* environment variables.                      -> 3.
+  b. r and s in the checkpoint names (as irred), so one s can be set aside
+     while others continue.                             -> 4.
+  c. Merge factor_modified_20260830.cpp into factor_ec. -> factor_ec 3.01
+     (factor_ec/BUILD_ec.md).
+  d. factor_ec lags tsfactor (manual -m/-q, no checkpoints, old gcd): port
+     the improvements, or unify the CPU and GPU code.   -> unified: 1, 2.
+  e. irred: no more reading of 0.20 checkpoints.        -> irred devkit r3.
+
+1. ONE DRIVER, TWO BACKENDS
+   tsfactor.cu was 4941 lines, all of it CUDA-compiled.  Now:
+     ts_core.h (NEW, ~4300 lines)  everything that is not arithmetic on
+                       residues: survivor loop, schedule, gcd pool and the
+                       certified gcd, checkpoints, the error-checking logic
+                       (the fold algebra), fine DDF, the selftest suites,
+                       option parsing and main (ts_main).  No CUDA.
+     struct TsDev (in ts_core.h)   the interface.  A backend owns the
+                       h-table (m residues), A, C and the checking state
+                       (digest D, folds) and implements: init / set_m /
+                       set_s / fini; init_h_at, reset_A, horner_C,
+                       mul_A_by_C, square_all_step, square_steps; the EC
+                       hooks (ec_setup, ec_block_pre, ec_read_block,
+                       ec_chain_reset, ec_window_check, ec_verify_table_at,
+                       table_fold, hold_fold); transfers of h and A; the
+                       hold table; fault injection; time_square/time_mul.
+     struct TsPlatform (ts_core.h) what differs between the programs: name,
+                       tuning fingerprint, extra options, tune/apply/
+                       describe, choose_m, bench, selftest, defaults.
+     tsfactor.cu (1495 lines)      the kernels (unchanged), TsGPU, the GPU
+                       multiplier hook, the FFT sweep, gpu_bench,
+                       GpuPlatform, main.
+     ts_cpu.h (NEW)    TsCPU.
+     tsfactor_cpu.cpp (NEW)        CpuPlatform and main; g++ only.
+     gf2_trin_host.h (NEW)         the host bit-level oracles, moved out of
+                       gf2_trinomial_cuda.h so the CPU build includes no
+                       CUDA header.
+   The state is bit-identical between backends, so a checkpoint written by
+   one build resumes in the other (tested both ways, 6. below).
+
+   Evidence that the port changed nothing: ts_regress.sh against the
+   ORIGINAL (pre-Round-8) binary, every configuration identical, for both
+   builds; selftest all PASS for both; and a new GPU-build suite, "CPU
+   backend == GPU backend, step by step", runs TsCPU and TsGPU side by side
+   on 10 (r, s, m, k) cases and compares h-table, A, C, D, the table folds
+   and the block folds after the init and after every block.
+   Latent bug fixed in the port: TsGPU::set_m did not free the hold table,
+   so a change of m would have used one of the old size.  A change of m
+   can now happen (a resumed survivor keeps its checkpoint's m).
+
+2. tsfactor_cpu
+   The same program -- command line, results file, checkpoints, schedule,
+   certified gcd, error checking, fine DDF -- with the arithmetic on the CPU
+   (ts_cpu.h).  Meant for the CPU stage: coarse_sieve's survivors (skip 55)
+   up to d ~ 279, on cheap cloud cores, where it replaces factor_ec.
+
+   Squaring.  BLZ in place, as factor.cpp's fastsqr (factor_modified's
+   version of it), for s odd and > 128.  factor.cpp flips an even s to the
+   reciprocal trinomial (r - s is odd), and every residue with it -- the
+   reason tsfactor's and factor's states could never be compared.
+   tsfactor_cpu does not flip: s even gets its own in-place reduction,
+   derived in ts_cpu.h's header.  In the scrambled order position
+   p >= alpha+1 stands for x^(2p) = x^(2p-r) + x^(2p-r+s).  The first term
+   is odd and stays at p.  For s even the second is odd too, at position
+   p + s/2, final -- no cascade -- except for the top s/2 positions, where
+   2p-r+s >= r and it reduces once more to two even terms, at positions
+   p-r+s/2 and p-r+s, both below s.  So: XOR the top s/2 bits into [0, s/2)
+   and into [s/2, s); then bits [alpha+1, r-s/2) into themselves shifted up
+   by s/2, top down; then the usual interleave.  Odd s <= 128 (64 of the 68
+   million) use a generic spread-and-fold squaring (4x slower).
+   Products: gf2x_mul, then the two linear fold passes, as word runs.
+
+   Speed.  The first version was 1.6x slower than factor_ec per degree.
+   Two causes, both fixed: (a) the hot loops read the geometry through a
+   struct reference that stores could alias, so nothing vectorised -- the
+   squaring took 8.6 ms against factor_modified's 2.7 ms on the same data;
+   rewritten with plain values and __restrict__, 2.6 ms; (b) the table was
+   advanced one squaring of every slot at a time (the GPU's order), so each
+   step streamed all m residues; TsCPU now squares one slot m times before
+   the next (TsDev::square_steps; the GPU keeps the default), working set
+   two residues: another 30-40% here.  The reduction became word runs (23
+   -> 8 ms).  Numbers (one core of the sandbox's 2.1 GHz Xeon, gf2x built
+   from Gord's tree, r = 136279841):
+       squaring 2.9-3.4 ms     product 1.1-1.25 s     reduction 8 ms
+       m = 19-20 (tuned)       ~0.13 s per degree with checking
+       error checking +3.3% (per block: table pass 26 ms, product folds
+       18 ms; chain check 66 ms per window)
+   Production shape, s = 588, skip 55, maxd 279, run one after another:
+       factor_ec 3.01          84.3 s  one interval 56..279, scan 30.3 s
+                                       (0.135 s/degree), NTL gcd 48.1 s
+       factor_modified 2.02    83.2 s  scan 0.131 s/degree, gcd 49.2 s
+       tsfactor_cpu, final     84.7 s  tuning 3.7 s (once per process),
+                                       init 5.6 s, one interval 56..293
+                                       (m = 17) at 0.130 s/degree, certified
+                                       gcd 43.9 s
+       tsfactor_cpu, G0 200    135.5 s the same scan rate, but the first
+                                       interval was planned before any gcd
+                                       was timed: two intervals, two gcds
+   So the scan runs at factor's rate, with checking.  With G0 = 200 the
+   schedule split 56..279 in two (a coin toss in expectation at G ~ 200,
+   a clear loss at the measured G ~ 360 here, ~280 with Gord's 36 s gcd);
+   the CPU default is now G0 = 300, which takes one interval.  Expected per
+   survivor on Gord's machine: about factor_ec's time minus 15 s (certified
+   gcd 36 s against NTL's 51 s), plus the tuning once per process.
+   Full-size cross-check: six random s (skip 1, maxd 40), tsfactor_cpu and
+   factor_ec 3.01 give identical result lines (factors of degree 2 to 16,
+   both parities of s), and again after the speed work.
+
+   Defaults: one process per core (--gcd-threads 1, --pend-max 1, one
+   thread inside each gcd, --threads 1); schedule G0 300.  --threads N
+   splits the slots between N squaring threads (OpenMP; 2 threads halve
+   the table step here).  Memory at r = 136279841, m = 19 (MiB, as the
+   start-up line prints them): h-table 325, scratch 227, the hold table
+   (m residues, ~310) when an interval has more than one block, and one
+   h-table snapshot (309) per interval with an outstanding gcd: about
+   1.2 GB per process.  GPU-only options
+   (--device, --fft, --legacy-sq, --gpu-gcd) are refused with a message.
+
+   A NEAR MISS, RECORDED.  The word-run reduction first assumed that the
+   scratch beyond its logical end was zero.  It is not after the tuning,
+   which runs at s = (r-1)/2 and leaves words there; a later, smaller s
+   then read them.  The small-r selftests reuse a device only with s
+   increasing, so they passed; the first production-size run failed its
+   init verification four times in a row and stopped with exit status 3,
+   "persistent fault", writing nothing -- the error checking did its job
+   on our own bug.  Fixed (reduce() clears the words pass two reads), and
+   the product test now reuses one device with s DECREASING (verified to
+   fail without the fix).
+
+3. TUNING AT START
+   A run times its configurable arithmetic before it scans.  The GPU build
+   sweeps the FFT configurations (fused transform, 2-4 Taylor x 2-4
+   butterfly levels, plus legacy; seconds) and then times t_sq and t_mul at
+   the winner to choose m (even, 8..64); the CPU build times t_sq and t_mul
+   (m = round(sqrt(t_mul/t_sq)), 4..64; 4 s at full size).  The record --
+   TsTune: FFT configuration, m, t_sq, t_mul and a fingerprint
+       "tsfactor round 10 on <GPU name> (sm_XY, N SMs)"
+       "tsfactor_cpu round 10 on <CPU model> (N CPUs, T threads)"
+   -- goes into every checkpoint.  A run whose first resumable checkpoint
+   carries its own fingerprint adopts the record ("tuning: from the
+   checkpoint of s=..."); another round or another device tunes again
+   (saying why); --retune always tunes; --no-tune takes the compiled-in
+   defaults (m still timed unless --m); --fft T,B[,C] | legacy pins the
+   FFT (what the GF2C_* variables did); --m pins m.  --retune with
+   --no-tune is refused, as in coarse_sieve.  There is no --tune: tuning
+   is what a run does unless told otherwise (coarse_sieve has none either).
+   GF2C_FFT, GF2C_TAYLOR_LV, GF2C_BFLY_LV, GF2C_FUSE_MAX_CH are no longer
+   read (gf2c_read_env is gone; gf2c_clamp_config keeps values in range).
+
+4. PER-SURVIVOR CHECKPOINTS
+   PREFIX_r<r>_s<s>.ckpt (+ .1, .2) and PREFIX_r<r>_s<s>.fine (the fine-DDF
+   standby file), one set per survivor.  At start the run looks for them
+   for every pending s of ITS list; those s go first (list order), the rest
+   follow.  Checkpoints of s not in the list are kept and listed ("kept for
+   later"); running a list that contains such an s resumes it.  Files of an
+   s already in the results file are deleted.  A skip mismatch or an
+   earlier format is reported and ignored; a round 1-9 checkpoint
+   (PREFIX.ckpt, one per prefix) is recognised and reported with its s
+   ("finish it with the earlier binary, or delete it") -- the new format is
+   not backward compatible, as agreed.
+   One process per prefix: PREFIX.lock is flock()ed for the life of the
+   process; a second run with the same --out stops with a message (exit 1).
+   The lock file stays behind (deleting it at exit would race; harmless).
+   Format version 2: magic "TSFC2", 408-byte header (static_assert-pinned)
+   with the tuning record, the measured costs (5.) and reserved space.
+
+5. THE SCHEDULE: EXPECTED-COST OPTIMUM BY DYNAMIC PROGRAMMING
+   --sched opt (the default since Round 9) planned with the stationarity
+   recurrence k_{j+1} = k_j^2 / k_{j-1} - G, which carries the previous two
+   points: when G changes mid-run (measured: 3000 until the first gcd,
+   then ~1300) the trajectory keeps the old G's shape.  Expected cost
+   relative to the optimum (skip 262, K = r/3, survival S(k) = (16/9)/k;
+   simulation reproduces Gord's q sequences exactly):
+       Round 9 code, G 3000 then 1300 (his step 5)     +40.9%
+       Round 9 code, G fixed at 1300                    +7.0%
+       Round 9 code, G fixed at 4000 (Round 6-8)        +5.3%
+       linear, q0 = 20                                  +0.7%
+       Round 10 (dynamic programming)                    0
+   Round 10 solves V(k) = min_{k'>k} [(k'-k) + G + (k/k') V(k')], V(K+1) = 0,
+   on a geometric grid (ratio 1.002, ~6000 points to r/3, 11 ms) and
+   re-solves when G moves by more than 2%; it plans from wherever the scan
+   is, so a resume, a G change or an -Z cap cannot derail it.  For Gord's
+   step-5 survivor (G0 1500, then 1300): 263..1062, 1063..2598, 2599..5062,
+   5063..8550 -- four gcds and 8288 degrees, ~177 s, instead of 342 s.
+   The measured costs (seconds per gcd, per degree) go into every
+   checkpoint, and a resumed run starts from them (-v prints "[schedule
+   costs from the checkpoint: ...]").  Selftest: DP == brute force on all
+   integer partitions for three G, and a full-size solve that is monotone
+   and fast.  --sched-rho is accepted and ignored (the DP needs no floor).
+   CPU regime (56..279, G ~ 300): one interval, matching Gord's factor_ec
+   setting (-q 16 -m 14 covers 56..279 exactly).
+
+6. TESTS AND TOOLS
+   selftest: the CPU build runs every scan/EC/gcd suite on TsCPU plus its
+   own kernel suites (squaring 3934 cases of both parities and the generic
+   path vs the bit-level oracle; product, mul-by-x and squaring on one
+   device with s decreasing; word-run fold vs windowed fold, 77 cases); the
+   GPU build runs those too, plus the cross-backend suite.
+   tests/ts_regress.sh: detects the CPU build ("CPU build" in --version)
+   and skips the --gpu-gcd row there; new "linear" row; leftover pattern
+   now PREFIX_r*_s*.ckpt*.
+   tests/ts_ckpt10.sh NEW (either build; optionally the other build as a
+   second argument): per-survivor names; a survivor set aside and resumed
+   later; two interrupted survivors resumed first by one run; tuning
+   measured at start / adopted on resume / --retune; the schedule's costs
+   restored on resume; the prefix lock; a checkpoint of one build resumed
+   by the other (tunes again, same result).
+   Makefile: `make` builds everything this machine can (the CUDA build is
+   skipped with a note when nvcc is missing); `make cpu`, `make cuda`;
+   `make emultest` (both selftests, no GPU); `make regress` (both scripts
+   on tsfactor_cpu, ORIG=... to compare with an older binary).  Removed:
+   the emultest dependency on cantor_cuda (its source is gone: that target
+   would have waited on stdin), the dead generic emul-% rule, the undefined
+   CPU variable.
+
+VALIDATION (sandbox: g++ 13.3, NTL 11.6 + gf2x from Gord's tree, 2 cores)
+  - selftest all PASS: GPU build (emulated) and CPU build (also with
+    --threads 2); both under ASan + UBSan.
+  - ts_regress.sh against the ORIGINAL binary: all PASS, both builds; the
+    CPU build also under ASan + UBSan.
+  - ts_ckpt10.sh: all PASS, CPU->GPU and GPU->CPU; ASan for the CPU build.
+  - full size: the six-survivor cross-check with factor_ec (identical);
+    the production-shape timing above; TsCPU squaring and product checked
+    against NTL's SqrMod/MulMod for s = 588, 12338357, 68139920, 200, 101.
+
+NOT VERIFIED
+  - Not compiled by nvcc.  The kernels are unchanged and the new host code
+    uses nothing beyond C++14, but the CUDA file was restructured: build it
+    first (TESTPLAN_R6 step 1).
+  - The start-up FFT sweep's choice on the real card (it should pick 3/3,
+    the Round 5 winner) and its duration.
+  - tsfactor_cpu on Zen 2 or cloud CPUs: the slot-at-a-time order helps
+    where two residues (34 MB) fit in the cache; on a Zen 2 CCX (16 MB L3)
+    they do not, so expect less gain there than here.
+
+WHAT TO RUN FIRST  (details: TESTPLAN_R6.md)
+  1. make; ./tsfactor --selftest; ./tsfactor_cpu --selftest
+  2. make regress (and ts_regress.sh ./tsfactor)
+  3. ./tsfactor_cpu --bench 136279841 588 against factor_ec on one survivor
+  4. the step-5 survivor again (expect ~177 s instead of 342 s)
+  5. suspend/resume one survivor of a list (ts_ckpt10.sh does it small)
+
+OPEN QUESTIONS / NEXT STEPS
+  - The orchestrator: tsfactor_cpu could replace factor_ec in
+    mersenne_trinomial.py's CPU mode (command line in TESTPLAN_R6 step 6);
+    not changed here.
+  - GPU irred on the TsDev pattern (the irred handoff has the sketch).
+  - On the GPU the scan is ~80% of a survivor again: FFT bandwidth and the
+    fused EC table pass remain the scan-side items.
+  - CPU: at the tuned m the squarings and the products cost the same,
+    sqrt(t_sq t_mul) per degree each, so halving either buys ~29%.  The
+    squaring now matches factor_modified's; the product is gf2x's.

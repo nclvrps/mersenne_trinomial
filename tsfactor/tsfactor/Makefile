@@ -1,7 +1,17 @@
-# GF(2) trinomial factor search: CPU references + CUDA implementations
-# CPU tools need only g++; CUDA tools need nvcc (CUDA 11+, sm_60+).
-# Works both from the source tree (sieve/ cantor/ stage2/ common/) and
-# from a flat directory containing all files.
+# tsfactor: the trinomial factor scan, in two builds of the same program
+#   tsfactor       CUDA (nvcc, CUDA 11+, sm_60+)
+#   tsfactor_cpu   CPU only (g++), round 10
+# plus two CPU tools for the gcd engine (gcdbench, gcdstress) and a CPU
+# emulation of the CUDA build for testing without a GPU (emul-tsfactor).
+#
+#   make                everything this machine can build (the CUDA build
+#                       is skipped, with a note, when nvcc is not found)
+#   make cpu | cuda     one side
+#   make emultest       --selftest of the emulated CUDA build and of
+#                       tsfactor_cpu (no GPU needed; about 20 s)
+#   make regress        ../tests/ts_regress.sh and ts_ckpt10.sh on
+#                       tsfactor_cpu (ORIG=/path/to/older/tsfactor to
+#                       compare against an older binary)
 
 CXX      ?= g++
 NVCC     ?= nvcc
@@ -14,8 +24,6 @@ CXXFLAGS ?= -O2 -march=native -Wall -Wextra
 NVFLAGS  ?= -O3 -arch=native -Xcompiler -march=native
 INC       = -I. -Icommon
 
-vpath %.cpp . sieve cantor
-vpath %.cu  . sieve cantor stage2 scan
 vpath %.h   . common
 
 # NTL provides the subquadratic GCD backend and CanZass resolution --
@@ -69,11 +77,15 @@ NTLMSG := $(NTLMSG) -- but gf2x.h is not usable, so gcd products go through NTL 
 endif
 endif
 
+CPU  = tsfactor_cpu gcdbench gcdstress
 CUDA = tsfactor
+HAVE_NVCC := $(shell command -v $(NVCC) >/dev/null 2>&1 && echo 1)
 
-all: cpu cuda
+all: cpu $(if $(HAVE_NVCC),cuda,nocuda)
 cpu: $(CPU)
 cuda: $(CUDA)
+nocuda:
+	@echo "== $(NVCC) not found: built the CPU programs only (make cuda NVCC=/path/to/nvcc for the GPU build) =="
 
 ntl-diag:
 	@echo "== link check: $(CXX) $(NTLCHK) $(NTLLIB) =="
@@ -81,13 +93,25 @@ ntl-diag:
 	  echo "OK: NTL links and runs" && /tmp/ntl_diag_bin && \
 	  rm -f /tmp/ntl_diag_bin || true
 
-tsfactor: tsfactor.cu gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_hgcd_base.h
+tsfactor: tsfactor.cu ts_core.h ts_cpu.h gf2_trin_host.h gf2_trinomial_cuda.h gf2_cantor_cuda.h gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_hgcd_base.h
 	@echo "== $(NTLMSG) =="
 	@if [ "$(NTL_OK)" != "1" ] && [ "$(ALLOW_NO_NTL)" != "1" ]; then \
 	  echo "ERROR: tsfactor needs NTL for factor resolution (CanZass)."; \
 	  echo "  Kernel-testing-only override: make ALLOW_NO_NTL=1 tsfactor"; \
 	  exit 1; fi
 	$(NVCC) $(NVFLAGS) $(INC) $(NTLDEF) -o $@ tsfactor.cu $(NTLSRC) $(NTLLIB) -Xcompiler -pthread
+
+# tsfactor without a GPU (round 10): the same program with the CPU backend
+# (ts_cpu.h).  g++ only -- no CUDA.  -O3 for the squaring loops; OpenMP for
+# --threads (optional: without -fopenmp the option is ignored).
+CPUFLAGS ?= -O3 -march=native -Wall -Wextra -fopenmp
+tsfactor_cpu: tsfactor_cpu.cpp ts_core.h ts_cpu.h gf2_trin_host.h gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_hgcd_base.h gf2_cantor_core.h gf2_cantor_engine.h
+	@echo "== $(NTLMSG) =="
+	@if [ "$(NTL_OK)" != "1" ] && [ "$(ALLOW_NO_NTL)" != "1" ]; then \
+	  echo "ERROR: tsfactor_cpu needs NTL for factor resolution (CanZass)."; \
+	  echo "  Kernel-testing-only override: make ALLOW_NO_NTL=1 tsfactor_cpu"; \
+	  exit 1; fi
+	$(CXX) $(CPUFLAGS) $(INC) $(NTLDEF) -o $@ tsfactor_cpu.cpp $(NTLSRC) $(NTLLIB) -pthread
 
 # CPU-only timing of the gcd paths on this machine's CPU and gf2x build:
 # NTL's gcd against tsfactor's default (the certified chain), plus the
@@ -105,20 +129,10 @@ gcdstress: gcdstress.cpp gf2_gcd.h gf2_gcd_ntl.cpp gf2_ec.h gf2_hgcd_base.h gf2_
 # Useful for validating changes before spending GPU time.
 SEDLAUNCH = sed -E 's/([A-Za-z_][A-Za-z0-9_]*)<<<([^>]*)>>>/EMUL_LAUNCH(\1, \2)/g; s/__device__ __forceinline__/static inline/'
 
-emul-%:
-	mkdir -p build_emul
-	for h in gf2_small_field.h gf2_field_setup.h gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h; do \
-	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
-	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
-	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
-	printf '#pragma once\n#include "cuda_emul.h"\n' > build_emul/cuda_runtime.h
-	$(SEDLAUNCH) $$(find . sieve cantor stage2 -maxdepth 1 -name '$*.cu' 2>/dev/null | head -1) > build_emul/$*.cpp
-	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul -o build_emul/$* build_emul/$*.cpp
-
 emul-tsfactor:
 	@echo "== $(NTLMSG) =="
 	mkdir -p build_emul
-	for h in gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h gf2_ec.h gf2_hgcd_base.h; do \
+	for h in gf2_cantor_core.h gf2_cantor_engine.h cuda_emul.h gf2_gcd.h gf2_ec.h gf2_hgcd_base.h gf2_trin_host.h ts_core.h ts_cpu.h; do \
 	  cp $$(ls common/$$h 2>/dev/null || ls $$h) build_emul/; done
 	$(SEDLAUNCH) $$(ls common/gf2_cantor_cuda.h 2>/dev/null || ls gf2_cantor_cuda.h) > build_emul/gf2_cantor_cuda.h
 	$(SEDLAUNCH) $$(ls common/gf2_trinomial_cuda.h 2>/dev/null || ls gf2_trinomial_cuda.h) > build_emul/gf2_trinomial_cuda.h
@@ -127,10 +141,14 @@ emul-tsfactor:
 	@if [ "$(NTL_OK)" = "1" ]; then cp $$(ls common/gf2_gcd_ntl.cpp 2>/dev/null || ls gf2_gcd_ntl.cpp) build_emul/; fi
 	$(CXX) $(CXXFLAGS) -x c++ -Ibuild_emul $(NTLDEF) -pthread -o build_emul/tsfactor build_emul/tsfactor.cpp $(NTLSRC_EMUL) $(NTLLIB)
 
-emultest: emul-cantor_cuda emul-tsfactor
-	./build_emul/cantor_cuda selftest
+emultest: emul-tsfactor tsfactor_cpu
 	./build_emul/tsfactor --selftest
+	./tsfactor_cpu --selftest
+
+regress: tsfactor_cpu
+	cd ../tests && ./ts_regress.sh ../tsfactor/tsfactor_cpu $(ORIG)
+	cd ../tests && ./ts_ckpt10.sh ../tsfactor/tsfactor_cpu
 
 clean:
-	rm -rf $(CPU) $(CUDA) gcdbench gcdstress build_emul
-.PHONY: all cpu cuda clean emultest ntl-diag
+	rm -rf $(CPU) $(CUDA) build_emul
+.PHONY: all cpu cuda nocuda clean emultest regress ntl-diag emul-tsfactor

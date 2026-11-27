@@ -1,6 +1,19 @@
 # Low-cost error checking for trinomial factor search over GF(2)
-## Analysis + handoff document — Round 5
+## Analysis + handoff document — Round 6
 
+> **Round 6 in one paragraph.** Gord's run of the round-5 test plan: the
+> certified gcd is 29% faster than NTL's on his machine on one thread
+> (36.3 s against 51.0 s), and 2.1x faster again on 4 threads, where it
+> saturates (17.0 s on 4, 17.1 s on 6). With the gcd settled, round 6 is
+> structural: the checking now lives in a backend-independent driver
+> (`ts_core.h`), so the same checks run in **`tsfactor_cpu`**, the CPU build
+> of tsfactor, and are verified there by the same suites (§10, §13). On the
+> CPU they cost about 3% of the scan (one table pass, the product folds and
+> the chain check against ~0.13 s per degree), against ~15% for `factor_ec`'s
+> NTL-object implementation. `factor_ec` 3.01 takes factor_modified's faster
+> squaring; its checks are unchanged. And the error checking caught a bug of
+> ours at production size (§12, round 6): exactly what it is for.
+>
 > **Round 5 in one paragraph.** Gord compiled the round-4 `tsfactor` with nvcc
 > and ran the whole test plan on the real GPU: everything passed, and the
 > scan checks cost about 1% as estimated (§12). His logs also showed that the
@@ -27,10 +40,11 @@
 > For the tsfactor integration itself read `tsfactor_handoff.md` (Rounds 8
 > and 9 there).
 
-**Status: implemented in both programs, on by default in both.** `tsfactor`
-round 4 is verified on the real GPU; round 5 (host-side changes only) is
-verified under emulation and with the gcd tools, and has not been through
-nvcc. `factor_ec` round 5 is verified at small r.
+**Status: implemented in all three programs (tsfactor, tsfactor_cpu,
+factor_ec), on by default in all.** `tsfactor` round 9 (= this document's
+round 5) is verified on the real GPU; round 10 (round 6 here) is verified
+under emulation and on the CPU, and has not been through nvcc. `factor_ec`
+3.01 is verified at small r and in a production-shape run in the sandbox.
 
 The core fact is unchanged: in characteristic 2 the squaring map is
 **additive** as well as multiplicative, so the Gerbicz "product of
@@ -44,18 +58,21 @@ version and deterministic for single faults.
 | File | What it is |
 |---|---|
 | `errorcheck_handoff.md` | This document: the mathematics, the measurements, the status ledger. Start here. |
-| `tsfactor_handoff.md` | The complete tsfactor record. Round 8 there is the error-checking integration (where each check sits, recovery, options, tests); Round 9 is the gcd work of round 5. |
-| `TESTPLAN_R5.md` | What to run on the real machine now, in order, and what to send back. |
+| `tsfactor_handoff.md` | The complete tsfactor record. Round 8 there is the error-checking integration (where each check sits, recovery, options, tests); Round 9 is the gcd work of round 5; Round 10 the driver/backend split and `tsfactor_cpu` (round 6). |
+| `TESTPLAN_R6.md` | What to run on the real machine now, in order, and what to send back. |
 | **tsfactor** | |
 | `gf2_ec.h` | Fold algebra (host) + checking kernels (device). Header-only. Replaces round 3's `ec_cuda.cuh`. |
-| `tsfactor.cu`, `gf2_gcd.h`, `gf2_gcd_ntl.cpp` | The implementation; the certified gcd lives in the last two. |
+| `ts_core.h` | The driver (round 6): the checking logic, chain bookkeeping, restarts, checkpoints; backend-independent. |
+| `tsfactor.cu` / `ts_cpu.h` + `tsfactor_cpu.cpp` | The GPU backend and program / the CPU backend and program; each supplies the folds of its own buffers. |
+| `gf2_gcd.h`, `gf2_gcd_ntl.cpp` | The gcd engine and the certified gcd. |
 | `gf2_hgcd_base.h` | the word-level (Lehmer) base case of the gcd engine, §6.5 |
 | `gcdbench.cpp` | CPU-only timing of every gcd path and engine generation. `make gcdbench` |
 | `gcdstress.cpp` | CPU-only randomized cross-check of every gcd path against NTL, and of the word-level base case against the reference one. `make gcdstress` |
 | `experiments/fftbatch_bench.cpp` | the measurement behind "CPU batching: not adopted" (§6.5) |
-| `tests/ts_regress.sh` | tsfactor command-line regression: 33 configuration runs vs the original binary, injected faults, interrupt/resume. |
+| `tests/ts_regress.sh` | tsfactor command-line regression (either build): configuration runs vs the original binary, injected faults, interrupt/resume. |
+| `tests/ts_ckpt10.sh` | per-survivor checkpoints, tuning adoption, the prefix lock, cross-build resume (round 6). |
 | **factor_ec** | |
-| `factor_ec.cpp`, `factor_ec.patch`, `factor_ec.patch.md` | Patched `factor.cpp`, the diff, and hunk-by-hunk commentary. Round 5: checking on by default, closed-form init check. |
+| `factor_ec.cpp`, `factor_ec.patch`, `factor_ec.patch.md` | Patched `factor.cpp`, the diff, and hunk-by-hunk commentary. Round 5: checking on by default, closed-form init check. 3.01 (round 6): factor_modified's squaring and `-Z`. |
 | `ec_words.h` | Word-level primitives shared by `factor_ec`, `ecbench`, `ectest2`. |
 | `ectest.cpp`, `ectest2.cpp` | Unit tests of the word primitives against bit-level references. |
 | `ecbench.cpp` | Per-primitive cost at any (r,s), no NTL. |
@@ -862,7 +879,7 @@ bit shifts and the cost goes up several-fold for no benefit.
 
 ## 10. `tsfactor` (CUDA): as implemented
 
-The full record is `tsfactor_handoff.md` (Rounds 8 and 9). What differs from
+The full record is `tsfactor_handoff.md` (Rounds 8, 9 and 10). What differs from
 factor_ec, and why:
 
 * **Opposite reduction regime.** tsfactor enforces `2s < r`; factor.cpp flips
@@ -892,6 +909,22 @@ factor_ec, and why:
 Cost of the scan checks, measured on an RTX 2070 SUPER: 0.6% of scan time
 projected by `--bench` (m = 24..32, window 8), +1.0% on a real survivor, and
 81 MB of VRAM.
+
+**Round 10 (round 6 here): the same checks on the CPU.** The checking logic
+moved into the backend-independent driver `ts_core.h`; a backend supplies
+only the folds of its own buffers (table pass, three-segment product fold,
+fold of the reduced result, digest, window check, closed-form init check,
+table and hold-table folds). `tsfactor_cpu` (backend `TsCPU`, `ts_cpu.h`)
+implements them with word loops that produce exactly the GPU kernels'
+values, so everything above holds for it unchanged — including the
+`2s < r` regime: tsfactor_cpu does not flip even s (it has its own even-s
+squaring), so it has none of factor_ec's reciprocal-regime machinery.
+Measured cost on one sandbox core at r = 136279841: ~3.3% of scan time
+(table pass 26 ms and product folds 18 ms per block, chain check 66 ms per
+window of 8 blocks, against ~2.4 s of scanning per block of m = 20 degrees).
+The checks' share is larger than on the GPU because the CPU's squaring is
+relatively cheap next to its folds' memory traffic, not because anything
+extra is checked.
 
 ---
 
@@ -950,13 +983,42 @@ Round 4: implemented in `tsfactor`, on by default, with rollback and restart;
 closed form for the table digest (§4.7); certified gcd (§6.3) with split
 application (§6.4); fold length 61 in both programs (§5.1).
 
-Round 5 (this one): Gord compiled round 4 with nvcc and ran the whole test
+Round 5: Gord compiled round 4 with nvcc and ran the whole test
 plan on the RTX 2070 SUPER — everything passed (below). His logs showed the
 gcd to be 58% of a survivor's wall time and half of each gcd to be the
 engine's base case; that was rewritten (§6.5). `--gcd-mt` became automatic,
 the interval schedule now measures its own gcd/scan cost ratio, finished
 survivors no longer leave checkpoint files behind. `factor_ec`: closed-form
 init check implemented, checking on by default.
+
+Round 6 (this one; tsfactor round 10): Gord's run of round 5 — nvcc clean,
+selftest and gcdstress PASS, the certified gcd 36.3 s on one thread against
+NTL's 51.0 s, 17.0 s on four threads (2.1x, saturating), `--gpu-gcd` ahead
+inside tsfactor (19.1 against 21.7 s). The tsfactor code was split into a
+driver and two backends; the checks are in the driver (`ts_core.h`: fold
+algebra, chain bookkeeping, restart logic, certified gcd) and each backend
+supplies the folds of its own buffers (`TsDev::ec_block_pre`,
+`ec_read_block`, `ec_window_check`, `ec_verify_table_at`, `table_fold`,
+`hold_fold`). The CPU backend computes exactly the values the GPU kernels
+compute: the GPU build's selftest compares the two after every block. On the
+CPU the scan checks cost ~3.3% (bench at r = 136279841: table pass 26 ms and
+product folds 18 ms per block, chain check 66 ms per window, at ~0.12 s per
+degree).
+
+*The checking caught one of our bugs.* A word-run version of the CPU
+reduction assumed zeros beyond its logical end in a scratch buffer; after the
+start-up tuning (run at s = (r−1)/2) a smaller s found stale words there. The
+small-r tests reuse a device only with s increasing and passed. The first
+production-size run then failed the closed-form init check (§4.7) four times
+from the same state and stopped with exit status 3 ("persistent fault"),
+writing no result. That is the designed behaviour, and it is how the bug was
+found within minutes instead of as a wrong "u" weeks later. Fixed, with a
+selftest that reuses one device with s decreasing (and fails without the
+fix).
+
+`factor_ec` 3.01: factor_modified 2.02's squaring (vectorisable reduce loop,
+constants precomputed per r) and `-Z`; the checks are unchanged and pass the
+same regression and fault sweep.
 
 ### `tsfactor` on the real GPU (Gord, round-4 code, RTX 2070 SUPER, 6-core Zen 2)
 
@@ -1009,12 +1071,12 @@ said it used modular products; it does not).
 
 ### Open items, in rough order of value
 
-- [ ] **Round-5 numbers on Gord's machine**: `gcdbench 136279841 588` (expect
-      the certified chain near 40 s on one thread and 12–15 s on four),
-      `--bench-gcd` with and without `--gpu-gcd`, one real survivor.
-- [ ] **nvcc compile of the round-5 tsfactor.cu.** The gcd engine is host
-      code and was tested here with g++; the changes inside tsfactor.cu are
-      host-side too, but they have not been through nvcc.
+- [x] Round-5 numbers on Gord's machine (above, round 6).
+- [x] nvcc compile of the round-5 tsfactor.cu (clean).
+- [ ] **nvcc compile of the round-10 tsfactor.cu** (restructured host code,
+      kernels unchanged) and its selftest on the card.
+- [ ] tsfactor_cpu's check cost and throughput on Zen 2 / cloud CPUs, six
+      processes at once (memory bandwidth).
 - [ ] `factor_ec -ect` at production size with the closed-form init check.
 - [ ] `--gpu-gcd` against the threaded default; `--gpu-gcd-min-bits` may want
       re-tuning now that the CPU side is faster.
@@ -1051,10 +1113,14 @@ kept explicit.
 | Overhead at production size | 1.8% of wall clock excluding `init_h` (round 2, 64-word fold) |
 | Word primitives | `ectest2`, 54400 checks against bit-level references |
 
-Not verified: round 5's `factor_ec` at production size (the 61-word fold and
-the closed-form init check have only run at small r); the cost of the new
-init check there; behaviour above r = 136279841; the `-ecg` repeated gcd,
-which is a stopgap.
+Round 6 (3.01, sandbox): regression and fault sweep as above, plus four `-Z`
+rows; at r = 136279841 the production shape (s = 588, `-skip 55 -k 55 -m 14
+-q 16 -maxd 279`) ran in 84 s with 0 detections, and six survivors (skip 1)
+gave the same result lines as tsfactor_cpu.
+
+Not verified: the `-ect` cost table at production size with the closed-form
+init check; behaviour above r = 136279841; the `-ecg` repeated gcd, which is
+a stopgap.
 
 ### `tsfactor` — verified on the real GPU (Gord, round-4 code)
 
@@ -1081,15 +1147,27 @@ sequentially. Round 5 changed only host code.
 | Certified gcd | selftest: 90 gcds (chain on CPU products, on the GPU hook, on three threads, threads + hook together, XGCD, declined chain); 600 fault runs: fired ⇔ certificate failed |
 | Production size | emulated scan at r = 136279841 (s = 320): result equal to the oracle, gcd certified in 23 s on two threads |
 
+### `tsfactor` / `tsfactor_cpu` — verified here, round-10 code (round 6)
+
+| Claim | How |
+|---|---|
+| Driver/backend split changed nothing | `ts_regress.sh` against the original binary: all PASS for the emulated GPU build and for `tsfactor_cpu` (also under ASan + UBSan) |
+| CPU backend == GPU backend | GPU-build selftest suite: h-table, A, C, D, table and block folds compared after init and after every block, 10 (r, s, m, k) cases |
+| Checks work on the CPU backend | `tsfactor_cpu --selftest`: every EC suite (single-fault sweep 216 faults, 0 wrong answers; faults under speculation; persistent fault; certified gcd under faults), also with `--threads 2`, also under ASan + UBSan |
+| CPU arithmetic correct | squaring (3934 cases, both parities of s, generic path) and products against bit-level oracles; at r = 136279841 against NTL's SqrMod/MulMod for five s; six survivors at r = 136279841 identical to `factor_ec` |
+| Checkpoint/tuning/lock logic | `ts_ckpt10.sh`, both builds, both directions of cross-build resume |
+| Persistent-fault path at production size | the bug above: init check failed 4 times, exit 3, nothing written |
+
 ### `tsfactor` — NOT verified
 
-* **Round 5 has not been through nvcc or run on a GPU.** Its changes are in
-  host code (the gcd engine, option handling, scheduling, checkpoint
-  cleanup), compiled and tested here with g++.
-* **The round-5 gcd on more than two cores, and on Gord's tuned gf2x.** The
-  sandbox now uses gf2x built from his source tree with PCLMUL (untuned
-  thresholds), which reproduces his NTL gcd time to within 1%; that is
-  evidence, not a measurement on his machine.
+* **Round 10 (round 6 here) has not been through nvcc or run on a GPU.**
+  Round 5 has (clean, all tests passed). Round 10's changes are host code
+  plus the restructuring of tsfactor.cu around unchanged kernels.
+* (Measured since: the round-5 gcd on Gord's six cores and tuned gf2x —
+  36.3 s on one thread, 17.0 s on four, §12.)
 * **Concurrency of the checking kernels beyond what the selftest exercises.**
-* **The self-measuring schedule in production**: exercised at small r and in
-  one emulated production-size run (a single interval).
+* **The round-10 interval schedule in production** (the dynamic programme
+  replaced the self-measuring recurrence of round 5): selftest (DP == brute
+  force) and small-r scans only; TESTPLAN_R6's step-5 survivor is its first
+  production test.
+* **tsfactor_cpu on Zen 2 or cloud CPUs**, alone or six at once.
