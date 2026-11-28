@@ -1,0 +1,74 @@
+build/irred --selftest | tail -1
+selftest passed
+build/irred --selftest --isa avx2 | tail -1
+selftest passed
+build/irred --selftest --isa generic | tail -1
+selftest passed
+build/irred --selftest --nt | tail -1
+selftest passed
+build/irred_generic --selftest | tail -1
+selftest passed
+build/irred_asan --selftest | tail -1
+selftest passed
+build/irred --selftest --threads 2 | tail -1
+selftest passed
+build/irred_asan --selftest --threads 3 | tail -1
+selftest passed
+== nvcc not found: built the CPU programs only (make gpu NVCC=/path/to/nvcc for irred_gpu) ==
+tests/cmp.sh build
+reference comparison: checks=5124 failures=0
+3.15 comparison (low 32 bits, r = 44497, 132049): failures=0
+tests/ec_sweep_all.sh build/irred
+r=1279 s=500 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1275, harmless=4
+r=1279 s=418 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1279, harmless=0
+r=1279 s=500 site=sq opts='--ec-block 8 --ec-window 4': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1275, harmless=4
+r=4423 s=2098 site=sq opts='--isa generic': injected=4423 detected=4423 right=4423 wrong=0 | unchecked: silently wrong=4423, harmless=0
+r=1279 s=500 site=acc opts='--ec-block 8 --ec-window 4': injected=119 detected=119 right=119 wrong=0 
+r=4423 s=1000 site=acc opts='': injected=133 detected=133 right=133 wrong=0 
+r=1279 s=500 site=chk opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0 
+r=4423 s=1000 site=chk opts='': injected=6 detected=6 right=6 wrong=0 
+r=1279 s=500 site=ver opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0 
+r=4423 s=1000 site=ver opts='': injected=6 detected=6 right=6 wrong=0 
+fault sweep: all injected faults detected, all results right
+tests/ckpt_test.sh build/irred build/irred020
+== reference run (no checkpoints)
+   result xa3cbe3b7b97817ce
+== SIGINT, then resume
+PASS: exit status 2 after SIGINT
+PASS: signal: block finished and verified first
+PASS: checkpoints are of verified states
+PASS: three generations
+PASS: resumed
+PASS: resumed result matches
+PASS: all squarings checked
+PASS: progress residues match the uninterrupted run
+PASS: files removed at the end
+== corrupted newest checkpoint -> falls back to .ckpt.1
+PASS: damaged .ckpt skipped, .ckpt.1 used
+PASS: result after fallback matches
+== mismatched and foreign files are ignored
+PASS: mismatch / foreign files ignored, fresh start
+PASS: --ckpt-mins 0: only the signal checkpoint
+== lock
+PASS: second process refused
+== a run started by irred 0.20 (version 1 checkpoint) is not overwritten
+PASS: v1 checkpoint: refuses to start (exit 1)
+PASS: v1 files untouched
+== --stop-after N
+PASS: --stop-after: stops (exit 2) with a verified checkpoint
+PASS: --stop-after: resumed, result matches
+PASS: --stop-after with --no-ckpt: timing run, no files
+== --no-ec segment, then checked
+PASS: --no-ec squarings counted (298348)
+== faults in a checkpointed run
+PASS: sq fault: detected, redone, result right
+PASS: damaged verified state: detected, result right
+     The verified state at 526111 was damaged in memory; falling back to the last checkpoint
+checkpoint tests: 22 passed, 0 failed
+tests/bug014_test.sh
+4423 3015: true x95868bc52f115a6e | 0.14 xe25996b6 | bug + chain only: x0423c7a7e25996b6 (0 check failures) | with map check: exit 3
+4423 2247: true xd7951e1a96d918fc | 0.14 xfa1fcb08 | bug + chain only: xc0d4b519fa1fcb08 (0 check failures) | with map check: exit 3
+4423 1991: true x3aea5edbedc0df84 | 0.14 x0ef4cf9c | bug + chain only: xfc5f3dcd0ef4cf9c (0 check failures) | with map check: exit 3
+4423 1000 (deltaq != 0): true y6b0463063ed3a0e8, bug copy y6b0463063ed3a0e8
+4423 2098 (deltaq != 0): true irreducible, bug copy irreducible
+0.14 bug: invisible to the chain, caught by the map check

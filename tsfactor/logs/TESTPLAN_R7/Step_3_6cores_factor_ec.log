@@ -1,0 +1,250 @@
+$ sleep 0; s=843; mkdir -p $s; cd $s; time ../factor_ec -v -p -f 1 -s0 $s -s1 $((s+1)) -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+../factor_ec -v -p -f 1 -s0 843 -s1 844 -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=12 block(s)
+Stop when number of blocks is > q1=40
+Use fine DDF above 530450
+Using 1 thread(s)
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+...
+Degree 55: skip
+Exponentiation took 5.365785
+Current q 12
+Interval 56..223:
+   squares/products took 39.9 (wct 39.9), per term 0.238 (wct 0.238)
+   gcd took 54.687532
+Current q 24
+Interval 224..559:
+   squares/products took 80.9 (wct 80.9), per term 0.241 (wct 0.241)
+   gcd took 53.787939
+Current q 36
+Interval 560..1063:
+   squares/products took 132.4 (wct 132.5), per term 0.263 (wct 0.263)
+   gcd took 54.419202
+Current q 48
+Interval 1064..1735:
+q > q1 so skipping further test
+843 u
+Error checking: 0 detection(s) / recovery(ies)
+
+real    7m1.968s
+user    6m38.281s
+sys     0m23.631s
+
+
+$ sleep 3; s=2666; mkdir -p $s; cd $s; time ../factor_ec -v -p -f 1 -s0 $s -s1 $((s+1)) -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+../factor_ec -v -p -f 1 -s0 2666 -s1 2667 -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=12 block(s)
+Stop when number of blocks is > q1=40
+Use fine DDF above 530450
+Using 1 thread(s)
+Using reciprocal trinomial
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+...
+Degree 55: skip
+Exponentiation took 5.704532
+Current q 12
+Interval 56..223:
+   squares/products took 40.3 (wct 40.3), per term 0.240 (wct 0.240)
+   gcd took 54.534561
+Current q 24
+Interval 224..559:
+   squares/products took 78.9 (wct 78.9), per term 0.235 (wct 0.235)
+   gcd took 53.394727
+Current q 36
+Interval 560..1063:
+   squares/products took 127.5 (wct 127.6), per term 0.253 (wct 0.253)
+   gcd took 54.547022
+Current q 48
+Interval 1064..1735:
+q > q1 so skipping further test
+2666 u
+Error checking: 0 detection(s) / recovery(ies)
+
+real    6m55.435s
+user    6m33.142s
+sys     0m22.261s
+
+
+$ sleep 6; s=4970; mkdir -p $s; cd $s; time ../factor_ec -v -p -f 1 -s0 $s -s1 $((s+1)) -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+../factor_ec -v -p -f 1 -s0 4970 -s1 4971 -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=12 block(s)
+Stop when number of blocks is > q1=40
+Use fine DDF above 530450
+Using 1 thread(s)
+Using reciprocal trinomial
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+...
+Degree 55: skip
+Exponentiation took 8.759345
+Current q 12
+Interval 56..223:
+   squares/products took 38.9 (wct 38.9), per term 0.231 (wct 0.232)
+   gcd took 53.300930
+Current q 24
+Interval 224..559:
+   squares/products took 79.2 (wct 79.2), per term 0.236 (wct 0.236)
+   gcd took 54.057202
+Current q 36
+Interval 560..1063:
+   squares/products took 126.1 (wct 126.1), per term 0.250 (wct 0.250)
+   gcd took 53.629018
+Current q 48
+Interval 1064..1735:
+q > q1 so skipping further test
+4970 u
+Error checking: 0 detection(s) / recovery(ies)
+
+real    6m54.440s
+user    6m35.021s
+sys     0m19.376s
+
+
+$ sleep 9; s=5238; mkdir -p $s; cd $s; time ../factor_ec -v -p -f 1 -s0 $s -s1 $((s+1)) -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+../factor_ec -v -p -f 1 -s0 5238 -s1 5239 -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=12 block(s)
+Stop when number of blocks is > q1=40
+Use fine DDF above 530450
+Using 1 thread(s)
+Using reciprocal trinomial
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+...
+Degree 55: skip
+Exponentiation took 11.752253
+Current q 12
+Interval 56..223:
+   squares/products took 36.3 (wct 36.4), per term 0.216 (wct 0.216)
+   gcd took 56.799397
+Current q 24
+Interval 224..559:
+   squares/products took 78.8 (wct 78.8), per term 0.235 (wct 0.235)
+   gcd took 58.208491
+Current q 36
+Interval 560..1063:
+   squares/products took 126.2 (wct 126.2), per term 0.250 (wct 0.250)
+   gcd took 53.210598
+Current q 48
+Interval 1064..1735:
+q > q1 so skipping further test
+5238 u
+Error checking: 0 detection(s) / recovery(ies)
+
+real    7m1.998s
+user    6m44.911s
+sys     0m17.048s
+
+
+$ sleep 12; s=6351; mkdir -p $s; cd $s; time ../factor_ec -v -p -f 1 -s0 $s -s1 $((s+1)) -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+
+../factor_ec -v -p -f 1 -s0 6351 -s1 6352 -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=12 block(s)
+Stop when number of blocks is > q1=40
+Use fine DDF above 530450
+Using 1 thread(s)
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+...
+Degree 55: skip
+Exponentiation took 13.786053
+Current q 12
+Interval 56..223:
+   squares/products took 34.6 (wct 34.6), per term 0.206 (wct 0.206)
+   gcd took 58.457753
+Current q 24
+Interval 224..559:
+   squares/products took 77.7 (wct 77.7), per term 0.231 (wct 0.231)
+   gcd took 60.789635
+Current q 36
+Interval 560..1063:
+   squares/products took 124.2 (wct 124.2), per term 0.246 (wct 0.246)
+   gcd took 52.506144
+Current q 48
+Interval 1064..1735:
+q > q1 so skipping further test
+6351 u
+Error checking: 0 detection(s) / recovery(ies)
+
+real    7m2.760s
+user    6m47.045s
+sys     0m15.635s
+
+
+$ sleep 15; s=6548; mkdir -p $s; cd $s; time ../factor_ec -v -p -f 1 -s0 $s -s1 $((s+1)) -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+
+../factor_ec -v -p -f 1 -s0 6548 -s1 6549 -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=12 block(s)
+Stop when number of blocks is > q1=40
+Use fine DDF above 530450
+Using 1 thread(s)
+Using reciprocal trinomial
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+...
+Degree 55: skip
+Exponentiation took 11.945616
+Current q 12
+Interval 56..223:
+   squares/products took 31.4 (wct 31.4), per term 0.187 (wct 0.187)
+   gcd took 55.219224
+Current q 24
+Interval 224..559:
+   squares/products took 76.5 (wct 76.5), per term 0.228 (wct 0.228)
+   gcd took 54.236669
+Current q 36
+Interval 560..1063:
+   squares/products took 125.0 (wct 125.0), per term 0.248 (wct 0.248)
+   gcd took 53.267983
+Current q 48
+Interval 1064..1735:
+q > q1 so skipping further test
+6548 u
+Error checking: 0 detection(s) / recovery(ies)
+
+real    6m48.257s
+user    6m31.558s
+sys     0m16.674s

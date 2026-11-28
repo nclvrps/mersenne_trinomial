@@ -72,7 +72,7 @@ Some code may have been inspired by:
 // Version.  The fingerprint of a tuning record starts with this, so a
 // checkpoint tuned by another round is re-tuned when resumed.
 #define TS_ROUND 10
-#define TS_ROUND_STR "round 10"
+#define TS_ROUND_STR "round 11"
 
 // ---------------------------------------------------------------------------
 // error checking: configuration, event log, statistics, fault injection
@@ -945,26 +945,49 @@ static bool load_ckpt(const std::string &base, CkptHdr &H,
 // would interleave their results files and could resume the same
 // checkpoint twice; the lock makes the second one stop with a message.
 // flock() is released when the process ends, however it ends, so a lock
-// file left behind is harmless.
+// file left behind by a crash is harmless.  Round 11: a normal exit
+// deletes the file.  That is safe because a process that gets the lock
+// checks that the file it locked is still the one at the path (another
+// process may have deleted it between the open and the flock) and tries
+// again if not.
 static int g_prefix_lock_fd = -1;
+static std::string g_prefix_lock_path;
 static bool lock_prefix(const std::string &prefix) {
     std::string p = prefix + ".lock";
-    int fd = open(p.c_str(), O_RDWR | O_CREAT, 0644);
-    if (fd < 0) {
-        fprintf(stderr, "warning: cannot create %s (%s); running without "
-                "the one-process-per-prefix lock\n", p.c_str(),
-                strerror(errno));
-        return true;
-    }
-    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-        close(fd);
-        return false;
+    int fd = -1;
+    for (int tries = 0;; tries++) {
+        fd = open(p.c_str(), O_RDWR | O_CREAT, 0644);
+        if (fd < 0) {
+            fprintf(stderr, "warning: cannot create %s (%s); running without "
+                    "the one-process-per-prefix lock\n", p.c_str(),
+                    strerror(errno));
+            return true;
+        }
+        if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            close(fd);
+            return false;
+        }
+        struct stat a, b;
+        if (fstat(fd, &a) == 0 && stat(p.c_str(), &b) == 0 &&
+            a.st_ino == b.st_ino && a.st_dev == b.st_dev)
+            break;                         // the file at the path: ours
+        close(fd);                         // deleted meanwhile: again
+        if (tries > 100) return false;
     }
     char buf[32];
     int n = snprintf(buf, sizeof buf, "%ld\n", (long)getpid());
     if (ftruncate(fd, 0) == 0 && write(fd, buf, (size_t)n) == n) {}
     g_prefix_lock_fd = fd;
+    g_prefix_lock_path = p;
     return true;
+}
+
+// at a normal exit, while still holding the lock
+static void unlock_prefix() {
+    if (g_prefix_lock_fd < 0) return;
+    unlink(g_prefix_lock_path.c_str());
+    close(g_prefix_lock_fd);
+    g_prefix_lock_fd = -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,6 +1223,31 @@ struct SParams {
 };
 
 // G for the next interval: fixed by --sched-G, else measured
+// Swan's theorem: for r = +-1 mod 8 (and s not dividing 2r in the way
+// below) the trinomial has an odd number of irreducible factors, so if it
+// is reducible its smallest factor has degree <= r/3 (otherwise <= r/2).
+static bool swan_applies(u64 r, u64 s) {
+    return (((r & 7) == 1) || ((r & 7) == 7)) &&
+           ((((s & 1) == 0) && (((2 * r) % s) != 0)) ||
+            (((s & 1) == 1) && (((2 * r) % (r - s)) != 0)));
+}
+
+// The 52 known Mersenne prime exponents (2^r - 1 prime) up to 136279841.
+// For them an irreducible trinomial of degree r is primitive; for any
+// other r the scan proves irreducibility only (round 11: the result line
+// then says "irreducible", not "primitive").
+static bool mersenne_exponent(u64 r) {
+    static const u64 M[] = {
+        2, 3, 5, 7, 13, 17, 19, 31, 61, 89, 107, 127, 521, 607, 1279, 2203,
+        2281, 3217, 4253, 4423, 9689, 9941, 11213, 19937, 21701, 23209,
+        44497, 86243, 110503, 132049, 216091, 756839, 859433, 1257787,
+        1398269, 2976221, 3021377, 6972593, 13466917, 20996011, 24036583,
+        25964951, 30402457, 32582657, 37156667, 42643801, 43112609,
+        57885161, 74207281, 77232917, 82589933, 136279841 };
+    for (u64 x : M) if (x == r) return true;
+    return false;
+}
+
 static u64 sched_G_now(const SParams &P) {
     if (P.sched_G) return P.sched_G;
     double cg = g_cost_gcd.load(), cs = g_cost_deg.load();
@@ -1208,6 +1256,46 @@ static u64 sched_G_now(const SParams &P) {
     if (Gd < 1) Gd = 1;
     if (Gd > 1e8) Gd = 1e8;
     return (u64)Gd;
+}
+
+// Round 11.  When the whole scan of a survivor, skip+1 .. --maxd, is a
+// single interval (the CPU stage: 56..279), whole blocks of the tuned m
+// would end it up to m-1 degrees past maxd (m = 17: at 293).  A slightly
+// smaller block size often ends it exactly.  Returns the m' in [3m/4, m]
+// with the least modelled cost: the start, m'(k0 + m'/2) squarings, then
+// ceil(L/m') blocks of m'^2 squarings and one product (timings from the
+// tuning record).  Never larger than m, so memory never grows.
+static int maxd_block_size(const SParams &P, u64 r, u64 s, int m) {
+    if (!P.maxd || P.Zq || !(P.tune.t_sq > 0) || !(P.tune.t_mul > 0))
+        return m;
+    u64 rhigh = swan_applies(r, s) ? r / 3 : r / 2;
+    if (P.maxd >= rhigh) return m;         // the Swan bound, not maxd, caps
+    rhigh = P.maxd;
+    const u64 k0 = P.skip + 1;
+    if (rhigh < k0) return m;
+    const u64 L = rhigh - k0 + 1;
+    if (L % (u64)m == 0) return m;
+    QSched Q;                              // as scan_one_s_once will plan it
+    Q.opt = P.sched_opt;
+    Q.q0 = P.q0 > 0 ? P.q0 : (long)((600 + m - 1) / m);
+    Q.K = rhigh;
+    Q.m = m;
+    Q.G = (double)sched_G_now(P);
+    Q.plan(k0);
+    if ((u64)Q.q * (u64)m < L) return m;   // more than one interval
+    const double ts = P.tune.t_sq, tm = P.tune.t_mul;
+    auto cost = [&](int mm) {
+        double nb = (double)((L + (u64)mm - 1) / (u64)mm);
+        return ts * mm * ((double)k0 + mm / 2.0) + nb * (ts * mm * mm + tm);
+    };
+    int best = m;
+    double cb = cost(m);
+    for (int mm = (3 * m) / 4; mm < m; mm++) {
+        if (mm < 2) continue;
+        double c = cost(mm);
+        if (c < 0.995 * cb) { cb = c; best = mm; }
+    }
+    return best;
 }
 
 struct ScanOut {
@@ -1654,9 +1742,7 @@ static ScanOut scan_one_s_once(TsDev &G, GcdPool &pool, const SParams &P,
     (*T)[r >> 6] |= 1ULL << (r & 63);
 
     // Swan bound (flip-invariant; computed on the original s)
-    bool swan = (((r & 7) == 1) || ((r & 7) == 7)) &&
-                ((((s & 1) == 0) && (((2 * r) % s) != 0)) ||
-                 (((s & 1) == 1) && (((2 * r) % (r - s)) != 0)));
+    bool swan = swan_applies(r, s);
     u64 rhigh = swan ? (r / 3) : (r / 2);
     bool maxd_limited = false;
     if (P.maxd && P.maxd < rhigh) { rhigh = P.maxd; maxd_limited = true; }
@@ -3642,7 +3728,9 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
     int gcd_threads = 0, want_m = 0;
     bool do_selftest = false, do_bench = false, no_ckpt = false,
          gpu_gcd = false, bench_gcd = false, retune = false, no_tune = false;
+#ifndef HAVE_NTL
     bool allow_no_ntl = false;
+#endif
     u64 gcd_min_bits_opt = 0, gcd_base_bits = 0;
     int selftest_reps = 1;
     bool ecg_explicit = false, ecg_xgcd = false, gcd_ntl = false;
@@ -3700,7 +3788,11 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
         else if (a == "--gcd-threads") gcd_threads = atoi(need("--gcd-threads"));
         else if (a == "--canzass-max")
             P.canzass_max = strtoull(need("--canzass-max"), 0, 10);
-        else if (a == "--allow-no-ntl") allow_no_ntl = true;
+        else if (a == "--allow-no-ntl") {
+#ifndef HAVE_NTL
+            allow_no_ntl = true;
+#endif
+        }
         else if (a == "--gpu-gcd") gpu_gcd = true;
         else if (a == "--selftest-reps")
             selftest_reps = atoi(need("--selftest-reps"));
@@ -3869,7 +3961,6 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
         exit(1);
     }
 #ifdef HAVE_NTL
-    (void)allow_no_ntl;
     if (gpu_gcd) g_use_hybrid = true;    // reflected in the banner
     if ((gcd_ntl && (ecg_explicit || gpu_gcd)) || (ecg_xgcd && gpu_gcd)) {
         fprintf(stderr, "ERROR: --gcd-ntl contradicts --ecg / --ecg-xgcd / "
@@ -4008,6 +4099,7 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
     // They are processed first, in list order; the first one's tuning
     // record decides whether this run needs to tune.
     std::vector<u64> resumable;
+    std::string kept_note;     // checkpoints of s not in the list
     TsTune ck_tune;
     memset(&ck_tune, 0, sizeof ck_tune);
     u64 ck_tune_s = 0;
@@ -4060,14 +4152,16 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
         for (u64 sv : list_ckpt_s(out_prefix, r))
             if (!in_list.count(sv)) others.insert(sv);
         if (!others.empty()) {
-            fprintf(stderr, "note: %zu checkpoint(s) for s not in this list "
-                    "are kept for later:", others.size());
+            char b[128];
+            snprintf(b, sizeof b, "%zu checkpoint(s) for s not in this list "
+                     "are kept for later:", others.size());
+            kept_note = b;
             int k = 0;
             for (u64 sv : others) {
-                if (++k > 12) { fprintf(stderr, " ..."); break; }
-                fprintf(stderr, " %" PRIu64, sv);
+                if (++k > 12) { kept_note += " ..."; break; }
+                kept_note += " " + std::to_string(sv);
             }
-            fprintf(stderr, "\n");
+            fprintf(stderr, "\n*** NOTE: %s ***\n\n", kept_note.c_str());
         }
         if (!resumable.empty())
             fprintf(stderr, "%zu survivor(s) of this list have checkpoints and "
@@ -4089,6 +4183,18 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
                         old.c_str(), w[2], w[3], (out_prefix + ".ckpt").c_str());
                 break;
             }
+        }
+    }
+
+    {
+        size_t pend = 0;
+        for (u64 sv : svs) if (!done_s.count(sv)) pend++;
+        if (pend == 0) {
+            fprintf(stderr, "done: nothing to do -- all %zu survivors of %s "
+                    "are in %s\n", svs.size(), surv_path.c_str(),
+                    res_path.c_str());
+            unlock_prefix();
+            return 0;
         }
     }
 
@@ -4189,6 +4295,7 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
 
     bool interrupted = false, ec_fatal = false;
     u64 ec_fatal_s = 0;
+    int last_mb_note = 0;
     for (u64 sv : svs) {
         if (done_s.count(sv)) continue;
         if (g_stop) { interrupted = true; break; }
@@ -4212,6 +4319,21 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
                         "checkpoint's m=%d (this run's m is %d)\n", sv, m_s,
                         m);
         }
+        if (m_s == m && !RS.valid && !want_m) {
+            int mb = maxd_block_size(P, r, sv, m);
+            if (mb != m) {
+                if (mb != last_mb_note) {
+                    u64 k0 = P.skip + 1, L = P.maxd - k0 + 1;
+                    fprintf(stderr, "block size %d instead of %d for the scan "
+                            "%" PRIu64 "..%" PRIu64 " (one interval): %" PRIu64
+                            " blocks end at --maxd exactly (m=%d: at %" PRIu64
+                            ")\n", mb, m, k0, P.maxd, (L + mb - 1) / mb, m,
+                            k0 + (L + m - 1) / m * m - 1);
+                    last_mb_note = mb;
+                }
+                m_s = mb;
+            }
+        }
         G.set_m(m_s);
         ScanOut o = scan_one_s(G, pool, Ps, r, sv, gseq,
                                RS.valid ? &RS : nullptr);
@@ -4231,12 +4353,16 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
             printf("%" PRIu64 " u\n", sv);
             n_u++;
             break;
-        case ScanOut::PRIMITIVE:
-            fprintf(rf, "%" PRIu64 " primitive\n", sv);
-            printf("%" PRIu64 " primitive\n", sv);
-            fprintf(stderr, "\n*** PRIMITIVE TRINOMIAL CANDIDATE: s=%"
-                    PRIu64 " -- verify independently! ***\n\n", sv);
+        case ScanOut::PRIMITIVE: {
+            const bool prim = mersenne_exponent(r);
+            const char *w = prim ? "primitive" : "irreducible";
+            fprintf(rf, "%" PRIu64 " %s\n", sv, w);
+            printf("%" PRIu64 " %s\n", sv, w);
+            fprintf(stderr, "\n*** %s TRINOMIAL CANDIDATE: s=%" PRIu64
+                    " -- verify independently (irred)! ***\n\n",
+                    prim ? "PRIMITIVE" : "IRREDUCIBLE", sv);
             break;
+        }
         case ScanOut::RANGE:
             fprintf(rf, "%" PRIu64 " r%" PRIu64 "-%" PRIu64 "\n", sv,
                     o.rlo, o.rhi);
@@ -4315,13 +4441,17 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
             PL.prog(), g_ec.log_path.c_str());
         fflush(nullptr);
         pool.stop_nowait();
+        unlock_prefix();
         std::_Exit(3);
     }
     if (interrupted) {
         fprintf(stderr, "interrupted: %" PRIu64 " found, %" PRIu64
                 " u; exiting (in-flight GCDs abandoned)\n", n_found, n_u);
+        if (!kept_note.empty())
+            fprintf(stderr, "NOTE: %s\n", kept_note.c_str());
         fflush(nullptr);
         pool.stop_nowait();
+        unlock_prefix();
         std::_Exit(0);             // workers may hold NTL state; skip
     }                              // static teardown entirely
     pool.stop();          // joins workers: nothing can be in the hook now
@@ -4329,6 +4459,9 @@ static int ts_main(int argc, char **argv, TsPlatform &PL) {
     G.fini();
     fprintf(stderr, "done: %" PRIu64 " found, %" PRIu64 " u\n", n_found,
             n_u);
+    if (!kept_note.empty())
+        fprintf(stderr, "NOTE: %s\n", kept_note.c_str());
+    unlock_prefix();
     return 0;
 }
 

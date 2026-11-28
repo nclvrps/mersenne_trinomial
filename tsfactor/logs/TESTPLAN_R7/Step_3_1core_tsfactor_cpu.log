@@ -1,0 +1,43 @@
+$ time ./tsfactor_cpu 136279841 <(echo $s) --skip 55 --m 14 --q0 16 -z 40 --out z$s -v -v
+tsfactor_cpu round 11 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to z843.ec.log
+1 survivors from /dev/fd/63
+tuning: m=14 (t_sq 3.296 ms per slot, t_mul 951.8 ms) (3.4 s)
+memory: h-table 244 MB, scratch 227 MB, snapshots 227 MB each (up to 9, --hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (300 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=55 m=14 gcd-threads=1 pend-max=1 -z
+== s=843 ==
+By Swan's theorem search at most to degree 45426613
+Exponentiation took 4.492517
+Current q 12
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 56..223:
+   squares/products took 20.9 (wct 20.9), per term 0.124 (wct 0.124)
+   [components cumulative: sq 7.9  horner 0.3  mul 12.2]
+   gcd 56..223 took 36.560798
+Current q 25
+   [schedule G 294 degrees: gcd 36.6 s, 124.35 ms/degree]
+Interval 224..573:
+   squares/products took 44.0 (wct 44.0), per term 0.126 (wct 0.126)
+   [components cumulative: sq 24.6  horner 1.1  mul 37.6]
+   gcd 224..573 took 36.506843
+Current q 39
+   [schedule G 292 degrees: gcd 36.5 s, 124.90 ms/degree]
+Interval 574..1119:
+   squares/products took 66.4 (wct 66.4), per term 0.122 (wct 0.122)
+   [components cumulative: sq 50.2  horner 2.2  mul 75.8]
+   gcd 574..1119 took 36.396103
+Current q 56
+   [schedule G 295 degrees: gcd 36.5 s, 123.61 ms/degree]
+q > 40 so skipping further test
+843 u
+== s=843 done in 245.6 s (1064 degrees) ==
+error checking: 76 blocks and 14 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 3 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    4m9.423s
+user    3m54.149s
+sys     0m15.355s

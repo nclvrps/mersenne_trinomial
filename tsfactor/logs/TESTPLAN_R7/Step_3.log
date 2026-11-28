@@ -1,0 +1,46 @@
+$ echo 588 > /tmp/s588.txt
+
+$ time ./tsfactor_cpu 136279841 /tmp/s588.txt --
+skip 55 --maxd 279 --out c588 -v -v
+tsfactor_cpu round 11 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to c588.ec.log
+1 survivors from /tmp/s588.txt
+tuning: m=17 (t_sq 3.273 ms per slot, t_mul 937.5 ms) (3.4 s)
+memory: h-table 292 MB, scratch 227 MB, snapshots 276 MB each (up to 7, --hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (300 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=55 m=17 gcd-threads=1 pend-max=1
+== s=588 ==
+block size 14 instead of 17 for the scan 56..279 (one interval): 16 blocks end at --maxd exactly (m=17: at 293)
+Maximal degree checked reduced to 279
+Exponentiation took 4.673510
+Current q 16
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 56..279:
+   squares/products took 28.5 (wct 28.5), per term 0.127 (wct 0.127)
+   [components cumulative: sq 11.1  horner 0.5  mul 16.2]
+   gcd 56..279 took 36.760798
+588 u
+== s=588 done in 70.1 s (224 degrees) ==
+error checking: 16 blocks and 3 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 1 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    1m14.013s
+user    1m9.081s
+sys     0m4.790s
+
+
+$ time ./tsfactor_cpu 136279841 /tmp/s588.txt --skip 55 --maxd 279 --out c588 -v -v
+tsfactor_cpu round 11 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to c588.ec.log
+1 survivors from /tmp/s588.txt
+1 already completed in c588.results.txt
+done: nothing to do -- all 1 survivors of /tmp/s588.txt are in c588.results.txt
+
+real    0m0.003s
+user    0m0.002s
+sys     0m0.000s

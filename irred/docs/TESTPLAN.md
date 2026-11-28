@@ -1,54 +1,78 @@
-# irred 0.22 — what to run on the real machine (round 3)
+# irred 0.23 — what to run on the real machine (round 4: GPU irred)
 
-Everything here uses the devkit's Makefile (gcc with OpenMP). Round 3 is
-small: version 1 (0.20) checkpoints are no longer read, `--nt` chooses
-itself, and `--stop-after N` replaces `timeout` in timing runs.
+Round 4 adds the GPU build `irred_gpu` (the same program; the squarings run
+on the GPU). The CPU build `irred` behaves as before. Everything below runs
+in `irred/` of the repository.
 
-## 1. Build and selftest (1 minute)
+## 1. Build and selftests (a few minutes)
 
-    cd irred_devkit_r3
-    make
-    make selftest        # eight lines "selftest passed" (new: --nt)
+    cd irred
+    make                 # irred etc., and build/irred_gpu (nvcc is found)
+    make selftest        # eight lines "selftest passed" (the CPU build)
+    build/irred_gpu --selftest | grep -E 'GPU|passed|FAILED'
 
-Optional, the full suite (about 15 minutes): `make test`. It must end
-without "FAIL" or "MISMATCH". `make ckpt` alone runs the 22 checkpoint
-checks in two minutes.
+The GPU selftest must print
 
-## 2. The automatic `--nt` (1 minute)
+    selftest GPU squaring kernels vs reference (4 kernels, 5168 cases): ok
+    selftest GPU == CPU, 300 squarings, 4 cases x 4 kernels: ok
+    selftest passed
 
-    build/irred --no-ckpt --progress 2000 --stop-after 30000 136279841 12338357
+**This is the first time the GPU code meets nvcc** (it was validated under
+the CUDA emulation only). Please send any compiler warning or error.
+If `make` does not find nvcc: `make gpu NVCC=/usr/local/cuda/bin/nvcc`.
 
-On your Zen 2 the second or third line should read
+## 2. The GPU tests (about 5 minutes)
 
-    Streaming stores: on (squaring buffers 33 MB > 16 MB L3 cache; --no-nt turns them off)
+    make gputest          # = tests/gpu_test.sh build/irred_gpu build
 
-and the `iter` lines should show ~1.76 ms/iter, your `--nt` figure of last
-round. The run stops by itself after 30000 squarings plus the rest of the
-block (exit status 2): no `timeout` needed, so nothing kills `grep` or
-`tail` in a pipeline. (That was what happened last time: Ubuntu 26.04's Rust
-`timeout` signals the whole pipeline, so `tail` died before printing; irred
-was flushing every line.)
+It compares 144 results with the naive reference, checks agreement with the
+CPU build, passes checkpoints between the two builds and runs the fault
+sweeps on the GPU. It must end with `gpu tests: 8 passed, 0 failed`.
 
-If you want the whole table again, with output safe in a pipeline:
+## 3. Kernel timings and the first residues at full size (about 2 minutes)
 
-    for nt in --no-nt --nt; do
-      for n in 1 2 4; do
-        echo "threads $n $nt"
-        build/irred --no-ckpt --progress 2000 --stop-after 30000 \
-            --threads $n $nt 136279841 12338357 | grep '^iter' | tail -1
-      done
-    done
+    build/irred_gpu --no-ckpt --progress 2000 --stop-after 30000 136279841 12338357
 
-## 3. A 0.20 checkpoint is refused, not overwritten
+Please send the whole output. The interesting lines:
 
-Only if you still have a directory with a 0.20 run in it: 0.22 must stop
-with
+    GPU 0: NVIDIA GeForce RTX 2070 SUPER (sm_75, 40 SMs, ... MB)
+    GPU squaring kernel: k? 0.1?? ms (fused 0.19?, ...)
 
-    ERROR: a checkpoint of irred 0.20 (format version 1) for this r and s is here.
+`fused` is tsfactor's kernel (0.195 ms in tsfactor's tuning); the k-kernels
+are new and should be faster. The `iter` lines must show these residues,
+which your Zen 2 printed in round 3 (s = 12338357 is odd and below r/2, so
+both builds compute the same thing):
 
-and exit status 1, leaving the files alone. Finish such a run with 0.21.
+    iter 2000  ... residue 524cef6916ae5278
+    iter 4000  ... residue d61458d6bb7b0384
+    iter 6000  ... residue 48d654b6eef5b870
+    iter 10000 ... residue 13636a0f50a7db2c
+    iter 20000 ... residue 6289c745dbd0ce06
+    iter 30000 ... residue 97b488763a1f6c36
 
-## 4. What to send back
+and ms/iter is the speed of the whole run (the check adds ~0.2%).
 
-* The line of step 2 (streaming stores on or off, and the ms/iter).
-* Anything unexpected from `make test`.
+## 4. The full recheck of s = 12338357 (hours)
+
+    build/irred_gpu --progress 1000000 136279841 12338357 > irred_gpu_12338357.log 2>&1
+
+Expect between 4 and 8 hours (step 3's ms/iter × 136279841). It
+checkpoints every 30 minutes to `irred_r136279841_s12338357.ckpt`; Ctrl-C
+(or SIGTERM) finishes the block, verifies and writes a checkpoint; the same
+command resumes. The last lines should be
+
+    All 136279841 squarings were error-checked
+    136279841 12338357 irreducible (may be primitive) LOG
+
+That is the third independent result (tsfactor: no factor to r/3; CPU
+irred: x^(2^r) = x), this time on other hardware with other code.
+
+Do not run it in the same directory as a CPU irred run of the same s:
+they would share the checkpoint file names (they can resume each other's
+checkpoints for this s, but the lock lets only one run at a time).
+
+## 5. What to send back
+
+* The output of step 3 (kernel timings, residues, ms/iter).
+* Anything unexpected from steps 1–2.
+* Step 4's log when it is done.

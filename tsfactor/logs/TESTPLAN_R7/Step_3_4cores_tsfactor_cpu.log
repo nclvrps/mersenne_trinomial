@@ -1,0 +1,178 @@
+$ sleep 0; s=843; time ./tsfactor_cpu 136279841 <(echo $s) --skip 55 --m 14 --q0 16 -z 40 --out d$s -v -v
+tsfactor_cpu round 11 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to d843.ec.log
+1 survivors from /dev/fd/63
+tuning: m=14 (t_sq 3.306 ms per slot, t_mul 946.3 ms) (3.4 s)
+memory: h-table 244 MB, scratch 227 MB, snapshots 227 MB each (up to 9, --hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (300 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=55 m=14 gcd-threads=1 pend-max=1 -z
+== s=843 ==
+By Swan's theorem search at most to degree 45426613
+Exponentiation took 4.661903
+Current q 12
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 56..223:
+   squares/products took 27.1 (wct 27.1), per term 0.161 (wct 0.161)
+   [components cumulative: sq 11.3  horner 0.4  mul 14.6]
+   gcd 56..223 took 41.754409
+Current q 23
+   [schedule G 258 degrees: gcd 41.8 s, 161.24 ms/degree]
+Interval 224..545:
+   squares/products took 54.6 (wct 54.6), per term 0.169 (wct 0.169)
+   [components cumulative: sq 36.0  horner 1.3  mul 42.5]
+   gcd 224..545 took 41.408742
+Current q 36
+   [schedule G 252 degrees: gcd 41.6 s, 164.54 ms/degree]
+Interval 546..1049:
+   squares/products took 78.4 (wct 78.4), per term 0.156 (wct 0.156)
+   [components cumulative: sq 68.0  horner 2.6  mul 85.7]
+   gcd 546..1049 took 46.501929
+Current q 52
+   [schedule G 270 degrees: gcd 43.6 s, 160.95 ms/degree]
+q > 40 so skipping further test
+843 u
+== s=843 done in 294.8 s (994 degrees) ==
+error checking: 71 blocks and 13 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 3 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    4m58.562s
+user    4m44.286s
+sys     0m15.139s
+
+
+$ sleep 3; s=2666; time ./tsfactor_cpu 136279841 <(echo $s) --skip 55 --m 14 --q0 16 -z 40 --out d$s -v -v
+tsfactor_cpu round 11 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to d2666.ec.log
+1 survivors from /dev/fd/63
+tuning: m=14 (t_sq 4.651 ms per slot, t_mul 1025.6 ms) (3.9 s)
+memory: h-table 244 MB, scratch 227 MB, snapshots 227 MB each (up to 9, --hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (300 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=55 m=14 gcd-threads=1 pend-max=1 -z
+== s=2666 ==
+By Swan's theorem search at most to degree 45426613
+Exponentiation took 4.795953
+Current q 12
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 56..223:
+   squares/products took 25.1 (wct 25.1), per term 0.150 (wct 0.150)
+   [components cumulative: sq 9.3  horner 0.4  mul 14.9]
+   gcd 56..223 took 41.383701
+Current q 24
+   [schedule G 276 degrees: gcd 41.4 s, 149.63 ms/degree]
+Interval 224..559:
+   squares/products took 53.5 (wct 53.5), per term 0.159 (wct 0.159)
+   [components cumulative: sq 31.1  horner 1.2  mul 44.4]
+   gcd 224..559 took 41.218297
+Current q 37
+   [schedule G 269 degrees: gcd 41.3 s, 153.41 ms/degree]
+Interval 560..1077:
+   squares/products took 77.7 (wct 77.7), per term 0.150 (wct 0.150)
+   [components cumulative: sq 61.5  horner 2.5  mul 88.7]
+   gcd 560..1077 took 46.003799
+Current q 54
+   [schedule G 284 degrees: gcd 43.2 s, 152.04 ms/degree]
+q > 40 so skipping further test
+2666 u
+== s=2666 done in 290.1 s (1022 degrees) ==
+error checking: 73 blocks and 13 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 3 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    4m54.372s
+user    4m38.873s
+sys     0m16.003s
+
+
+$ sleep 6; s=4970; time ./tsfactor_cpu 136279841 <(echo $s) --skip 55 --m 14 --q0 16 -z 40 --out d$s -v -v
+tsfactor_cpu round 11 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to d4970.ec.log
+1 survivors from /dev/fd/63
+tuning: m=14 (t_sq 4.861 ms per slot, t_mul 1188.1 ms) (4.2 s)
+memory: h-table 244 MB, scratch 227 MB, snapshots 227 MB each (up to 9, --hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (300 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=55 m=14 gcd-threads=1 pend-max=1 -z
+== s=4970 ==
+By Swan's theorem search at most to degree 45426613
+Exponentiation took 5.582949
+Current q 12
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 56..223:
+   squares/products took 25.0 (wct 25.0), per term 0.149 (wct 0.149)
+   [components cumulative: sq 9.4  horner 0.4  mul 14.5]
+   gcd 56..223 took 41.230847
+Current q 24
+   [schedule G 277 degrees: gcd 41.2 s, 148.58 ms/degree]
+Interval 224..559:
+   squares/products took 54.1 (wct 54.1), per term 0.161 (wct 0.161)
+   [components cumulative: sq 32.4  horner 1.3  mul 43.7]
+   gcd 224..559 took 41.136728
+Current q 37
+   [schedule G 268 degrees: gcd 41.2 s, 153.54 ms/degree]
+Interval 560..1077:
+   squares/products took 80.0 (wct 80.0), per term 0.154 (wct 0.154)
+   [components cumulative: sq 64.8  horner 2.5  mul 88.3]
+   gcd 560..1077 took 43.750896
+Current q 53
+   [schedule G 274 degrees: gcd 42.2 s, 153.92 ms/degree]
+q > 40 so skipping further test
+4970 u
+== s=4970 done in 291.3 s (1022 degrees) ==
+error checking: 73 blocks and 13 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 3 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    4m55.853s
+user    4m40.305s
+sys     0m16.185s
+
+
+$ sleep 9; s=5238; time ./tsfactor_cpu 136279841 <(echo $s) --skip 55 --m 14 --q0 16 -z 40 --out d$s -v -v
+tsfactor_cpu round 11 (CPU build)
+GCD backend: CERTIFIED half-gcd chain (CPU products, gf2x called directly; every step fold-verified) + verified XGCD finish
+error checking: ON -- h-table chain every 8 block(s), product/reduction/Horner folds every block, init verified, transfers and snapshots verified, reported factors verified; gcd certified
+error checking: detections are logged to d5238.ec.log
+1 survivors from /dev/fd/63
+tuning: m=14 (t_sq 4.858 ms per slot, t_mul 1224.0 ms) (4.2 s)
+memory: h-table 244 MB, scratch 227 MB, snapshots 227 MB each (up to 9, --hsnap-mb 2048)
+interval schedule: expected-cost optimum, G = gcd time / time per degree, measured as the run goes (300 until the first gcd or a checkpoint's value; --sched-G N fixes it)
+r=136279841 skip=55 m=14 gcd-threads=1 pend-max=1 -z
+== s=5238 ==
+By Swan's theorem search at most to degree 45426613
+Exponentiation took 5.754046
+Current q 12
+   [schedule G 300 degrees: gcd 0.0 s, 0.00 ms/degree]
+Interval 56..223:
+   squares/products took 24.4 (wct 24.4), per term 0.145 (wct 0.145)
+   [components cumulative: sq 9.1  horner 0.4  mul 14.3]
+   gcd 56..223 took 41.431773
+Current q 24
+   [schedule G 285 degrees: gcd 41.4 s, 145.10 ms/degree]
+Interval 224..559:
+   squares/products took 54.8 (wct 54.8), per term 0.163 (wct 0.163)
+   [components cumulative: sq 33.4  horner 1.3  mul 42.9]
+   gcd 224..559 took 41.830019
+Current q 38
+   [schedule G 273 degrees: gcd 41.6 s, 152.34 ms/degree]
+Interval 560..1091:
+   squares/products took 80.2 (wct 80.2), per term 0.151 (wct 0.151)
+   [components cumulative: sq 65.1  horner 2.6  mul 88.3]
+   gcd 560..1091 took 43.149065
+Current q 53
+   [schedule G 278 degrees: gcd 42.2 s, 151.71 ms/degree]
+q > 40 so skipping further test
+5238 u
+== s=5238 done in 292.1 s (1036 degrees) ==
+error checking: 74 blocks and 13 h-table chain windows verified; 0 detection(s), 0 restart(s), 0 in-place repair(s), 0 transfer re-read(s), 0 gcd re-run(s)
+error checking: 3 gcd(s) certified, 0 not certified
+done: 0 found, 1 u
+
+real    4m56.742s
+user    4m41.876s
+sys     0m15.556s

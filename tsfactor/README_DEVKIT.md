@@ -1,10 +1,29 @@
-# tsfactor / tsfactor_cpu / factor_ec devkit — round 6 (tsfactor round 10)
+# tsfactor / tsfactor_cpu / factor_ec — round 7 (tsfactor round 11)
 
 Everything needed to continue this work — in the same conversation or a new
-one — and everything Gord needs to try it. The tree is laid out like the
-`tsfactor/` directory of github.com/nclvrps/mersenne_trinomial.
+one — and everything Gord needs to try it. This is the `tsfactor/`
+directory of github.com/nclvrps/mersenne_trinomial (formerly shipped as the
+tsfactor devkit).
 
-## State of the work
+## Round 11 (this round)
+
+* Fixes from Gord's R6 logs: the two nvcc warnings; the prefix lock file is
+  deleted at exit (safely); the "kept for later" note stands out and is
+  repeated at the end; nothing pending → no tuning, exit at once.
+* Exact `--maxd` in the CPU stage: when a survivor's whole scan is one
+  interval, a slightly smaller block size ends it at maxd (m = 16 instead
+  of 17: 56..279 instead of 56..293).
+* "s irreducible" instead of "s primitive" when r is not a Mersenne
+  exponent.
+* Step 5 of R6 explained: factor_ec's gcd is halfgcd.cpp's FastGCD (42.5 s),
+  not NTL's GCD (51 s), so tsfactor_cpu's certified gcd gains 6 s, not 15 s.
+* Survival law for other prime r: `experiments/survlaw/` and the top-level
+  `docs/harness_design.md`, which also proposes a replacement for
+  `mersenne_trinomial.py`.
+* What to run: `docs/TESTPLAN_R7.md`. Details: `docs/tsfactor_handoff.md`,
+  section "Round 11".
+
+## State of the work (round 10)
 
 * **x^136279841 + x^12338357 + 1 is primitive**: tsfactor found no factor,
   irred confirmed irreducibility (Gord, round 5 of the test plans).
@@ -35,18 +54,18 @@ one — and everything Gord needs to try it. The tree is laid out like the
 * **Not compiled by nvcc** (no CUDA in the sandbox). The kernels are
   unchanged; `tsfactor.cu` was rewritten around them. Everything was tested
   under emulation and on the CPU, with gf2x built from Gord's source tree.
-* Documents: `docs/tsfactor_handoff.md` (complete record, Rounds 1–10),
+* Documents: `docs/tsfactor_handoff.md` (complete record, Rounds 1–11),
   `docs/errorcheck_handoff.md` (the mathematics and the ledger, §13),
-  `docs/TESTPLAN_R6.md` (what to run now).
+  `docs/TESTPLAN_R7.md` (what to run now).
 
 ## Layout
 
     README_DEVKIT.md
     docs/
-      tsfactor_handoff.md     COMPLETE record, Rounds 1-10 (Round 10 at the end)
+      tsfactor_handoff.md     COMPLETE record, Rounds 1-11 (Round 11 at the end)
       errorcheck_handoff.md   mathematics, measurements, status ledger (§13)
-      TESTPLAN_R6.md          what to run on the real machine, in order
-      TESTPLAN_R5.md          last round's (results in logs/TESTPLAN_R5)
+      TESTPLAN_R7.md          what to run on the real machine, in order
+      TESTPLAN_R6.md, _R5.md  earlier rounds' (results in logs/TESTPLAN_R6, _R5)
     tsfactor/                 the complete source tree
       ts_core.h               NEW  driver: everything but the arithmetic
       ts_cpu.h                NEW  CPU backend (TsCPU) + its kernel selftests
@@ -76,6 +95,8 @@ one — and everything Gord needs to try it. The tree is laid out like the
     experiments/
       fftbatch_bench.cpp      the measurement behind "CPU frequency-domain
                               batching: not adopted"
+      survlaw/                round 11: least factor degree of every s for 25
+                              prime r (NTL); the survival law k*S(k) per class
     orchestrator/
       mersenne_trinomial.ec.patch   (applied by Gord in round 5)
     logs/

@@ -1,0 +1,6 @@
+2097 survivors from /dev/stdin
+46053 already completed in remnants.results.txt
+
+*** NOTE: 1 checkpoint(s) for s not in this list are kept for later: 16202625 ***
+
+GPU-assisted GCD: on (GPU mults >= 2097152 bits; NTL finish <= 4194304 bits)

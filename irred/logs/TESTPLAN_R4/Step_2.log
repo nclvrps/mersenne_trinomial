@@ -1,0 +1,77 @@
+$ make gputest
+tests/gpu_test.sh build/irred_gpu build
+== selftest
+   This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.23, 20261127, GPU build)
+   GPU 0: NVIDIA GeForce RTX 2070 SUPER (sm_75, 40 SMs, 8191 MB)
+   Backend: GPU (every squaring kernel is tested; the runs use k2)
+   selftest reference chain vs known results: ok
+   selftest GPU squaring kernels vs reference (4 kernels, 5168 cases): ok
+   selftest GPU == CPU, 300 squarings, 4 cases x 4 kernels: ok
+PASS: selftest
+== results against the naive reference (modulus x^r + x^min(s, r-s) + 1)
+PASS: 144 results equal the reference
+PASS: 107 comparisons with the CPU build agree
+== checkpoints passed between the CPU and GPU builds
+PASS: CPU checkpoint resumed by the GPU build, result irreducible
+PASS: GPU checkpoint resumed by the CPU build
+PASS: no files left
+PASS: s even: the CPU checkpoint is recognised and not used
+== fault sweeps (as tests/ec_sweep_all.sh)
+tests/gpu_test.sh: line 72: sw.out: Permission denied
+sed: can't read sw.out: No such file or directory
+FAIL: fault sweeps
+gpu tests: 7 passed, 1 failed
+make: *** [Makefile:94: gputest] Error 1
+
+
+################
+--- a/gpu_test.sh 2026-11-27 02:20:12.906987884 -0500
++++ b/gpu_test.sh 2026-11-27 03:43:17.389984883 -0500
+@@ -66,7 +66,7 @@
+ $G --ckpt-mins 0 --stop-after 2000 $R $S > c2.out 2>/dev/null; rc=$?
+ grep -q 'it holds powers of x modulo' c2.out && ! grep -q '^Resuming' c2.out && [ $rc = 2 ] \
+   && ok "s even: the CPU checkpoint is recognised and not used" || bad "s even: $(grep -i -E 'ignor|resum' c2.out)"
+-cd /; rm -rf $W
++rm -rf $W
+
+ echo "== fault sweeps (as tests/ec_sweep_all.sh)"
+ $T/ec_sweep_all.sh $G > sw.out 2>&1; rc=$?
+################
+
+
+##### This took a couple of hours to complete
+
+$ bash -x tests/ec_sweep_all.sh build/irred_gpu > sw.out 2>&1
+
+$ tail -F ../sw.out
++ B=build/irred_gpu
+++ dirname tests/ec_sweep_all.sh
++ T=tests
++ rc=0
++ tests/ec_sweep.sh build/irred_gpu 1279 500 sq 1279
+r=1279 s=500 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1274, harmless=5
++ tests/ec_sweep.sh build/irred_gpu 1279 418 sq 1279
+r=1279 s=418 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1279, harmless=0
++ tests/ec_sweep.sh build/irred_gpu 1279 500 sq 1279 --ec-block 8 --ec-window 4
+r=1279 s=500 site=sq opts='--ec-block 8 --ec-window 4': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1274, harmless=5
++ tests/ec_sweep.sh build/irred_gpu 4423 2098 sq 4423 --isa generic
+r=4423 s=2098 site=sq opts='--isa generic': injected=4423 detected=4423 right=4423 wrong=0 | unchecked: silently wrong=4423, harmless=0
++ for site in acc chk ver
++ tests/ec_sweep.sh build/irred_gpu 1279 500 acc 200 --ec-block 8 --ec-window 4
+r=1279 s=500 site=acc opts='--ec-block 8 --ec-window 4': injected=119 detected=119 right=119 wrong=0
++ tests/ec_sweep.sh build/irred_gpu 4423 1000 acc 200
+r=4423 s=1000 site=acc opts='': injected=133 detected=133 right=133 wrong=0
++ for site in acc chk ver
++ tests/ec_sweep.sh build/irred_gpu 1279 500 chk 200 --ec-block 8 --ec-window 4
+r=1279 s=500 site=chk opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0
++ tests/ec_sweep.sh build/irred_gpu 4423 1000 chk 200
+r=4423 s=1000 site=chk opts='': injected=6 detected=6 right=6 wrong=0
++ for site in acc chk ver
++ tests/ec_sweep.sh build/irred_gpu 1279 500 ver 200 --ec-block 8 --ec-window 4
+r=1279 s=500 site=ver opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0
++ tests/ec_sweep.sh build/irred_gpu 4423 1000 ver 200
+r=4423 s=1000 site=ver opts='': injected=6 detected=6 right=6 wrong=0
++ '[' 0 -eq 0 ']'
++ echo 'fault sweep: all injected faults detected, all results right'
+fault sweep: all injected faults detected, all results right
++ exit 0

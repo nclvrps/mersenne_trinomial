@@ -1,0 +1,28 @@
+Step 1: There was a small compiler warning for an unused variable
+Step 2: The final "fault sweeps" part of gpu_test.sh initially failed to run due to a stray "cd /" statement. I edited this out before committing the file to the Git repository. When it did run, that part took a couple of hours rather than 5 minutes you anticipated for this entire step. But it did complete successfully.
+Step 3: k2 was the fastest, with k4 a close second, almost twice as fast as fused.
+Step 4: The interim residues at 1M intervals all matched the ones during the CPU run in the last round, and irreducibillity is confirmed. I have now included that CPU run (from November 20, 2026) here for comparison as irred_cpu_12338357.log even though it belongs to an earlier round.
+
+
+docs/irred_handoff.md
+
+* 1a (tsfactor could use the new squaring kernels): given the speedup seen in Step 3 above, it would be great to implement this. Perhaps there should be a separate subdirectory for include files, etc. that are shared between different programs, such as cuda_emul.h already being shared between coarse_sieve and tsfactor, and now gf2_trin_sqr.cuh will probably be shared between irred and tsfactor
+* 1b (harness design ideas) There is a lot to digest and I will try to address some of it in the chat.
+* 4 (Verify the unchecked prefix of a run that 0.21 continued from 0.20): I don't know if this is still relevant, because development moved rapidly from 0.20 to 0.21 to 0.22 in a few days, and no one else used the older versions during that time period, and no old checkpoint files still exist. In case it's useful, I include below the log output for the transition from 0.20 to 0.21 in irred_cpu_12338357.log:
+* 5 (README.md for the main mersenne_trinomial directory): I will try to work on this soon. The current version of the file is more of a math tutorial aimed at solidifying my own understanding rather than documentation for this project. I'll try to create the latter and move the current README.md to another filename.
+
+################
+iter 53500000/136279841 ( 39.26%)  2.62 ms/iter  ETA 2.51 days  residue e5a8b91b74eb0bf4
+iter 53600000/136279841 ( 39.33%)  2.55 ms/iter  ETA 2.44 days  residue 3e5785e84dd9a34c
+[checkpoint: 53604160/136279841 squarings (39.33%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.21, 20261119)
+Testing x^136279841 + x^12338357 + 1
+Threads: 2
+Resuming from irred_r136279841_s12338357.ckpt (written 2026-11-19 08:34:38): 53604160/136279841 squarings done (39
+.33%) in 37.58 h, residue 23d32bf23825d482
+  (a version 1 checkpoint from irred 0.20: its 53604160 squarings were done without error checking)
+Checkpointing to irred_r136279841_s12338357.ckpt every 30 minutes
+Error checking: Gerbicz XOR chain, blocks of 729 squarings, windows of up to 729 blocks; map check passed
+iter 53700000/136279841 ( 39.40%)  1.53 ms/iter  ETA 35.02 h  residue 400c43b804fc086c  (verified to 53604160)
+iter 53800000/136279841 ( 39.48%)  1.52 ms/iter  ETA 34.92 h  residue 2ad0af2e5384c192  (verified to 53604160)
+################

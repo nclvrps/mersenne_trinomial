@@ -1,0 +1,50 @@
+$ cd irred
+
+$ make
+cc -O3 -march=native -fopenmp -Wall -Wextra -o build/irred irred/irred.c -lm
+cc -O3 -fopenmp -Wall -Wextra -o build/irred_generic irred/irred.c -lm
+cc -O1 -g -fopenmp -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -fno-omit-frame-pointer -o build/irred_asan irred/irred.c -lm
+cc -O2 -o build/ref tools/ref.c
+cc -O3 -march=native -fopenmp -Wall -Wextra -DIRRED_GPU -c -o build/irred_gpu.o irred/irred.c
+nvcc -O3 -arch=native -Iirred -o build/irred_gpu irred/irred_gpu.cu build/irred_gpu.o \
+    -lm -Xcompiler -fopenmp
+irred/irred_gpu.cu(61): warning #550-D: variable "g_dev" was set but never used
+  static int g_dev = -1;
+             ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+
+$ make selftest
+build/irred --selftest | tail -1
+selftest passed
+build/irred --selftest --isa avx2 | tail -1
+selftest passed
+build/irred --selftest --isa generic | tail -1
+selftest passed
+build/irred --selftest --nt | tail -1
+selftest passed
+build/irred_generic --selftest | tail -1
+selftest passed
+build/irred_asan --selftest | tail -1
+selftest passed
+build/irred --selftest --threads 2 | tail -1
+selftest passed
+build/irred_asan --selftest --threads 3 | tail -1
+selftest passed
+
+
+$ build/irred_gpu --selftest | grep -E 'GPU|passed|FAILED'
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.23, 20261127, GPU build)
+GPU 0: NVIDIA GeForce RTX 2070 SUPER (sm_75, 40 SMs, 8191 MB)
+Backend: GPU (every squaring kernel is tested; the runs use k2)
+selftest GPU squaring kernels vs reference (4 kernels, 5168 cases): ok
+selftest GPU == CPU, 300 squarings, 4 cases x 4 kernels: ok
+ERROR CHECK FAILED for squarings 1..1024 (32 blocks of 32): hardware or software fault; redoing them
+ERROR CHECK FAILED for squarings 3073..4096 (32 blocks of 32): hardware or software fault; redoing them
+ERROR CHECK FAILED for squarings 4417..4423 (1 blocks of 7): hardware or software fault; redoing them
+ERROR CHECK FAILED for squarings 1..1024 (32 blocks of 32): hardware or software fault; redoing them
+ERROR CHECK FAILED for squarings 1025..2048 (32 blocks of 32): hardware or software fault; redoing them
+ERROR CHECK FAILED for squarings 2049..3072 (32 blocks of 32): hardware or software fault; redoing them
+selftest passed

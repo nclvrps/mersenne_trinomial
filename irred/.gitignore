@@ -1,8 +1,5 @@
-build/irred
-build/irred014
-build/irred020
-build/irred315
-build/irred_asan
-build/irred_bug014
-build/irred_generic
-build/ref
+build/
+*.ckpt
+*.ckpt.[12]
+*.ckpt.tmp
+*.lock

@@ -1,0 +1,37 @@
+== selftest
+   This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.23, 20261127, GPU build)
+   GPU 0: emulated GPU (sm_75, 4 SMs, 65536 MB)
+   Backend: GPU (every squaring kernel is tested; the runs use k2)
+   selftest reference chain vs known results: ok
+   selftest GPU squaring kernels vs reference (4 kernels, 5168 cases): ok
+   selftest GPU == CPU, 300 squarings, 4 cases x 4 kernels: ok
+PASS: selftest
+== results against the naive reference (modulus x^r + x^min(s, r-s) + 1)
+PASS: 144 results equal the reference
+PASS: 107 comparisons with the CPU build agree
+== checkpoints passed between the CPU and GPU builds
+PASS: CPU checkpoint resumed by the GPU build, result irreducible
+PASS: GPU checkpoint resumed by the CPU build
+PASS: no files left
+PASS: s even: the CPU checkpoint is recognised and not used
+== fault sweeps (as tests/ec_sweep_all.sh)
+   r=1279 s=500 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1274, harmless=5
+   r=1279 s=418 site=sq opts='': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1279, harmless=0
+   r=1279 s=500 site=sq opts='--ec-block 8 --ec-window 4': injected=1279 detected=1279 right=1279 wrong=0 | unchecked: silently wrong=1274, harmless=5
+   r=4423 s=2098 site=sq opts='--isa generic': injected=4423 detected=4423 right=4423 wrong=0 | unchecked: silently wrong=4423, harmless=0
+   r=1279 s=500 site=acc opts='--ec-block 8 --ec-window 4': injected=119 detected=119 right=119 wrong=0 
+   r=4423 s=1000 site=acc opts='': injected=133 detected=133 right=133 wrong=0 
+   r=1279 s=500 site=chk opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0 
+   r=4423 s=1000 site=chk opts='': injected=6 detected=6 right=6 wrong=0 
+   r=1279 s=500 site=ver opts='--ec-block 8 --ec-window 4': injected=41 detected=41 right=41 wrong=0 
+   r=4423 s=1000 site=ver opts='': injected=6 detected=6 right=6 wrong=0 
+   fault sweep: all injected faults detected, all results right
+PASS: fault sweeps
+== r = 136279841, s = 12338357: residues at 2000 and 4000 (CPU build: Zen 2 log)
+   GPU 0: emulated GPU (sm_75, 4 SMs, 65536 MB)
+   GPU squaring kernel: k8 21.167 ms (fused 44.184, k2 30.081, k4 28.321)
+   iter 2000/136279841 (  0.00%)  21.6 ms/iter  ETA 34.04 days  residue 524cef6916ae5278  (verified to 0)
+   iter 4000/136279841 (  0.00%)  22.2 ms/iter  ETA 34.95 days  residue d61458d6bb7b0384  (verified to 0)
+PASS: full size: residues equal the CPU build's
+gpu tests: 9 passed, 0 failed
+exit 0

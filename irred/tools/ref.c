@@ -1,13 +1,23 @@
-/* Naive reference: low 64 bits of x^(2^r) mod (x^r + x^sodd + 1) over GF(2),
-   sodd = whichever of s, r-s is odd.  Bit-at-a-time, O(r^2); for testing only.
-   Prints "r s x<16hex>" / "r s y<16hex>" or "r s irreducible". */
+/* Naive reference: low 64 bits of x^(2^r) mod (x^r + x^m + 1) over GF(2).
+   Bit-at-a-time, O(r^2); for testing only.
+
+     ref r s        m = sodd, whichever of s, r-s is odd (as irred on a CPU)
+     ref r s gpu    m = min(s, r-s)                      (as irred_gpu)
+     ref r s M      m = M (M = s or r - s)
+
+   Prints "r s x<16hex>" (m = s) / "r s y<16hex>" (m = r - s, the
+   reciprocal trinomial) or "r s irreducible". */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 int main(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: ref r s [gpu|m]\n"); return 1; }
     int r = atoi(argv[1]), s = atoi(argv[2]);
     int so = (s & 1) ? s : r - s;
+    if (argc > 3) so = strcmp(argv[3], "gpu") == 0 ? (s < r - s ? s : r - s)
+                                                 : atoi(argv[3]);
+    if (so != s && so != r - s) { fprintf(stderr, "m must be s or r - s\n"); return 1; }
     unsigned char *a = calloc(r, 1), *c = calloc(2 * r, 1);
     a[1] = 1;
     for (int k = 0; k < r; k++) {

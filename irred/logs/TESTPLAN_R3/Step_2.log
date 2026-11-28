@@ -1,5 +1,4 @@
-$ build/irred --no-ckpt --progress 2000 --stop-after 30000 1
-36279841 12338357
+$ build/irred --no-ckpt --progress 2000 --stop-after 30000 136279841 12338357
 This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.22, 20261125)
 Testing x^136279841 + x^12338357 + 1
 Streaming stores: on (squaring buffers 32 MB > 16 MB L3 cache; --no-nt turns them off)

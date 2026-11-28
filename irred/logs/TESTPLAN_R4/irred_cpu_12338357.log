@@ -1,0 +1,1533 @@
+This is irred (forked github.com/nclvrps/irred version 0.20, 20261117)
+Testing x^136279841 + x^12338357 + 1
+Checkpointing to irred_r136279841_s12338357.ckpt every 30 minutes
+iter 100000/136279841 (  0.07%)  2.53 ms/iter  ETA 3.98 days  residue bdb71d838ca8ac10
+iter 200000/136279841 (  0.15%)  2.51 ms/iter  ETA 3.96 days  residue dd35826c681d13b0
+iter 300000/136279841 (  0.22%)  2.52 ms/iter  ETA 3.97 days  residue 8dd4fa76b5ea4af6
+iter 400000/136279841 (  0.29%)  2.47 ms/iter  ETA 3.88 days  residue ece1cd4a89b71462
+iter 500000/136279841 (  0.37%)  2.48 ms/iter  ETA 3.90 days  residue a608e4a1f75b313c
+iter 600000/136279841 (  0.44%)  2.51 ms/iter  ETA 3.95 days  residue ce81d174281b89fa
+iter 700000/136279841 (  0.51%)  2.5 ms/iter  ETA 3.92 days  residue e8a280c8f5e063f4
+[checkpoint: 719232/136279841 squarings (0.53%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 800000/136279841 (  0.59%)  2.48 ms/iter  ETA 3.89 days  residue 6a04a824e55ba392
+iter 900000/136279841 (  0.66%)  2.46 ms/iter  ETA 3.85 days  residue c4186b628fa314ce
+iter 1000000/136279841 (  0.73%)  2.46 ms/iter  ETA 3.84 days  residue 2f0ad6f634e15d82
+iter 1100000/136279841 (  0.81%)  2.47 ms/iter  ETA 3.87 days  residue 6b4da8bb22f07a76
+iter 1200000/136279841 (  0.88%)  2.45 ms/iter  ETA 3.83 days  residue a1fb72fcdc790f94
+iter 1300000/136279841 (  0.95%)  2.43 ms/iter  ETA 3.79 days  residue 73e2ebf73b87aff4
+iter 1400000/136279841 (  1.03%)  2.45 ms/iter  ETA 3.83 days  residue 12154e7e3ac443be
+[checkpoint: 1451136/136279841 squarings (1.06%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 1500000/136279841 (  1.10%)  2.49 ms/iter  ETA 3.89 days  residue 973ba696c4a1af76
+iter 1600000/136279841 (  1.17%)  2.5 ms/iter  ETA 3.90 days  residue 3df7a8b456255006
+iter 1700000/136279841 (  1.25%)  2.48 ms/iter  ETA 3.86 days  residue c6851f253f16ba52
+iter 1800000/136279841 (  1.32%)  2.52 ms/iter  ETA 3.92 days  residue 8655587581ea03ca
+iter 1900000/136279841 (  1.39%)  2.51 ms/iter  ETA 3.90 days  residue a148f78c974a556c
+iter 2000000/136279841 (  1.47%)  2.53 ms/iter  ETA 3.93 days  residue cf25b394b4be7086
+iter 2100000/136279841 (  1.54%)  2.55 ms/iter  ETA 3.96 days  residue 180505f4b1a659be
+[checkpoint: 2166528/136279841 squarings (1.59%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 2200000/136279841 (  1.61%)  2.55 ms/iter  ETA 3.96 days  residue ee1981673df6c874
+iter 2300000/136279841 (  1.69%)  2.51 ms/iter  ETA 3.89 days  residue a5e765d9c4ea6c40
+iter 2400000/136279841 (  1.76%)  2.52 ms/iter  ETA 3.90 days  residue 3b67374b98b18dd4
+iter 2500000/136279841 (  1.83%)  2.53 ms/iter  ETA 3.92 days  residue 1ee2560e1ab710ae
+iter 2600000/136279841 (  1.91%)  2.53 ms/iter  ETA 3.92 days  residue 745d12bf630b0146
+iter 2700000/136279841 (  1.98%)  2.59 ms/iter  ETA 4.01 days  residue 5d7f204c173b8a6e
+iter 2800000/136279841 (  2.05%)  2.53 ms/iter  ETA 3.90 days  residue fa9432f7fb5efeda
+[checkpoint: 2876288/136279841 squarings (2.11%) -> irred_r136279841_s12338357.ckpt, 0.12 s]
+This is irred (forked github.com/nclvrps/irred version 0.20, 20261117)
+Testing x^136279841 + x^12338357 + 1
+Resuming from irred_r136279841_s12338357.ckpt (written 2026-11-17 20:19:49): 2888251/136279841 squarings done (2.12%) in 2.01 h
+Checkpointing to irred_r136279841_s12338357.ckpt every 30 minutes
+iter 2900000/136279841 (  2.13%)  2.44 ms/iter  ETA 3.76 days  residue 6b2a4a5af984ffd0
+iter 3000000/136279841 (  2.20%)  2.51 ms/iter  ETA 3.87 days  residue 7f19105b825c35be
+iter 3100000/136279841 (  2.27%)  2.74 ms/iter  ETA 4.22 days  residue 64c912d365fedd34
+iter 3200000/136279841 (  2.35%)  2.52 ms/iter  ETA 3.89 days  residue 225064780363fd32
+iter 3300000/136279841 (  2.42%)  2.52 ms/iter  ETA 3.88 days  residue 4e56541074415290
+iter 3400000/136279841 (  2.49%)  2.55 ms/iter  ETA 3.91 days  residue cf3e9d1d539a8d4e
+iter 3500000/136279841 (  2.57%)  2.55 ms/iter  ETA 3.91 days  residue 1fe9f82422aed3ac
+[checkpoint: 3592128/136279841 squarings (2.64%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 3600000/136279841 (  2.64%)  2.54 ms/iter  ETA 3.89 days  residue 119622a217193240
+iter 3700000/136279841 (  2.72%)  2.5 ms/iter  ETA 3.83 days  residue 0ac5a37a4927d9da
+iter 3800000/136279841 (  2.79%)  2.51 ms/iter  ETA 3.85 days  residue 04f7cf9a754bb27a
+iter 3900000/136279841 (  2.86%)  2.47 ms/iter  ETA 3.79 days  residue fcda4e975da60d02
+iter 4000000/136279841 (  2.94%)  2.47 ms/iter  ETA 3.79 days  residue acab7847580bd5b4
+iter 4100000/136279841 (  3.01%)  2.47 ms/iter  ETA 3.78 days  residue d629cd2da8ac407c
+iter 4200000/136279841 (  3.08%)  2.48 ms/iter  ETA 3.80 days  residue 4210cdfa6de7338a
+iter 4300000/136279841 (  3.16%)  2.48 ms/iter  ETA 3.79 days  residue 07e47a80d48ef656
+[checkpoint: 4316800/136279841 squarings (3.17%) -> irred_r136279841_s12338357.ckpt, 0.10 s]
+iter 4400000/136279841 (  3.23%)  2.48 ms/iter  ETA 3.79 days  residue c56d44d49b1b923a
+iter 4500000/136279841 (  3.30%)  2.51 ms/iter  ETA 3.82 days  residue 4b863ae88165c5f0
+iter 4600000/136279841 (  3.38%)  2.62 ms/iter  ETA 3.99 days  residue 605642a6e96e30a4
+iter 4700000/136279841 (  3.45%)  2.59 ms/iter  ETA 3.94 days  residue 64e1b45ce8dae286
+iter 4800000/136279841 (  3.52%)  2.63 ms/iter  ETA 4.00 days  residue 595e2e2333afe590
+iter 4900000/136279841 (  3.60%)  2.58 ms/iter  ETA 3.93 days  residue 860dd8eb114f746c
+iter 5000000/136279841 (  3.67%)  2.72 ms/iter  ETA 4.13 days  residue a1466e87c01840b8
+[checkpoint: 5011776/136279841 squarings (3.68%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 5100000/136279841 (  3.74%)  2.67 ms/iter  ETA 4.05 days  residue 06077876827d8610
+iter 5200000/136279841 (  3.82%)  2.72 ms/iter  ETA 4.12 days  residue f0be7c642fdb55ec
+iter 5300000/136279841 (  3.89%)  2.69 ms/iter  ETA 4.08 days  residue d1ba0046af7b4568
+iter 5400000/136279841 (  3.96%)  2.65 ms/iter  ETA 4.01 days  residue b8c16299b3a196c0
+iter 5500000/136279841 (  4.04%)  2.66 ms/iter  ETA 4.02 days  residue 162044bb822c3f70
+iter 5600000/136279841 (  4.11%)  2.64 ms/iter  ETA 3.99 days  residue 3a1d327dc09e4f82
+[checkpoint: 5687488/136279841 squarings (4.17%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 5700000/136279841 (  4.18%)  2.61 ms/iter  ETA 3.94 days  residue 52b1407a177bed18
+iter 5800000/136279841 (  4.26%)  2.56 ms/iter  ETA 3.86 days  residue d3f8818de5623f88
+iter 5900000/136279841 (  4.33%)  2.48 ms/iter  ETA 3.74 days  residue 5cb58a6ebd28acde
+iter 6000000/136279841 (  4.40%)  2.5 ms/iter  ETA 3.76 days  residue 1cadd3d486474bae
+iter 6100000/136279841 (  4.48%)  2.48 ms/iter  ETA 3.74 days  residue 93cde25b78612b6e
+iter 6200000/136279841 (  4.55%)  2.48 ms/iter  ETA 3.74 days  residue 690bf6877979dd08
+iter 6300000/136279841 (  4.62%)  2.49 ms/iter  ETA 3.74 days  residue f6cce6aa34aab1aa
+iter 6400000/136279841 (  4.70%)  2.48 ms/iter  ETA 3.73 days  residue 52cdfa7038ebe2ae
+[checkpoint: 6408832/136279841 squarings (4.70%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 6500000/136279841 (  4.77%)  2.47 ms/iter  ETA 3.71 days  residue d9db376bd7881ed2
+iter 6600000/136279841 (  4.84%)  2.49 ms/iter  ETA 3.74 days  residue 25e9b7b7e23250e4
+iter 6700000/136279841 (  4.92%)  2.49 ms/iter  ETA 3.73 days  residue 3662193359b86006
+iter 6800000/136279841 (  4.99%)  2.47 ms/iter  ETA 3.70 days  residue 42b2b083f866dd78
+iter 6900000/136279841 (  5.06%)  2.49 ms/iter  ETA 3.73 days  residue 4643b34d836de13a
+iter 7000000/136279841 (  5.14%)  2.49 ms/iter  ETA 3.73 days  residue ca96e444eab47c66
+iter 7100000/136279841 (  5.21%)  2.48 ms/iter  ETA 3.70 days  residue 35c92fe831ba4bd4
+[checkpoint: 7133952/136279841 squarings (5.23%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 7200000/136279841 (  5.28%)  2.48 ms/iter  ETA 3.70 days  residue 3cb5c7b4b9257946
+iter 7300000/136279841 (  5.36%)  2.48 ms/iter  ETA 3.71 days  residue dae73bf3a36b5f12
+iter 7400000/136279841 (  5.43%)  2.49 ms/iter  ETA 3.72 days  residue 8fa79e1b7b06945a
+iter 7500000/136279841 (  5.50%)  2.47 ms/iter  ETA 3.69 days  residue c3b61b4cdf41c454
+iter 7600000/136279841 (  5.58%)  2.49 ms/iter  ETA 3.71 days  residue ceb737f9b3d48858
+iter 7700000/136279841 (  5.65%)  2.48 ms/iter  ETA 3.68 days  residue fd665c134e23a36e
+iter 7800000/136279841 (  5.72%)  2.5 ms/iter  ETA 3.71 days  residue 0ed0777ab88c3f80
+[checkpoint: 7858688/136279841 squarings (5.77%) -> irred_r136279841_s12338357.ckpt, 0.11 s]
+iter 7900000/136279841 (  5.80%)  2.48 ms/iter  ETA 3.68 days  residue b4a990ae1fa44fec
+iter 8000000/136279841 (  5.87%)  2.5 ms/iter  ETA 3.71 days  residue 615ad3715f56c8fe
+iter 8100000/136279841 (  5.94%)  2.5 ms/iter  ETA 3.70 days  residue b86b1eba2b1d1bd4
+iter 8200000/136279841 (  6.02%)  2.49 ms/iter  ETA 3.68 days  residue fa5cf82a4ae4dce2
+iter 8300000/136279841 (  6.09%)  2.5 ms/iter  ETA 3.70 days  residue 7402947ae86c372e
+iter 8400000/136279841 (  6.16%)  2.48 ms/iter  ETA 3.67 days  residue 9f0342d97d2452c4
+iter 8500000/136279841 (  6.24%)  2.49 ms/iter  ETA 3.68 days  residue 79fc5d7a62c0cdf6
+[checkpoint: 8581440/136279841 squarings (6.30%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 8600000/136279841 (  6.31%)  2.49 ms/iter  ETA 3.68 days  residue f62e01597f86d728
+iter 8700000/136279841 (  6.38%)  2.61 ms/iter  ETA 3.86 days  residue 81ea4eb3ee89a4d2
+iter 8800000/136279841 (  6.46%)  2.5 ms/iter  ETA 3.68 days  residue ad0a0b0222051886
+iter 8900000/136279841 (  6.53%)  2.5 ms/iter  ETA 3.68 days  residue 4465316bc62abdd2
+iter 9000000/136279841 (  6.60%)  2.52 ms/iter  ETA 3.71 days  residue 4cc52f41da9d0fd6
+iter 9100000/136279841 (  6.68%)  2.49 ms/iter  ETA 3.67 days  residue 8177385a30d5f70a
+iter 9200000/136279841 (  6.75%)  2.49 ms/iter  ETA 3.66 days  residue 2b37e57ffa3265da
+[checkpoint: 9298112/136279841 squarings (6.82%) -> irred_r136279841_s12338357.ckpt, 0.09 s]
+iter 9300000/136279841 (  6.82%)  2.48 ms/iter  ETA 3.64 days  residue d20762098ad70642
+iter 9400000/136279841 (  6.90%)  2.49 ms/iter  ETA 3.66 days  residue 26e539ee3e89a664
+iter 9500000/136279841 (  6.97%)  2.55 ms/iter  ETA 3.74 days  residue 8c4b78d68e7236bc
+iter 9600000/136279841 (  7.04%)  2.51 ms/iter  ETA 3.68 days  residue 5a0e52ad918b203c
+iter 9700000/136279841 (  7.12%)  2.49 ms/iter  ETA 3.64 days  residue 3cdd0f38240d428a
+iter 9800000/136279841 (  7.19%)  2.5 ms/iter  ETA 3.65 days  residue 45aec147200a2112
+iter 9900000/136279841 (  7.26%)  2.48 ms/iter  ETA 3.63 days  residue bfd18b6db77adaca
+iter 10000000/136279841 (  7.34%)  2.48 ms/iter  ETA 3.62 days  residue 6fba0763177c9cb6
+[checkpoint: 10018368/136279841 squarings (7.35%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 10100000/136279841 (  7.41%)  2.49 ms/iter  ETA 3.64 days  residue d6e6e28eed81dfbe
+iter 10200000/136279841 (  7.48%)  2.52 ms/iter  ETA 3.67 days  residue c91f556cd9c01658
+iter 10300000/136279841 (  7.56%)  2.52 ms/iter  ETA 3.67 days  residue b3033a9f027cd10e
+iter 10400000/136279841 (  7.63%)  2.48 ms/iter  ETA 3.62 days  residue 7608a837c0a2725c
+iter 10500000/136279841 (  7.70%)  2.49 ms/iter  ETA 3.63 days  residue 8b59166487bf4b2a
+iter 10600000/136279841 (  7.78%)  2.49 ms/iter  ETA 3.62 days  residue 3ce190d30e51de4e
+iter 10700000/136279841 (  7.85%)  2.48 ms/iter  ETA 3.60 days  residue 09b18e314dedcb14
+[checkpoint: 10740096/136279841 squarings (7.88%) -> irred_r136279841_s12338357.ckpt, 0.09 s]
+iter 10800000/136279841 (  7.92%)  2.48 ms/iter  ETA 3.61 days  residue 7c29f1a73197855a
+iter 10900000/136279841 (  8.00%)  2.49 ms/iter  ETA 3.61 days  residue 6116e316453ef50e
+iter 11000000/136279841 (  8.07%)  2.48 ms/iter  ETA 3.59 days  residue a0ef2e655999dab0
+iter 11100000/136279841 (  8.15%)  2.51 ms/iter  ETA 3.64 days  residue bf8edcaadd739fdc
+iter 11200000/136279841 (  8.22%)  2.49 ms/iter  ETA 3.60 days  residue b47fb329e3820c38
+iter 11300000/136279841 (  8.29%)  2.48 ms/iter  ETA 3.59 days  residue 4468fa059fa1540a
+iter 11400000/136279841 (  8.37%)  2.49 ms/iter  ETA 3.60 days  residue 1634ec30fdd5a1a0
+[checkpoint: 11462464/136279841 squarings (8.41%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 11500000/136279841 (  8.44%)  2.53 ms/iter  ETA 3.65 days  residue fb0f81b943296200
+iter 11600000/136279841 (  8.51%)  2.48 ms/iter  ETA 3.57 days  residue 2639cb2a6cda17d6
+iter 11700000/136279841 (  8.59%)  2.48 ms/iter  ETA 3.57 days  residue 5e5e71d195d747c0
+iter 11800000/136279841 (  8.66%)  2.47 ms/iter  ETA 3.56 days  residue 876e3a52b8c70826
+iter 11900000/136279841 (  8.73%)  2.47 ms/iter  ETA 3.55 days  residue 3ed6d1b3b1648afc
+iter 12000000/136279841 (  8.81%)  2.47 ms/iter  ETA 3.56 days  residue 1408ab39f8fa6150
+iter 12100000/136279841 (  8.88%)  2.51 ms/iter  ETA 3.60 days  residue 7b1621661e0afe32
+[checkpoint: 12188160/136279841 squarings (8.94%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 12200000/136279841 (  8.95%)  2.48 ms/iter  ETA 3.57 days  residue 99feacadfb7a1eac
+iter 12300000/136279841 (  9.03%)  2.48 ms/iter  ETA 3.56 days  residue 20e1a3180f394416
+iter 12400000/136279841 (  9.10%)  2.47 ms/iter  ETA 3.54 days  residue 1182c541722a5464
+iter 12500000/136279841 (  9.17%)  2.48 ms/iter  ETA 3.55 days  residue f67c2e9bd161f68e
+iter 12600000/136279841 (  9.25%)  2.48 ms/iter  ETA 3.55 days  residue 6a0ca6adb00ebe1e
+iter 12700000/136279841 (  9.32%)  2.47 ms/iter  ETA 3.54 days  residue 61e51bb41f05af28
+iter 12800000/136279841 (  9.39%)  2.47 ms/iter  ETA 3.53 days  residue 95a2945c60d5b5d6
+iter 12900000/136279841 (  9.47%)  2.49 ms/iter  ETA 3.55 days  residue 4539cec11fe52e26
+[checkpoint: 12914688/136279841 squarings (9.48%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 13000000/136279841 (  9.54%)  2.49 ms/iter  ETA 3.55 days  residue 9122b5059ee314c4
+iter 13100000/136279841 (  9.61%)  2.53 ms/iter  ETA 3.61 days  residue c50fcf4c3e31b29c
+iter 13200000/136279841 (  9.69%)  2.49 ms/iter  ETA 3.55 days  residue cb8eb1dbb1a2d7ea
+iter 13300000/136279841 (  9.76%)  2.47 ms/iter  ETA 3.52 days  residue 1a673de1f820dd18
+iter 13400000/136279841 (  9.83%)  2.47 ms/iter  ETA 3.52 days  residue 3c00550888ca8914
+iter 13500000/136279841 (  9.91%)  2.48 ms/iter  ETA 3.52 days  residue d2b6a45a8bbb4218
+iter 13600000/136279841 (  9.98%)  2.49 ms/iter  ETA 3.53 days  residue e894eaf958720746
+[checkpoint: 13638080/136279841 squarings (10.01%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 13700000/136279841 ( 10.05%)  2.47 ms/iter  ETA 3.50 days  residue 70bfc27bd108e48e
+iter 13800000/136279841 ( 10.13%)  2.47 ms/iter  ETA 3.50 days  residue a194870bc83b100e
+iter 13900000/136279841 ( 10.20%)  2.48 ms/iter  ETA 3.51 days  residue 39248cd9456419fa
+iter 14000000/136279841 ( 10.27%)  2.57 ms/iter  ETA 3.64 days  residue ca5aaa00f32406c4
+iter 14100000/136279841 ( 10.35%)  2.64 ms/iter  ETA 3.73 days  residue 70b3c28c6c920fe4
+iter 14200000/136279841 ( 10.42%)  2.63 ms/iter  ETA 3.72 days  residue c8e6c7e77e878270
+iter 14300000/136279841 ( 10.49%)  2.58 ms/iter  ETA 3.64 days  residue aafe2dd644846216
+[checkpoint: 14343680/136279841 squarings (10.53%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 14400000/136279841 ( 10.57%)  2.51 ms/iter  ETA 3.55 days  residue 9593a15f946f52f6
+iter 14500000/136279841 ( 10.64%)  2.48 ms/iter  ETA 3.50 days  residue da7d4460c3004484
+iter 14600000/136279841 ( 10.71%)  2.51 ms/iter  ETA 3.53 days  residue b8ef7007cae7d26c
+iter 14700000/136279841 ( 10.79%)  2.57 ms/iter  ETA 3.61 days  residue 4839543f88ee22d0
+iter 14800000/136279841 ( 10.86%)  2.63 ms/iter  ETA 3.69 days  residue 5e33dec71e457970
+iter 14900000/136279841 ( 10.93%)  2.49 ms/iter  ETA 3.50 days  residue d3275b1d5d17218e
+iter 15000000/136279841 ( 11.01%)  2.49 ms/iter  ETA 3.49 days  residue f3f147a19967aa98
+[checkpoint: 15057856/136279841 squarings (11.05%) -> irred_r136279841_s12338357.ckpt, 0.09 s]
+iter 15100000/136279841 ( 11.08%)  2.47 ms/iter  ETA 3.47 days  residue 41ade58f0655e3fe
+iter 15200000/136279841 ( 11.15%)  2.48 ms/iter  ETA 3.47 days  residue d3888e9fcf15fdfe
+iter 15300000/136279841 ( 11.23%)  2.49 ms/iter  ETA 3.48 days  residue 6b1b855838fa2792
+iter 15400000/136279841 ( 11.30%)  2.5 ms/iter  ETA 3.49 days  residue f28908104331fb62
+iter 15500000/136279841 ( 11.37%)  2.49 ms/iter  ETA 3.49 days  residue 9ff988f984978ad6
+iter 15600000/136279841 ( 11.45%)  2.49 ms/iter  ETA 3.48 days  residue 87d9e729266651fa
+iter 15700000/136279841 ( 11.52%)  2.48 ms/iter  ETA 3.46 days  residue 7a99963372f5bfca
+[checkpoint: 15782016/136279841 squarings (11.58%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 15800000/136279841 ( 11.59%)  2.49 ms/iter  ETA 3.47 days  residue b5e292708f561196
+iter 15900000/136279841 ( 11.67%)  2.47 ms/iter  ETA 3.44 days  residue 10884f94db39e064
+iter 16000000/136279841 ( 11.74%)  2.46 ms/iter  ETA 3.42 days  residue 90c7dc9d56de3f62
+iter 16100000/136279841 ( 11.81%)  2.49 ms/iter  ETA 3.46 days  residue cf8655fb63914f04
+iter 16200000/136279841 ( 11.89%)  2.49 ms/iter  ETA 3.47 days  residue 8200551faefe3f36
+iter 16300000/136279841 ( 11.96%)  2.47 ms/iter  ETA 3.43 days  residue 314a13000cf1efa4
+iter 16400000/136279841 ( 12.03%)  2.47 ms/iter  ETA 3.43 days  residue 4a9a90b8308eab60
+iter 16500000/136279841 ( 12.11%)  2.49 ms/iter  ETA 3.45 days  residue 73d6e63b1c094ac0
+[checkpoint: 16508544/136279841 squarings (12.11%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 16600000/136279841 ( 12.18%)  2.48 ms/iter  ETA 3.43 days  residue 5e7e354c28d174d8
+iter 16700000/136279841 ( 12.25%)  2.47 ms/iter  ETA 3.41 days  residue 0488dc025297cad4
+iter 16800000/136279841 ( 12.33%)  2.48 ms/iter  ETA 3.43 days  residue 52b99be1cce695da
+iter 16900000/136279841 ( 12.40%)  2.47 ms/iter  ETA 3.41 days  residue b364a95fd96a7bc4
+iter 17000000/136279841 ( 12.47%)  2.48 ms/iter  ETA 3.42 days  residue 914f5eade5650210
+iter 17100000/136279841 ( 12.55%)  2.47 ms/iter  ETA 3.41 days  residue 622eacfd2700d554
+iter 17200000/136279841 ( 12.62%)  2.47 ms/iter  ETA 3.41 days  residue 10afe081013d4870
+[checkpoint: 17235776/136279841 squarings (12.65%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 17300000/136279841 ( 12.69%)  2.47 ms/iter  ETA 3.40 days  residue f67ec1ddce4d48a0
+iter 17400000/136279841 ( 12.77%)  2.47 ms/iter  ETA 3.40 days  residue 7d248828d6a101e6
+iter 17500000/136279841 ( 12.84%)  2.46 ms/iter  ETA 3.38 days  residue 4cbe605992d4015c
+iter 17600000/136279841 ( 12.91%)  2.48 ms/iter  ETA 3.40 days  residue 14d785635839fa2c
+iter 17700000/136279841 ( 12.99%)  2.49 ms/iter  ETA 3.42 days  residue 36e56de905b66ff6
+iter 17800000/136279841 ( 13.06%)  2.49 ms/iter  ETA 3.41 days  residue a656fc89819c6c84
+iter 17900000/136279841 ( 13.13%)  2.5 ms/iter  ETA 3.42 days  residue 1f355c5241837f08
+[checkpoint: 17962688/136279841 squarings (13.18%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 18000000/136279841 ( 13.21%)  2.47 ms/iter  ETA 3.38 days  residue e2c22401587224da
+iter 18100000/136279841 ( 13.28%)  2.45 ms/iter  ETA 3.36 days  residue 558d35c8d4073f50
+iter 18200000/136279841 ( 13.35%)  2.48 ms/iter  ETA 3.38 days  residue de93bedbe153bdbc
+iter 18300000/136279841 ( 13.43%)  2.48 ms/iter  ETA 3.39 days  residue 0643b1a46782e926
+iter 18400000/136279841 ( 13.50%)  2.49 ms/iter  ETA 3.40 days  residue e035b6f2d6e37320
+iter 18500000/136279841 ( 13.58%)  2.48 ms/iter  ETA 3.38 days  residue ad1f2bd498ad2986
+iter 18600000/136279841 ( 13.65%)  2.48 ms/iter  ETA 3.37 days  residue 4c381240eb033b7e
+[checkpoint: 18689600/136279841 squarings (13.71%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 18700000/136279841 ( 13.72%)  2.48 ms/iter  ETA 3.38 days  residue a2ec33e1dfb690e8
+iter 18800000/136279841 ( 13.80%)  2.47 ms/iter  ETA 3.36 days  residue 24241e2f54724c4c
+iter 18900000/136279841 ( 13.87%)  2.49 ms/iter  ETA 3.38 days  residue 3ed1b04b5475e20e
+iter 19000000/136279841 ( 13.94%)  2.47 ms/iter  ETA 3.36 days  residue cb4efb018dd3925a
+iter 19100000/136279841 ( 14.02%)  2.48 ms/iter  ETA 3.36 days  residue b38af929270d18aa
+iter 19200000/136279841 ( 14.09%)  2.48 ms/iter  ETA 3.36 days  residue a097192eaa3d24c0
+iter 19300000/136279841 ( 14.16%)  2.48 ms/iter  ETA 3.36 days  residue de280f19d2ded42a
+iter 19400000/136279841 ( 14.24%)  2.47 ms/iter  ETA 3.34 days  residue f7d4957b3666c82e
+[checkpoint: 19416192/136279841 squarings (14.25%) -> irred_r136279841_s12338357.ckpt, 0.09 s]
+iter 19500000/136279841 ( 14.31%)  2.48 ms/iter  ETA 3.35 days  residue cf96f6d10a6db63e
+iter 19600000/136279841 ( 14.38%)  2.47 ms/iter  ETA 3.34 days  residue 7e7675a05d667a00
+iter 19700000/136279841 ( 14.46%)  2.46 ms/iter  ETA 3.32 days  residue 04c35974c684ce82
+iter 19800000/136279841 ( 14.53%)  2.46 ms/iter  ETA 3.32 days  residue 30efc1fcd06abac6
+iter 19900000/136279841 ( 14.60%)  2.47 ms/iter  ETA 3.33 days  residue 03a5ea3be1562b0a
+iter 20000000/136279841 ( 14.68%)  2.46 ms/iter  ETA 3.31 days  residue 7f004fb65a612f6a
+iter 20100000/136279841 ( 14.75%)  2.47 ms/iter  ETA 3.32 days  residue 252384642a29cd30
+[checkpoint: 20145152/136279841 squarings (14.78%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 20200000/136279841 ( 14.82%)  2.48 ms/iter  ETA 3.33 days  residue 734018c132bf1b6a
+iter 20300000/136279841 ( 14.90%)  2.49 ms/iter  ETA 3.35 days  residue c5790058aed56e18
+iter 20400000/136279841 ( 14.97%)  2.49 ms/iter  ETA 3.34 days  residue 121ebda69bf468de
+iter 20500000/136279841 ( 15.04%)  2.48 ms/iter  ETA 3.32 days  residue 81ea80a47eccbe66
+iter 20600000/136279841 ( 15.12%)  2.5 ms/iter  ETA 3.35 days  residue 9934b2fd69323b18
+iter 20700000/136279841 ( 15.19%)  2.47 ms/iter  ETA 3.30 days  residue 9e33e96edb56aeba
+iter 20800000/136279841 ( 15.26%)  2.48 ms/iter  ETA 3.32 days  residue 379fd830ec76e4e8
+[checkpoint: 20870016/136279841 squarings (15.31%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 20900000/136279841 ( 15.34%)  2.48 ms/iter  ETA 3.31 days  residue 5fe711f6aae3b9f2
+iter 21000000/136279841 ( 15.41%)  2.49 ms/iter  ETA 3.32 days  residue 962c2b0f242a6990
+iter 21100000/136279841 ( 15.48%)  2.45 ms/iter  ETA 3.26 days  residue 6c94741c7e236df8
+iter 21200000/136279841 ( 15.56%)  2.49 ms/iter  ETA 3.32 days  residue 590f6fa81d555e34
+iter 21300000/136279841 ( 15.63%)  2.49 ms/iter  ETA 3.31 days  residue b3db06507d1dcf32
+iter 21400000/136279841 ( 15.70%)  2.48 ms/iter  ETA 3.29 days  residue 5f2ec8421c687e3e
+iter 21500000/136279841 ( 15.78%)  2.52 ms/iter  ETA 3.35 days  residue cdc32069253adfb2
+[checkpoint: 21591296/136279841 squarings (15.84%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 21600000/136279841 ( 15.85%)  2.56 ms/iter  ETA 3.40 days  residue c2191f1b40228d68
+iter 21700000/136279841 ( 15.92%)  2.54 ms/iter  ETA 3.37 days  residue 9484da8f83f5a0c0
+iter 21800000/136279841 ( 16.00%)  2.56 ms/iter  ETA 3.40 days  residue e5e02c95a7f4dc16
+iter 21900000/136279841 ( 16.07%)  2.57 ms/iter  ETA 3.40 days  residue cbac51f4b2dca586
+iter 22000000/136279841 ( 16.14%)  2.57 ms/iter  ETA 3.39 days  residue db1a33ebd1023f94
+iter 22100000/136279841 ( 16.22%)  2.56 ms/iter  ETA 3.38 days  residue 833d54cd5575bb30
+iter 22200000/136279841 ( 16.29%)  2.57 ms/iter  ETA 3.39 days  residue e88dcde38cb4c212
+[checkpoint: 22294144/136279841 squarings (16.36%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 22300000/136279841 ( 16.36%)  2.56 ms/iter  ETA 3.38 days  residue 4d76c5b128aad058
+iter 22400000/136279841 ( 16.44%)  2.56 ms/iter  ETA 3.37 days  residue 5e35c26dc2e48fc2
+iter 22500000/136279841 ( 16.51%)  2.56 ms/iter  ETA 3.37 days  residue 4dedebdac31fbc04
+iter 22600000/136279841 ( 16.58%)  2.53 ms/iter  ETA 3.33 days  residue 199a0d9f7613ec66
+iter 22700000/136279841 ( 16.66%)  2.54 ms/iter  ETA 3.34 days  residue d9e3b38a343ff21a
+iter 22800000/136279841 ( 16.73%)  2.55 ms/iter  ETA 3.35 days  residue 5b125fd705edd3fe
+iter 22900000/136279841 ( 16.80%)  2.51 ms/iter  ETA 3.29 days  residue a49b37b8e891123c
+iter 23000000/136279841 ( 16.88%)  2.52 ms/iter  ETA 3.30 days  residue 862d2b2080bb2288
+[checkpoint: 23003328/136279841 squarings (16.88%) -> irred_r136279841_s12338357.ckpt, 0.10 s]
+iter 23100000/136279841 ( 16.95%)  2.51 ms/iter  ETA 3.29 days  residue 45a9d9f244d308e4
+iter 23200000/136279841 ( 17.02%)  2.49 ms/iter  ETA 3.26 days  residue 4a29607f39b38cb4
+iter 23300000/136279841 ( 17.10%)  2.51 ms/iter  ETA 3.28 days  residue 13fdb4241d1dce9a
+iter 23400000/136279841 ( 17.17%)  2.51 ms/iter  ETA 3.28 days  residue c5a7a74f906effc2
+iter 23500000/136279841 ( 17.24%)  2.5 ms/iter  ETA 3.27 days  residue ca35f6a0a84481c0
+iter 23600000/136279841 ( 17.32%)  2.5 ms/iter  ETA 3.27 days  residue 65b21017c618a64e
+iter 23700000/136279841 ( 17.39%)  2.51 ms/iter  ETA 3.27 days  residue 035d574699f7c3ca
+[checkpoint: 23720960/136279841 squarings (17.41%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 23800000/136279841 ( 17.46%)  2.54 ms/iter  ETA 3.31 days  residue 7d8bd135a529e5fc
+iter 23900000/136279841 ( 17.54%)  2.58 ms/iter  ETA 3.35 days  residue 0387d234b4de8dac
+iter 24000000/136279841 ( 17.61%)  2.59 ms/iter  ETA 3.37 days  residue 4f5771cb5fc623f6
+iter 24100000/136279841 ( 17.68%)  2.57 ms/iter  ETA 3.34 days  residue 9624eafb991af1de
+iter 24200000/136279841 ( 17.76%)  2.53 ms/iter  ETA 3.29 days  residue 4eb857ed5435aa4c
+iter 24300000/136279841 ( 17.83%)  2.54 ms/iter  ETA 3.30 days  residue 74999bacd35aea9e
+iter 24400000/136279841 ( 17.90%)  2.54 ms/iter  ETA 3.29 days  residue e14dd6e738d94c7c
+[checkpoint: 24425152/136279841 squarings (17.92%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 24500000/136279841 ( 17.98%)  2.54 ms/iter  ETA 3.28 days  residue 6615920fb5e70f32
+iter 24600000/136279841 ( 18.05%)  2.71 ms/iter  ETA 3.50 days  residue 33bf6abeec034e7a
+iter 24700000/136279841 ( 18.12%)  2.54 ms/iter  ETA 3.28 days  residue ec2cc5db90edc148
+iter 24800000/136279841 ( 18.20%)  2.55 ms/iter  ETA 3.29 days  residue 5629c034e38777ba
+iter 24900000/136279841 ( 18.27%)  2.51 ms/iter  ETA 3.23 days  residue 8aed8acc888edd4a
+iter 25000000/136279841 ( 18.34%)  2.51 ms/iter  ETA 3.23 days  residue 77786eabd67d380e
+iter 25100000/136279841 ( 18.42%)  2.51 ms/iter  ETA 3.23 days  residue 44f576725f225db0
+[checkpoint: 25130880/136279841 squarings (18.44%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 25200000/136279841 ( 18.49%)  2.52 ms/iter  ETA 3.24 days  residue 56a1f0af027b6e36
+iter 25300000/136279841 ( 18.56%)  2.51 ms/iter  ETA 3.23 days  residue 6d635f5eb43af8f2
+iter 25400000/136279841 ( 18.64%)  2.5 ms/iter  ETA 3.21 days  residue 9f294c612ee18384
+iter 25500000/136279841 ( 18.71%)  2.52 ms/iter  ETA 3.23 days  residue 0d06fa70f532e736
+iter 25600000/136279841 ( 18.78%)  2.51 ms/iter  ETA 3.22 days  residue c58d4a19427969f8
+iter 25700000/136279841 ( 18.86%)  2.5 ms/iter  ETA 3.21 days  residue 4e0227469f6fd3f2
+iter 25800000/136279841 ( 18.93%)  2.51 ms/iter  ETA 3.21 days  residue 1b976712ac702214
+[checkpoint: 25848000/136279841 squarings (18.97%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 25900000/136279841 ( 19.01%)  2.52 ms/iter  ETA 3.22 days  residue 85111e73f1ad8680
+iter 26000000/136279841 ( 19.08%)  2.52 ms/iter  ETA 3.21 days  residue 1bac5d81ec574cd4
+iter 26100000/136279841 ( 19.15%)  2.51 ms/iter  ETA 3.20 days  residue dfffe8ef3763eae2
+iter 26200000/136279841 ( 19.23%)  2.51 ms/iter  ETA 3.20 days  residue 7292b6c9cc8bb4be
+iter 26300000/136279841 ( 19.30%)  2.52 ms/iter  ETA 3.21 days  residue 7ad445155a719364
+iter 26400000/136279841 ( 19.37%)  2.5 ms/iter  ETA 3.18 days  residue 037b5b6251c1a326
+iter 26500000/136279841 ( 19.45%)  2.5 ms/iter  ETA 3.18 days  residue 298b108c47054a4c
+[checkpoint: 26564864/136279841 squarings (19.49%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 26600000/136279841 ( 19.52%)  2.52 ms/iter  ETA 3.20 days  residue 5a9be17517a3b804
+iter 26700000/136279841 ( 19.59%)  2.52 ms/iter  ETA 3.20 days  residue 928faa731b8fc72e
+iter 26800000/136279841 ( 19.67%)  2.5 ms/iter  ETA 3.17 days  residue 6c2ff77bf3b03d1a
+iter 26900000/136279841 ( 19.74%)  2.52 ms/iter  ETA 3.18 days  residue d10eeac8b20b9e1a
+iter 27000000/136279841 ( 19.81%)  2.51 ms/iter  ETA 3.17 days  residue f50599aea8d07670
+iter 27100000/136279841 ( 19.89%)  2.51 ms/iter  ETA 3.17 days  residue 6bfb433507114d08
+iter 27200000/136279841 ( 19.96%)  2.5 ms/iter  ETA 3.16 days  residue 4e0092435656face
+[checkpoint: 27281920/136279841 squarings (20.02%) -> irred_r136279841_s12338357.ckpt, 0.13 s]
+iter 27300000/136279841 ( 20.03%)  2.51 ms/iter  ETA 3.17 days  residue 6cd66f562fad39ea
+iter 27400000/136279841 ( 20.11%)  2.51 ms/iter  ETA 3.16 days  residue 20c85f178ac74426
+iter 27500000/136279841 ( 20.18%)  2.51 ms/iter  ETA 3.16 days  residue 92b4232eb87ee424
+iter 27600000/136279841 ( 20.25%)  2.52 ms/iter  ETA 3.17 days  residue 1cc6bf2a6b6d9f54
+iter 27700000/136279841 ( 20.33%)  2.52 ms/iter  ETA 3.16 days  residue e78493090cb46c1a
+iter 27800000/136279841 ( 20.40%)  2.49 ms/iter  ETA 3.13 days  residue 37e9ad095707e100
+iter 27900000/136279841 ( 20.47%)  2.5 ms/iter  ETA 3.14 days  residue 1018dabf309e3142
+[checkpoint: 27999104/136279841 squarings (20.55%) -> irred_r136279841_s12338357.ckpt, 0.10 s]
+iter 28000000/136279841 ( 20.55%)  2.51 ms/iter  ETA 3.15 days  residue a55e8b2657d6b46a
+iter 28100000/136279841 ( 20.62%)  2.51 ms/iter  ETA 3.14 days  residue 1e719cc8ee254b70
+iter 28200000/136279841 ( 20.69%)  2.5 ms/iter  ETA 3.13 days  residue 937d879b3092815e
+iter 28300000/136279841 ( 20.77%)  2.52 ms/iter  ETA 3.14 days  residue 1ed1fc0328998ad4
+iter 28400000/136279841 ( 20.84%)  2.56 ms/iter  ETA 3.20 days  residue 714692a0914047c6
+iter 28500000/136279841 ( 20.91%)  2.5 ms/iter  ETA 3.12 days  residue 764a22a9f2c6b76e
+iter 28600000/136279841 ( 20.99%)  2.51 ms/iter  ETA 3.13 days  residue 52b8b709617d5670
+iter 28700000/136279841 ( 21.06%)  2.51 ms/iter  ETA 3.13 days  residue e2838fa293326218
+[checkpoint: 28714432/136279841 squarings (21.07%) -> irred_r136279841_s12338357.ckpt, 0.09 s]
+iter 28800000/136279841 ( 21.13%)  2.5 ms/iter  ETA 3.12 days  residue d4a5d138f776a62c
+iter 28900000/136279841 ( 21.21%)  2.5 ms/iter  ETA 3.11 days  residue 1093b5de3039ff00
+iter 29000000/136279841 ( 21.28%)  2.52 ms/iter  ETA 3.13 days  residue 9007d528092e017e
+iter 29100000/136279841 ( 21.35%)  2.53 ms/iter  ETA 3.14 days  residue efe69325bfff338e
+iter 29200000/136279841 ( 21.43%)  2.53 ms/iter  ETA 3.14 days  residue 745daba94622f7e8
+iter 29300000/136279841 ( 21.50%)  2.51 ms/iter  ETA 3.10 days  residue 7f12c3731f7b0a0c
+iter 29400000/136279841 ( 21.57%)  2.5 ms/iter  ETA 3.10 days  residue ab80ea27031d58ac
+[checkpoint: 29430528/136279841 squarings (21.60%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 29500000/136279841 ( 21.65%)  2.51 ms/iter  ETA 3.10 days  residue a405db3f73e44642
+iter 29600000/136279841 ( 21.72%)  2.51 ms/iter  ETA 3.09 days  residue 3a5ec9511dc5ed8c
+iter 29700000/136279841 ( 21.79%)  2.53 ms/iter  ETA 3.12 days  residue 2034d25f9d9ef666
+iter 29800000/136279841 ( 21.87%)  2.51 ms/iter  ETA 3.10 days  residue 33ce549f263b65f0
+iter 29900000/136279841 ( 21.94%)  2.54 ms/iter  ETA 3.13 days  residue 698ede5ca3ee693c
+iter 30000000/136279841 ( 22.01%)  2.64 ms/iter  ETA 3.24 days  residue 8eefec7a41ddbbf6
+iter 30100000/136279841 ( 22.09%)  2.56 ms/iter  ETA 3.15 days  residue 8d5cfe4990d210a0
+[checkpoint: 30137856/136279841 squarings (22.11%) -> irred_r136279841_s12338357.ckpt, 0.09 s]
+iter 30200000/136279841 ( 22.16%)  2.59 ms/iter  ETA 3.19 days  residue aafd859c936eeec6
+iter 30300000/136279841 ( 22.23%)  2.56 ms/iter  ETA 3.14 days  residue ce9e8b30ff02ff36
+iter 30400000/136279841 ( 22.31%)  2.66 ms/iter  ETA 3.26 days  residue c28eb758da402a2c
+iter 30500000/136279841 ( 22.38%)  2.64 ms/iter  ETA 3.24 days  residue ffbf6cde575a7b54
+iter 30600000/136279841 ( 22.45%)  2.64 ms/iter  ETA 3.23 days  residue 2b2df99fe1537120
+iter 30700000/136279841 ( 22.53%)  2.68 ms/iter  ETA 3.27 days  residue fcceecf73a3b5862
+iter 30800000/136279841 ( 22.60%)  2.53 ms/iter  ETA 3.09 days  residue a1a6f6ae7fdd5a38
+[checkpoint: 30826368/136279841 squarings (22.62%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 30900000/136279841 ( 22.67%)  2.53 ms/iter  ETA 3.08 days  residue 66271ef92c19701e
+iter 31000000/136279841 ( 22.75%)  2.53 ms/iter  ETA 3.08 days  residue 3bab7fbf92f70e08
+iter 31100000/136279841 ( 22.82%)  2.54 ms/iter  ETA 3.10 days  residue bb2d8ef4de9852e0
+iter 31200000/136279841 ( 22.89%)  2.52 ms/iter  ETA 3.06 days  residue 7f001e856ffce346
+iter 31300000/136279841 ( 22.97%)  2.5 ms/iter  ETA 3.04 days  residue ffe4902069f04f28
+iter 31400000/136279841 ( 23.04%)  2.52 ms/iter  ETA 3.06 days  residue d716553dde602ae2
+iter 31500000/136279841 ( 23.11%)  2.51 ms/iter  ETA 3.04 days  residue b5efbb0c2f7f8e92
+[checkpoint: 31541248/136279841 squarings (23.14%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 31600000/136279841 ( 23.19%)  2.52 ms/iter  ETA 3.05 days  residue 75cf398e68230db0
+iter 31700000/136279841 ( 23.26%)  2.52 ms/iter  ETA 3.05 days  residue 36aa09888199991a
+iter 31800000/136279841 ( 23.33%)  2.54 ms/iter  ETA 3.07 days  residue f46b225e0f1b9464
+iter 31900000/136279841 ( 23.41%)  2.48 ms/iter  ETA 3.00 days  residue ef7f2988961bafde
+iter 32000000/136279841 ( 23.48%)  2.47 ms/iter  ETA 2.98 days  residue a8eeb79c598b9324
+iter 32100000/136279841 ( 23.55%)  2.57 ms/iter  ETA 3.10 days  residue 4e00880a37696372
+iter 32200000/136279841 ( 23.63%)  2.62 ms/iter  ETA 3.16 days  residue 1194db771f9c9e0c
+[checkpoint: 32250240/136279841 squarings (23.66%) -> irred_r136279841_s12338357.ckpt, 0.29 s]
+iter 32300000/136279841 ( 23.70%)  2.62 ms/iter  ETA 3.16 days  residue 58a9ab8112278628
+iter 32400000/136279841 ( 23.77%)  2.55 ms/iter  ETA 3.06 days  residue 5d34096e99da7750
+iter 32500000/136279841 ( 23.85%)  2.54 ms/iter  ETA 3.05 days  residue 3b32599ea135f522
+iter 32600000/136279841 ( 23.92%)  2.61 ms/iter  ETA 3.13 days  residue 775cf59b96999abc
+iter 32700000/136279841 ( 23.99%)  2.55 ms/iter  ETA 3.05 days  residue 443a3560b3955d1c
+iter 32800000/136279841 ( 24.07%)  2.58 ms/iter  ETA 3.09 days  residue e764f0c99146539a
+iter 32900000/136279841 ( 24.14%)  2.55 ms/iter  ETA 3.05 days  residue b77c9045453edf00
+[checkpoint: 32952640/136279841 squarings (24.18%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 33000000/136279841 ( 24.21%)  2.54 ms/iter  ETA 3.04 days  residue b7dd82e1ab0605dc
+iter 33100000/136279841 ( 24.29%)  2.55 ms/iter  ETA 3.04 days  residue ec1496877d6e9262
+iter 33200000/136279841 ( 24.36%)  2.55 ms/iter  ETA 3.04 days  residue c663335008960194
+iter 33300000/136279841 ( 24.44%)  2.6 ms/iter  ETA 3.10 days  residue bf8ae514fe451310
+iter 33400000/136279841 ( 24.51%)  2.58 ms/iter  ETA 3.07 days  residue 918ae479e64de420
+iter 33500000/136279841 ( 24.58%)  2.58 ms/iter  ETA 3.06 days  residue 54e21322ea3dc098
+iter 33600000/136279841 ( 24.66%)  2.56 ms/iter  ETA 3.05 days  residue 0fbef88c7d5c3b3e
+[checkpoint: 33653952/136279841 squarings (24.69%) -> irred_r136279841_s12338357.ckpt, 0.12 s]
+iter 33700000/136279841 ( 24.73%)  2.55 ms/iter  ETA 3.02 days  residue 803c8f49a0b2424e
+iter 33800000/136279841 ( 24.80%)  2.56 ms/iter  ETA 3.04 days  residue f5656b459c1067fc
+iter 33900000/136279841 ( 24.88%)  2.53 ms/iter  ETA 3.00 days  residue 49980ba193a3a756
+iter 34000000/136279841 ( 24.95%)  2.55 ms/iter  ETA 3.02 days  residue 55c63990438109ec
+iter 34100000/136279841 ( 25.02%)  2.56 ms/iter  ETA 3.03 days  residue c7f46653b15d6d8e
+iter 34200000/136279841 ( 25.10%)  2.59 ms/iter  ETA 3.06 days  residue 6ac6e99f53650d0e
+iter 34300000/136279841 ( 25.17%)  2.58 ms/iter  ETA 3.04 days  residue 336c3770c77a4cde
+[checkpoint: 34356800/136279841 squarings (25.21%) -> irred_r136279841_s12338357.ckpt, 0.09 s]
+iter 34400000/136279841 ( 25.24%)  2.57 ms/iter  ETA 3.03 days  residue 0cc3422298b59b8c
+iter 34500000/136279841 ( 25.32%)  2.56 ms/iter  ETA 3.02 days  residue b866e380ff5ea8ba
+iter 34600000/136279841 ( 25.39%)  2.55 ms/iter  ETA 3.00 days  residue 302189c8b76ea6a0
+iter 34700000/136279841 ( 25.46%)  2.57 ms/iter  ETA 3.02 days  residue c0e1befe162ffb62
+iter 34800000/136279841 ( 25.54%)  2.55 ms/iter  ETA 2.99 days  residue 5c4f4324e0b18806
+iter 34900000/136279841 ( 25.61%)  2.55 ms/iter  ETA 3.00 days  residue f4100390ce74f2de
+iter 35000000/136279841 ( 25.68%)  2.57 ms/iter  ETA 3.01 days  residue 962f0c963b8b18e8
+[checkpoint: 35060544/136279841 squarings (25.73%) -> irred_r136279841_s12338357.ckpt, 0.10 s]
+iter 35100000/136279841 ( 25.76%)  2.55 ms/iter  ETA 2.99 days  residue 0447ba92a2bada34
+iter 35200000/136279841 ( 25.83%)  2.55 ms/iter  ETA 2.98 days  residue 752a4cef212501c6
+iter 35300000/136279841 ( 25.90%)  2.54 ms/iter  ETA 2.97 days  residue 8da3d52832ea2a74
+iter 35400000/136279841 ( 25.98%)  2.56 ms/iter  ETA 2.99 days  residue 5851c43206e2fb96
+iter 35500000/136279841 ( 26.05%)  2.56 ms/iter  ETA 2.98 days  residue f392ef79fe0ba2a8
+iter 35600000/136279841 ( 26.12%)  2.52 ms/iter  ETA 2.94 days  residue 77b8b8bfaf2088bc
+iter 35700000/136279841 ( 26.20%)  2.5 ms/iter  ETA 2.91 days  residue ba21eb5294374708
+[checkpoint: 35770240/136279841 squarings (26.25%) -> irred_r136279841_s12338357.ckpt, 0.12 s]
+iter 35800000/136279841 ( 26.27%)  2.53 ms/iter  ETA 2.94 days  residue 1ba24bbfba0bb99e
+iter 35900000/136279841 ( 26.34%)  2.49 ms/iter  ETA 2.90 days  residue ace29e01ef0ea46a
+iter 36000000/136279841 ( 26.42%)  2.49 ms/iter  ETA 2.89 days  residue ca82188099174504
+iter 36100000/136279841 ( 26.49%)  2.52 ms/iter  ETA 2.93 days  residue eb21a6727e73b168
+iter 36200000/136279841 ( 26.56%)  2.49 ms/iter  ETA 2.89 days  residue 6d59df506938a85e
+iter 36300000/136279841 ( 26.64%)  2.5 ms/iter  ETA 2.89 days  residue c023fc7c8042ffd0
+iter 36400000/136279841 ( 26.71%)  2.53 ms/iter  ETA 2.93 days  residue be7d4a3b0b18c026
+[checkpoint: 36488896/136279841 squarings (26.77%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 36500000/136279841 ( 26.78%)  2.49 ms/iter  ETA 2.88 days  residue ddecd6990b5da4f0
+iter 36600000/136279841 ( 26.86%)  2.47 ms/iter  ETA 2.85 days  residue 7baa5a757e697b9c
+iter 36700000/136279841 ( 26.93%)  2.5 ms/iter  ETA 2.88 days  residue b364759c4f337174
+iter 36800000/136279841 ( 27.00%)  2.51 ms/iter  ETA 2.89 days  residue 06aeed9dff5a4b30
+iter 36900000/136279841 ( 27.08%)  2.51 ms/iter  ETA 2.88 days  residue c8129eb5c5c62952
+iter 37000000/136279841 ( 27.15%)  2.52 ms/iter  ETA 2.90 days  residue 091b67544928709c
+iter 37100000/136279841 ( 27.22%)  2.52 ms/iter  ETA 2.90 days  residue b67b6494c2ebde94
+iter 37200000/136279841 ( 27.30%)  2.53 ms/iter  ETA 2.90 days  residue 3efa3cb3e4bc41da
+[checkpoint: 37206784/136279841 squarings (27.30%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 37300000/136279841 ( 27.37%)  2.5 ms/iter  ETA 2.86 days  residue 9acd2c0bc0ef6f4c
+iter 37400000/136279841 ( 27.44%)  2.5 ms/iter  ETA 2.87 days  residue f3927595fc07d4ae
+iter 37500000/136279841 ( 27.52%)  2.53 ms/iter  ETA 2.89 days  residue 0ac1d94882b19f12
+iter 37600000/136279841 ( 27.59%)  2.51 ms/iter  ETA 2.87 days  residue 803eaa6c3fc67c26
+iter 37700000/136279841 ( 27.66%)  2.5 ms/iter  ETA 2.85 days  residue 9dd2209abdd91a04
+iter 37800000/136279841 ( 27.74%)  2.53 ms/iter  ETA 2.88 days  residue fc5f35a34257c54e
+iter 37900000/136279841 ( 27.81%)  2.52 ms/iter  ETA 2.87 days  residue dbcda7880d9f7abc
+[checkpoint: 37923264/136279841 squarings (27.83%) -> irred_r136279841_s12338357.ckpt, 0.10 s]
+iter 38000000/136279841 ( 27.88%)  2.52 ms/iter  ETA 2.86 days  residue 3eb07dded525baee
+iter 38100000/136279841 ( 27.96%)  2.54 ms/iter  ETA 2.89 days  residue ed45436d9e215814
+iter 38200000/136279841 ( 28.03%)  2.47 ms/iter  ETA 2.80 days  residue a0eb15b02c6884a0
+iter 38300000/136279841 ( 28.10%)  2.45 ms/iter  ETA 2.78 days  residue a8c0c3ab72429e44
+iter 38400000/136279841 ( 28.18%)  2.49 ms/iter  ETA 2.82 days  residue 20384f9928fb7644
+iter 38500000/136279841 ( 28.25%)  2.55 ms/iter  ETA 2.88 days  residue be0e2850d89a1e04
+iter 38600000/136279841 ( 28.32%)  2.55 ms/iter  ETA 2.88 days  residue 9722d02fa2271c20
+[checkpoint: 38639872/136279841 squarings (28.35%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 38700000/136279841 ( 28.40%)  2.57 ms/iter  ETA 2.90 days  residue 0b3d9024e903f57e
+This is irred (forked github.com/nclvrps/irred version 0.20, 20261117)
+Testing x^136279841 + x^12338357 + 1
+Resuming from irred_r136279841_s12338357.ckpt (written 2026-11-18 21:26:44): 38730574/136279841 squarings done (28.42%) in 27.08 h
+Checkpointing to irred_r136279841_s12338357.ckpt every 30 minutes
+iter 38800000/136279841 ( 28.47%)  2.64 ms/iter  ETA 2.98 days  residue 0dc81e99a112be0c
+iter 38900000/136279841 ( 28.54%)  2.61 ms/iter  ETA 2.94 days  residue 7cc2ec9c31f4b254
+iter 39000000/136279841 ( 28.62%)  2.58 ms/iter  ETA 2.91 days  residue 6abe21b15eb7e00a
+iter 39100000/136279841 ( 28.69%)  2.59 ms/iter  ETA 2.92 days  residue 9f6bceedab021184
+iter 39200000/136279841 ( 28.76%)  2.58 ms/iter  ETA 2.90 days  residue 6e59c5990ad560cc
+iter 39300000/136279841 ( 28.84%)  2.54 ms/iter  ETA 2.85 days  residue fcc63d42fae831b0
+iter 39400000/136279841 ( 28.91%)  2.61 ms/iter  ETA 2.92 days  residue 63d5c18714764b3c
+[checkpoint: 39425152/136279841 squarings (28.93%) -> irred_r136279841_s12338357.ckpt, 0.09 s]
+iter 39500000/136279841 ( 28.98%)  2.55 ms/iter  ETA 2.85 days  residue 3fafbf1750623b72
+iter 39600000/136279841 ( 29.06%)  2.47 ms/iter  ETA 2.76 days  residue ae714b1182856f92
+iter 39700000/136279841 ( 29.13%)  2.44 ms/iter  ETA 2.73 days  residue f9850527168733d2
+iter 39800000/136279841 ( 29.20%)  2.44 ms/iter  ETA 2.72 days  residue 0317f6ddd2d9a2b6
+iter 39900000/136279841 ( 29.28%)  2.45 ms/iter  ETA 2.73 days  residue b2cf6fe98891e166
+iter 40000000/136279841 ( 29.35%)  2.44 ms/iter  ETA 2.72 days  residue 295428e2ab0b87e4
+iter 40100000/136279841 ( 29.42%)  2.44 ms/iter  ETA 2.71 days  residue 518193950d1e7cac
+[checkpoint: 40158848/136279841 squarings (29.47%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 40200000/136279841 ( 29.50%)  2.45 ms/iter  ETA 2.73 days  residue 60536992049aad02
+iter 40300000/136279841 ( 29.57%)  2.44 ms/iter  ETA 2.71 days  residue d913397809c90ae2
+iter 40400000/136279841 ( 29.64%)  2.45 ms/iter  ETA 2.72 days  residue cf5f404a419b8138
+iter 40500000/136279841 ( 29.72%)  2.43 ms/iter  ETA 2.69 days  residue 25c8bd2db2af2554
+iter 40600000/136279841 ( 29.79%)  2.44 ms/iter  ETA 2.70 days  residue bae84f596f0deb30
+iter 40700000/136279841 ( 29.87%)  2.45 ms/iter  ETA 2.71 days  residue 09ece9468fd8da5a
+iter 40800000/136279841 ( 29.94%)  2.43 ms/iter  ETA 2.69 days  residue 1412f18509ea27da
+[checkpoint: 40896192/136279841 squarings (30.01%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 40900000/136279841 ( 30.01%)  2.44 ms/iter  ETA 2.70 days  residue 8e0462adde7b88c6
+iter 41000000/136279841 ( 30.09%)  2.44 ms/iter  ETA 2.69 days  residue 421c688e28ed5344
+iter 41100000/136279841 ( 30.16%)  2.44 ms/iter  ETA 2.69 days  residue dc1044ccfecebd58
+iter 41200000/136279841 ( 30.23%)  2.45 ms/iter  ETA 2.70 days  residue eb70e67a1b6201a6
+iter 41300000/136279841 ( 30.31%)  2.44 ms/iter  ETA 2.68 days  residue 74bf490a608245f0
+iter 41400000/136279841 ( 30.38%)  2.44 ms/iter  ETA 2.68 days  residue 83d8034e099ed85e
+iter 41500000/136279841 ( 30.45%)  2.44 ms/iter  ETA 2.68 days  residue 7c567df796b06524
+iter 41600000/136279841 ( 30.53%)  2.45 ms/iter  ETA 2.69 days  residue a316583fa65e17ce
+[checkpoint: 41632768/136279841 squarings (30.55%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 41700000/136279841 ( 30.60%)  2.47 ms/iter  ETA 2.70 days  residue aff1fe46a88e12d8
+iter 41800000/136279841 ( 30.67%)  2.44 ms/iter  ETA 2.67 days  residue 4ad4837b8605f888
+iter 41900000/136279841 ( 30.75%)  2.43 ms/iter  ETA 2.65 days  residue 64744ffc6a025034
+iter 42000000/136279841 ( 30.82%)  2.43 ms/iter  ETA 2.66 days  residue 9af7d7e034cb7dae
+iter 42100000/136279841 ( 30.89%)  2.43 ms/iter  ETA 2.65 days  residue a02f2f1abf9c51de
+iter 42200000/136279841 ( 30.97%)  2.44 ms/iter  ETA 2.66 days  residue c39d35cd0e2caef0
+iter 42300000/136279841 ( 31.04%)  2.44 ms/iter  ETA 2.65 days  residue 7d84b0103db1e6a0
+[checkpoint: 42369664/136279841 squarings (31.09%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 42400000/136279841 ( 31.11%)  2.46 ms/iter  ETA 2.68 days  residue da60d0387228440c
+iter 42500000/136279841 ( 31.19%)  2.46 ms/iter  ETA 2.67 days  residue 79e424861ba62016
+iter 42600000/136279841 ( 31.26%)  2.46 ms/iter  ETA 2.66 days  residue f75059f6b5e62d76
+iter 42700000/136279841 ( 31.33%)  2.47 ms/iter  ETA 2.67 days  residue 748a89891386e73a
+iter 42800000/136279841 ( 31.41%)  2.46 ms/iter  ETA 2.66 days  residue b09526e522f701ac
+iter 42900000/136279841 ( 31.48%)  2.42 ms/iter  ETA 2.61 days  residue 9a4474c32a768228
+iter 43000000/136279841 ( 31.55%)  2.44 ms/iter  ETA 2.64 days  residue 2e391a645f6a5c50
+[checkpoint: 43099968/136279841 squarings (31.63%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 43100000/136279841 ( 31.63%)  2.56 ms/iter  ETA 2.76 days  residue a46026742a6e7e12
+iter 43200000/136279841 ( 31.70%)  2.74 ms/iter  ETA 2.95 days  residue 9fd3ae8e442d6d3e
+iter 43300000/136279841 ( 31.77%)  2.6 ms/iter  ETA 2.79 days  residue dc42b54105ed8078
+iter 43400000/136279841 ( 31.85%)  2.6 ms/iter  ETA 2.79 days  residue e5b2611b2fb7a1da
+iter 43500000/136279841 ( 31.92%)  2.58 ms/iter  ETA 2.77 days  residue 53bf2baee5d9c9bc
+iter 43600000/136279841 ( 31.99%)  2.57 ms/iter  ETA 2.76 days  residue 0b6b37b975925b1a
+iter 43700000/136279841 ( 32.07%)  2.56 ms/iter  ETA 2.74 days  residue 3fa314c93ca8c5f2
+[checkpoint: 43792128/136279841 squarings (32.13%) -> irred_r136279841_s12338357.ckpt, 0.10 s]
+iter 43800000/136279841 ( 32.14%)  2.56 ms/iter  ETA 2.74 days  residue 7f93a82c31231b2e
+iter 43900000/136279841 ( 32.21%)  2.55 ms/iter  ETA 2.72 days  residue b04dd9b5d0a3b2e2
+iter 44000000/136279841 ( 32.29%)  2.54 ms/iter  ETA 2.71 days  residue ab15eb5bc0061f3a
+iter 44100000/136279841 ( 32.36%)  2.53 ms/iter  ETA 2.70 days  residue 9c0c3815b2d5039c
+iter 44200000/136279841 ( 32.43%)  2.53 ms/iter  ETA 2.70 days  residue ca7201fa0ceaea1c
+iter 44300000/136279841 ( 32.51%)  2.54 ms/iter  ETA 2.70 days  residue 9782edb950428ef0
+iter 44400000/136279841 ( 32.58%)  2.53 ms/iter  ETA 2.69 days  residue 87b4ab3140ff72dc
+iter 44500000/136279841 ( 32.65%)  2.55 ms/iter  ETA 2.71 days  residue 7aaacda53c99dc14
+[checkpoint: 44501632/136279841 squarings (32.65%) -> irred_r136279841_s12338357.ckpt, 0.10 s]
+iter 44600000/136279841 ( 32.73%)  2.57 ms/iter  ETA 2.73 days  residue b0b59089a521e3e8
+iter 44700000/136279841 ( 32.80%)  2.55 ms/iter  ETA 2.70 days  residue 53df6f3ac5b46b3a
+iter 44800000/136279841 ( 32.87%)  2.66 ms/iter  ETA 2.82 days  residue 91ef29b8ebacd246
+iter 44900000/136279841 ( 32.95%)  2.68 ms/iter  ETA 2.83 days  residue 021a2ed82c1b6eea
+iter 45000000/136279841 ( 33.02%)  2.61 ms/iter  ETA 2.75 days  residue db889fe72ad63076
+iter 45100000/136279841 ( 33.09%)  2.61 ms/iter  ETA 2.75 days  residue dc39c764ff52a058
+[checkpoint: 45192128/136279841 squarings (33.16%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 45200000/136279841 ( 33.17%)  2.57 ms/iter  ETA 2.71 days  residue 21aa1f82e64a4482
+iter 45300000/136279841 ( 33.24%)  2.61 ms/iter  ETA 2.75 days  residue aca4b10ff8ffc546
+iter 45400000/136279841 ( 33.31%)  2.7 ms/iter  ETA 2.84 days  residue 89579b2f81c5e89e
+iter 45500000/136279841 ( 33.39%)  2.63 ms/iter  ETA 2.76 days  residue 7402745a7fecae08
+iter 45600000/136279841 ( 33.46%)  2.58 ms/iter  ETA 2.71 days  residue ab266b07272decb4
+iter 45700000/136279841 ( 33.53%)  2.54 ms/iter  ETA 2.67 days  residue 15c5821fc68c91e2
+iter 45800000/136279841 ( 33.61%)  2.57 ms/iter  ETA 2.69 days  residue dfa48c23ff69df76
+[checkpoint: 45883968/136279841 squarings (33.67%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 45900000/136279841 ( 33.68%)  2.6 ms/iter  ETA 2.72 days  residue 2177e4317fb8cc56
+iter 46000000/136279841 ( 33.75%)  2.67 ms/iter  ETA 2.79 days  residue e76ec7f954604380
+iter 46100000/136279841 ( 33.83%)  2.66 ms/iter  ETA 2.78 days  residue a9fcc0366c1f923a
+iter 46200000/136279841 ( 33.90%)  2.68 ms/iter  ETA 2.79 days  residue 2f464ba848910c34
+iter 46300000/136279841 ( 33.97%)  2.67 ms/iter  ETA 2.78 days  residue 9e8536ddc83316c6
+iter 46400000/136279841 ( 34.05%)  2.67 ms/iter  ETA 2.77 days  residue 7b247e9a53f89bf8
+iter 46500000/136279841 ( 34.12%)  2.67 ms/iter  ETA 2.77 days  residue e5cceb8ff39e752c
+[checkpoint: 46558528/136279841 squarings (34.16%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 46600000/136279841 ( 34.19%)  2.67 ms/iter  ETA 2.77 days  residue 9b2f80991c4193c2
+iter 46700000/136279841 ( 34.27%)  2.67 ms/iter  ETA 2.76 days  residue 3e04a616ef4626ae
+iter 46800000/136279841 ( 34.34%)  2.58 ms/iter  ETA 2.68 days  residue 95ca02cb1130a188
+iter 46900000/136279841 ( 34.41%)  2.54 ms/iter  ETA 2.63 days  residue 9e8278e7bd819f0e
+iter 47000000/136279841 ( 34.49%)  2.53 ms/iter  ETA 2.62 days  residue 52f2a4a245f4aeee
+iter 47100000/136279841 ( 34.56%)  2.53 ms/iter  ETA 2.61 days  residue 0fd37312edbad504
+iter 47200000/136279841 ( 34.63%)  2.53 ms/iter  ETA 2.60 days  residue 148c61daa6027adc
+[checkpoint: 47259840/136279841 squarings (34.68%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 47300000/136279841 ( 34.71%)  2.53 ms/iter  ETA 2.61 days  residue 860433af3567e8c2
+iter 47400000/136279841 ( 34.78%)  2.53 ms/iter  ETA 2.60 days  residue 78498cbb3dc46582
+iter 47500000/136279841 ( 34.85%)  2.52 ms/iter  ETA 2.59 days  residue bd369c55346aa376
+iter 47600000/136279841 ( 34.93%)  2.54 ms/iter  ETA 2.61 days  residue fe714d7f6c6bc68e
+iter 47700000/136279841 ( 35.00%)  2.52 ms/iter  ETA 2.59 days  residue 30e8cdb3d7efcd16
+iter 47800000/136279841 ( 35.07%)  2.51 ms/iter  ETA 2.58 days  residue 5da19c67d50f4f58
+iter 47900000/136279841 ( 35.15%)  2.52 ms/iter  ETA 2.58 days  residue 28b920cdf314a8e8
+[checkpoint: 47972544/136279841 squarings (35.20%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 48000000/136279841 ( 35.22%)  2.53 ms/iter  ETA 2.58 days  residue 830a46e79b7616de
+iter 48100000/136279841 ( 35.30%)  2.52 ms/iter  ETA 2.57 days  residue 167f5982f390eaba
+iter 48200000/136279841 ( 35.37%)  2.52 ms/iter  ETA 2.57 days  residue c52c3ffb878ba322
+iter 48300000/136279841 ( 35.44%)  2.52 ms/iter  ETA 2.57 days  residue f1b3f9c6df3713d2
+iter 48400000/136279841 ( 35.52%)  2.53 ms/iter  ETA 2.57 days  residue e52fb2e7a08c2d62
+iter 48500000/136279841 ( 35.59%)  2.55 ms/iter  ETA 2.59 days  residue 9c8e7db303d6f794
+iter 48600000/136279841 ( 35.66%)  2.58 ms/iter  ETA 2.62 days  residue 1d3426c8192e4dd6
+[checkpoint: 48681216/136279841 squarings (35.72%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 48700000/136279841 ( 35.74%)  2.57 ms/iter  ETA 2.60 days  residue 9c3e8198d5626496
+iter 48800000/136279841 ( 35.81%)  2.56 ms/iter  ETA 2.59 days  residue 2e2fdec9939c5c82
+iter 48900000/136279841 ( 35.88%)  2.56 ms/iter  ETA 2.59 days  residue d07f666f6a1c5f62
+iter 49000000/136279841 ( 35.96%)  2.56 ms/iter  ETA 2.59 days  residue 597d15fbd16523f0
+iter 49100000/136279841 ( 36.03%)  2.55 ms/iter  ETA 2.57 days  residue 0b3f27fd01e5eade
+iter 49200000/136279841 ( 36.10%)  2.53 ms/iter  ETA 2.55 days  residue 0850bce0b112c634
+iter 49300000/136279841 ( 36.18%)  2.54 ms/iter  ETA 2.56 days  residue 73ccdb51a36f603e
+[checkpoint: 49387904/136279841 squarings (36.24%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 49400000/136279841 ( 36.25%)  2.53 ms/iter  ETA 2.54 days  residue 86b7a52c299dea30
+iter 49500000/136279841 ( 36.32%)  2.54 ms/iter  ETA 2.55 days  residue 5175199a4dc9769c
+iter 49600000/136279841 ( 36.40%)  2.54 ms/iter  ETA 2.55 days  residue c0803f386c685cca
+iter 49700000/136279841 ( 36.47%)  2.54 ms/iter  ETA 2.54 days  residue 8f60ac2236079142
+iter 49800000/136279841 ( 36.54%)  2.53 ms/iter  ETA 2.54 days  residue cf09fe4772d7a59c
+iter 49900000/136279841 ( 36.62%)  2.54 ms/iter  ETA 2.54 days  residue 422002688ab30ef8
+iter 50000000/136279841 ( 36.69%)  2.53 ms/iter  ETA 2.52 days  residue 65076f24f4c99a38
+[checkpoint: 50098368/136279841 squarings (36.76%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 50100000/136279841 ( 36.76%)  2.53 ms/iter  ETA 2.52 days  residue 6823ee387385e892
+iter 50200000/136279841 ( 36.84%)  2.54 ms/iter  ETA 2.53 days  residue 87e919b44e456c78
+iter 50300000/136279841 ( 36.91%)  2.54 ms/iter  ETA 2.53 days  residue 07b60fc8967e40ac
+iter 50400000/136279841 ( 36.98%)  2.54 ms/iter  ETA 2.52 days  residue efcd859420c4556a
+iter 50500000/136279841 ( 37.06%)  2.53 ms/iter  ETA 2.52 days  residue a932ec55b03173fc
+iter 50600000/136279841 ( 37.13%)  2.53 ms/iter  ETA 2.51 days  residue ee68442de72b831c
+iter 50700000/136279841 ( 37.20%)  2.53 ms/iter  ETA 2.50 days  residue 44dfefde87c7bdbe
+iter 50800000/136279841 ( 37.28%)  2.54 ms/iter  ETA 2.51 days  residue 81e3c078c7b0c39e
+[checkpoint: 50808576/136279841 squarings (37.28%) -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 50900000/136279841 ( 37.35%)  2.53 ms/iter  ETA 2.50 days  residue 0fdf0af95c39d534
+iter 51000000/136279841 ( 37.42%)  2.52 ms/iter  ETA 2.49 days  residue 7d7659477b8af354
+iter 51100000/136279841 ( 37.50%)  2.53 ms/iter  ETA 2.50 days  residue 8d2d08d2afe81502
+iter 51200000/136279841 ( 37.57%)  2.54 ms/iter  ETA 2.50 days  residue ce7e957a4d84fdcc
+iter 51300000/136279841 ( 37.64%)  2.66 ms/iter  ETA 2.62 days  residue 086fe22880149880
+iter 51400000/136279841 ( 37.72%)  2.67 ms/iter  ETA 2.62 days  residue a9c61c444568e8c8
+iter 51500000/136279841 ( 37.79%)  2.66 ms/iter  ETA 2.61 days  residue bcd7bd73d1b20f22
+[checkpoint: 51503552/136279841 squarings (37.79%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 51600000/136279841 ( 37.86%)  2.69 ms/iter  ETA 2.63 days  residue 8d279c2577a7520e
+iter 51700000/136279841 ( 37.94%)  2.7 ms/iter  ETA 2.64 days  residue a94c382135944ef4
+iter 51800000/136279841 ( 38.01%)  2.73 ms/iter  ETA 2.67 days  residue 6642bf4debefb5f2
+iter 51900000/136279841 ( 38.08%)  2.64 ms/iter  ETA 2.58 days  residue f91940f2dbe7f808
+iter 52000000/136279841 ( 38.16%)  2.59 ms/iter  ETA 2.52 days  residue 4e697a222831a44e
+iter 52100000/136279841 ( 38.23%)  2.62 ms/iter  ETA 2.55 days  residue 27b1681f00eb1064
+[checkpoint: 52183168/136279841 squarings (38.29%) -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 52200000/136279841 ( 38.30%)  2.57 ms/iter  ETA 2.50 days  residue c7dbda5362d255ca
+iter 52300000/136279841 ( 38.38%)  2.57 ms/iter  ETA 2.50 days  residue 400872e78b80245c
+iter 52400000/136279841 ( 38.45%)  2.54 ms/iter  ETA 2.47 days  residue 5ffc158c9d483a16
+iter 52500000/136279841 ( 38.52%)  2.59 ms/iter  ETA 2.52 days  residue e1277008edb4178a
+iter 52600000/136279841 ( 38.60%)  2.58 ms/iter  ETA 2.49 days  residue 035e51d90b38737c
+iter 52700000/136279841 ( 38.67%)  2.55 ms/iter  ETA 2.47 days  residue b64c701d3bf6524a
+iter 52800000/136279841 ( 38.74%)  2.54 ms/iter  ETA 2.45 days  residue 23a3029408496e98
+[checkpoint: 52890176/136279841 squarings (38.81%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 52900000/136279841 ( 38.82%)  2.44 ms/iter  ETA 2.35 days  residue c16d6ac5fed73a34
+iter 53000000/136279841 ( 38.89%)  2.43 ms/iter  ETA 2.34 days  residue 95674e77548b8c5e
+iter 53100000/136279841 ( 38.96%)  2.46 ms/iter  ETA 2.37 days  residue 9e5f02cd4035369a
+iter 53200000/136279841 ( 39.04%)  2.52 ms/iter  ETA 2.42 days  residue df399a81863512ac
+iter 53300000/136279841 ( 39.11%)  2.51 ms/iter  ETA 2.41 days  residue b4b4f75227d41c9c
+iter 53400000/136279841 ( 39.18%)  2.57 ms/iter  ETA 2.46 days  residue 52c82a7d37e924ae
+iter 53500000/136279841 ( 39.26%)  2.62 ms/iter  ETA 2.51 days  residue e5a8b91b74eb0bf4
+iter 53600000/136279841 ( 39.33%)  2.55 ms/iter  ETA 2.44 days  residue 3e5785e84dd9a34c
+[checkpoint: 53604160/136279841 squarings (39.33%) -> irred_r136279841_s12338357.ckpt, 0.07 s]
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.21, 20261119)
+Testing x^136279841 + x^12338357 + 1
+Threads: 2
+Resuming from irred_r136279841_s12338357.ckpt (written 2026-11-19 08:34:38): 53604160/136279841 squarings done (39.33%) in 37.58 h, residue 23d32bf23825d482
+  (a version 1 checkpoint from irred 0.20: its 53604160 squarings were done without error checking)
+Checkpointing to irred_r136279841_s12338357.ckpt every 30 minutes
+Error checking: Gerbicz XOR chain, blocks of 729 squarings, windows of up to 729 blocks; map check passed
+iter 53700000/136279841 ( 39.40%)  1.53 ms/iter  ETA 35.02 h  residue 400c43b804fc086c  (verified to 53604160)
+iter 53800000/136279841 ( 39.48%)  1.52 ms/iter  ETA 34.92 h  residue 2ad0af2e5384c192  (verified to 53604160)
+iter 53900000/136279841 ( 39.55%)  1.53 ms/iter  ETA 35.08 h  residue 1a32d4b6bb192dbc  (verified to 53604160)
+iter 54000000/136279841 ( 39.62%)  1.53 ms/iter  ETA 34.98 h  residue 16d5aa9bfbc98c46  (verified to 53604160)
+iter 54100000/136279841 ( 39.70%)  1.52 ms/iter  ETA 34.79 h  residue f987b8e29f3fcf90  (verified to 53604160)
+iter 54200000/136279841 ( 39.77%)  1.55 ms/iter  ETA 35.23 h  residue eb9370eb17cad6b0  (verified to 54135601)
+iter 54300000/136279841 ( 39.84%)  1.53 ms/iter  ETA 34.82 h  residue e83ef1baa40d7cb0  (verified to 54135601)
+iter 54400000/136279841 ( 39.92%)  1.56 ms/iter  ETA 35.48 h  residue b4889cdad9744462  (verified to 54135601)
+iter 54500000/136279841 ( 39.99%)  1.59 ms/iter  ETA 36.03 h  residue e45cf7eb5815f3f8  (verified to 54135601)
+iter 54600000/136279841 ( 40.06%)  1.59 ms/iter  ETA 36.02 h  residue 80317822d4ea609e  (verified to 54135601)
+iter 54700000/136279841 ( 40.14%)  1.6 ms/iter  ETA 36.34 h  residue 6bb16a4607a418d2  (verified to 54667042)
+[checkpoint: 54763999/136279841 squarings (40.18%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 54800000/136279841 ( 40.21%)  1.61 ms/iter  ETA 36.36 h  residue d77c230db3afd2dc  (verified to 54763999)
+iter 54900000/136279841 ( 40.28%)  1.59 ms/iter  ETA 35.93 h  residue e05c28e793e6760a  (verified to 54763999)
+iter 55000000/136279841 ( 40.36%)  1.59 ms/iter  ETA 35.96 h  residue 43717221c74d8068  (verified to 54763999)
+iter 55100000/136279841 ( 40.43%)  1.59 ms/iter  ETA 35.90 h  residue 0da40437c674a0fc  (verified to 54763999)
+iter 55200000/136279841 ( 40.50%)  1.59 ms/iter  ETA 35.79 h  residue 69d3f5fd9b26f1bc  (verified to 54763999)
+iter 55300000/136279841 ( 40.58%)  1.63 ms/iter  ETA 36.62 h  residue 2acbd158f80a166c  (verified to 55295440)
+iter 55400000/136279841 ( 40.65%)  1.6 ms/iter  ETA 35.91 h  residue 8abb306a1582c38a  (verified to 55295440)
+iter 55500000/136279841 ( 40.73%)  1.59 ms/iter  ETA 35.70 h  residue fb486e2689546fe0  (verified to 55295440)
+iter 55600000/136279841 ( 40.80%)  1.59 ms/iter  ETA 35.62 h  residue 7f35410887b62336  (verified to 55295440)
+iter 55700000/136279841 ( 40.87%)  1.6 ms/iter  ETA 35.88 h  residue 2e94a560d3f98352  (verified to 55295440)
+iter 55800000/136279841 ( 40.95%)  1.6 ms/iter  ETA 35.73 h  residue a0b7c7030dbce042  (verified to 55295440)
+[checkpoint: 55891033/136279841 squarings (41.01%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 55900000/136279841 ( 41.02%)  1.61 ms/iter  ETA 36.01 h  residue 3967816c20410322  (verified to 55891033)
+iter 56000000/136279841 ( 41.09%)  1.58 ms/iter  ETA 35.17 h  residue ef2038a47baa5d92  (verified to 55891033)
+iter 56100000/136279841 ( 41.17%)  1.59 ms/iter  ETA 35.43 h  residue 0cce0a2c07ed2722  (verified to 55891033)
+iter 56200000/136279841 ( 41.24%)  1.59 ms/iter  ETA 35.46 h  residue 49e54d7125e2a668  (verified to 55891033)
+iter 56300000/136279841 ( 41.31%)  1.6 ms/iter  ETA 35.49 h  residue b9fe73e423a6b93c  (verified to 55891033)
+iter 56400000/136279841 ( 41.39%)  1.59 ms/iter  ETA 35.28 h  residue 4947b269b24dc3da  (verified to 55891033)
+iter 56500000/136279841 ( 41.46%)  1.61 ms/iter  ETA 35.62 h  residue 0e04072d981c3fe0  (verified to 56422474)
+iter 56600000/136279841 ( 41.53%)  1.62 ms/iter  ETA 35.75 h  residue 99a42aeb7de2a916  (verified to 56422474)
+iter 56700000/136279841 ( 41.61%)  1.6 ms/iter  ETA 35.35 h  residue c191c1add1acd194  (verified to 56422474)
+iter 56800000/136279841 ( 41.68%)  1.59 ms/iter  ETA 35.12 h  residue 6c330628431494b0  (verified to 56422474)
+iter 56900000/136279841 ( 41.75%)  1.6 ms/iter  ETA 35.21 h  residue 1533a5969f4ce0e6  (verified to 56422474)
+iter 57000000/136279841 ( 41.83%)  1.59 ms/iter  ETA 35.06 h  residue 323c1004f1bed76e  (verified to 56953915)
+[checkpoint: 57020254/136279841 squarings (41.84%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 57100000/136279841 ( 41.90%)  1.59 ms/iter  ETA 34.91 h  residue c6c1eec0361a8178  (verified to 57020254)
+iter 57200000/136279841 ( 41.97%)  1.58 ms/iter  ETA 34.76 h  residue 9967eaa84b4e3b3e  (verified to 57020254)
+iter 57300000/136279841 ( 42.05%)  1.57 ms/iter  ETA 34.50 h  residue a10069457ebd2ad2  (verified to 57020254)
+iter 57400000/136279841 ( 42.12%)  1.57 ms/iter  ETA 34.44 h  residue c444542bb39e5e94  (verified to 57020254)
+iter 57500000/136279841 ( 42.19%)  1.58 ms/iter  ETA 34.60 h  residue d8672bb5f6f5c3be  (verified to 57020254)
+iter 57600000/136279841 ( 42.27%)  1.58 ms/iter  ETA 34.63 h  residue e54cd3e3d41185a0  (verified to 57551695)
+iter 57700000/136279841 ( 42.34%)  1.57 ms/iter  ETA 34.20 h  residue abdf24410f56c806  (verified to 57551695)
+iter 57800000/136279841 ( 42.41%)  1.57 ms/iter  ETA 34.17 h  residue ed5c8d047afcae0a  (verified to 57551695)
+iter 57900000/136279841 ( 42.49%)  1.57 ms/iter  ETA 34.13 h  residue 97311f93515587f6  (verified to 57551695)
+iter 58000000/136279841 ( 42.56%)  1.57 ms/iter  ETA 34.24 h  residue 6c95755460fe1a24  (verified to 57551695)
+iter 58100000/136279841 ( 42.63%)  1.58 ms/iter  ETA 34.28 h  residue acdcfb2086ef6374  (verified to 58083136)
+[checkpoint: 58163326/136279841 squarings (42.68%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 58200000/136279841 ( 42.71%)  1.6 ms/iter  ETA 34.63 h  residue 61ae7ffd7ff3bb40  (verified to 58163326)
+iter 58300000/136279841 ( 42.78%)  1.59 ms/iter  ETA 34.38 h  residue f8f4d59e1ea6d810  (verified to 58163326)
+iter 58400000/136279841 ( 42.85%)  1.59 ms/iter  ETA 34.30 h  residue 5dd5c80de87b86c8  (verified to 58163326)
+iter 58500000/136279841 ( 42.93%)  1.58 ms/iter  ETA 34.12 h  residue a0910c5e6afafa74  (verified to 58163326)
+iter 58600000/136279841 ( 43.00%)  1.59 ms/iter  ETA 34.23 h  residue e8f6d9c52c380290  (verified to 58163326)
+iter 58700000/136279841 ( 43.07%)  1.6 ms/iter  ETA 34.55 h  residue 849f0117be4913bc  (verified to 58694767)
+iter 58800000/136279841 ( 43.15%)  1.62 ms/iter  ETA 34.85 h  residue a5f9272554c1be7e  (verified to 58694767)
+iter 58900000/136279841 ( 43.22%)  1.6 ms/iter  ETA 34.45 h  residue 2b8a972cf70b7ab8  (verified to 58694767)
+iter 59000000/136279841 ( 43.29%)  1.62 ms/iter  ETA 34.74 h  residue 2451e719c48500b6  (verified to 58694767)
+iter 59100000/136279841 ( 43.37%)  1.59 ms/iter  ETA 34.04 h  residue b56ee621584396ba  (verified to 58694767)
+iter 59200000/136279841 ( 43.44%)  1.6 ms/iter  ETA 34.20 h  residue 3c43895dcec1c370  (verified to 58694767)
+[checkpoint: 59288902/136279841 squarings (43.51%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 59300000/136279841 ( 43.51%)  1.65 ms/iter  ETA 35.19 h  residue b8da62240ed97a14  (verified to 59288902)
+iter 59400000/136279841 ( 43.59%)  1.59 ms/iter  ETA 33.97 h  residue 2bcd4078a05bea4a  (verified to 59288902)
+iter 59500000/136279841 ( 43.66%)  1.6 ms/iter  ETA 34.07 h  residue 6823a2b82a132f9e  (verified to 59288902)
+iter 59600000/136279841 ( 43.73%)  1.59 ms/iter  ETA 33.93 h  residue 4e7951a06df64592  (verified to 59288902)
+iter 59700000/136279841 ( 43.81%)  1.6 ms/iter  ETA 34.02 h  residue b2b18d6c13e2f706  (verified to 59288902)
+iter 59800000/136279841 ( 43.88%)  1.58 ms/iter  ETA 33.65 h  residue d93827c6fe819686  (verified to 59288902)
+iter 59900000/136279841 ( 43.95%)  1.61 ms/iter  ETA 34.24 h  residue 384c1f305e1d0424  (verified to 59820343)
+iter 60000000/136279841 ( 44.03%)  1.61 ms/iter  ETA 34.08 h  residue 14fe3a5dd77aa722  (verified to 59820343)
+iter 60100000/136279841 ( 44.10%)  1.6 ms/iter  ETA 33.79 h  residue 7ba94dd86fe4a1f8  (verified to 59820343)
+iter 60200000/136279841 ( 44.17%)  1.58 ms/iter  ETA 33.49 h  residue b2202ce3b54adf64  (verified to 59820343)
+iter 60300000/136279841 ( 44.25%)  1.58 ms/iter  ETA 33.32 h  residue 64e30e682b33fa68  (verified to 59820343)
+iter 60400000/136279841 ( 44.32%)  1.6 ms/iter  ETA 33.76 h  residue 916d71261a3a4316  (verified to 60351784)
+[checkpoint: 60417394/136279841 squarings (44.33%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 60500000/136279841 ( 44.39%)  1.61 ms/iter  ETA 33.87 h  residue c3e4b6f92024afda  (verified to 60417394)
+iter 60600000/136279841 ( 44.47%)  1.6 ms/iter  ETA 33.62 h  residue 0072b7c77a0edbfc  (verified to 60417394)
+iter 60700000/136279841 ( 44.54%)  1.62 ms/iter  ETA 34.03 h  residue ccf55d1640b611dc  (verified to 60417394)
+iter 60800000/136279841 ( 44.61%)  1.67 ms/iter  ETA 34.95 h  residue d05c8c742d27b264  (verified to 60417394)
+iter 60900000/136279841 ( 44.69%)  1.67 ms/iter  ETA 35.07 h  residue cee3d5b07dbde8ce  (verified to 60417394)
+iter 61000000/136279841 ( 44.76%)  1.7 ms/iter  ETA 35.58 h  residue 83f9fc45b7290eea  (verified to 60948835)
+iter 61100000/136279841 ( 44.83%)  1.65 ms/iter  ETA 34.42 h  residue 4776d041e75e9f0a  (verified to 60948835)
+iter 61200000/136279841 ( 44.91%)  1.68 ms/iter  ETA 35.08 h  residue 4d2c4002f12d9a28  (verified to 60948835)
+iter 61300000/136279841 ( 44.98%)  1.68 ms/iter  ETA 35.01 h  residue 9321e6b21e29a2fc  (verified to 60948835)
+iter 61400000/136279841 ( 45.05%)  1.65 ms/iter  ETA 34.35 h  residue 55a593bfbfe1d8da  (verified to 60948835)
+iter 61500000/136279841 ( 45.13%)  1.65 ms/iter  ETA 34.22 h  residue cdc5a95dd14ae1ba  (verified to 61480276)
+[checkpoint: 61507249/136279841 squarings (45.13%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 61600000/136279841 ( 45.20%)  1.7 ms/iter  ETA 35.16 h  residue 34cbba188fec739a  (verified to 61507249)
+iter 61700000/136279841 ( 45.27%)  1.68 ms/iter  ETA 34.86 h  residue fb368eb90cb76704  (verified to 61507249)
+iter 61800000/136279841 ( 45.35%)  1.66 ms/iter  ETA 34.28 h  residue 1b03afb8c047acfc  (verified to 61507249)
+iter 61900000/136279841 ( 45.42%)  1.66 ms/iter  ETA 34.21 h  residue dcae5dbce9aedd7c  (verified to 61507249)
+iter 62000000/136279841 ( 45.49%)  1.65 ms/iter  ETA 33.99 h  residue abae991106af0b02  (verified to 61507249)
+iter 62100000/136279841 ( 45.57%)  1.63 ms/iter  ETA 33.69 h  residue 6a54ab038967e098  (verified to 62038690)
+iter 62200000/136279841 ( 45.64%)  1.58 ms/iter  ETA 32.49 h  residue d61c4123ba694418  (verified to 62038690)
+iter 62300000/136279841 ( 45.71%)  1.66 ms/iter  ETA 34.19 h  residue 4c68d24c66d1bada  (verified to 62038690)
+iter 62400000/136279841 ( 45.79%)  1.72 ms/iter  ETA 35.27 h  residue 140d06ce199ea056  (verified to 62038690)
+iter 62500000/136279841 ( 45.86%)  1.74 ms/iter  ETA 35.59 h  residue f9e65d1c99d4f758  (verified to 62038690)
+[checkpoint: 62586898/136279841 squarings (45.93%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 62600000/136279841 ( 45.93%)  1.69 ms/iter  ETA 34.54 h  residue 8cbc295d2674a00a  (verified to 62586898)
+iter 62700000/136279841 ( 46.01%)  1.62 ms/iter  ETA 33.17 h  residue 8ed0d8ac939e15a6  (verified to 62586898)
+iter 62800000/136279841 ( 46.08%)  1.63 ms/iter  ETA 33.19 h  residue 3c68473f0e22c1fc  (verified to 62586898)
+iter 62900000/136279841 ( 46.16%)  1.63 ms/iter  ETA 33.21 h  residue 3658cde6bb0ffe9e  (verified to 62586898)
+iter 63000000/136279841 ( 46.23%)  1.63 ms/iter  ETA 33.11 h  residue 142f6153e73093d6  (verified to 62586898)
+iter 63100000/136279841 ( 46.30%)  1.63 ms/iter  ETA 33.13 h  residue 834da4f9d45d56e0  (verified to 62586898)
+iter 63200000/136279841 ( 46.38%)  1.63 ms/iter  ETA 33.15 h  residue beabf838fec4228a  (verified to 63118339)
+iter 63300000/136279841 ( 46.45%)  1.61 ms/iter  ETA 32.70 h  residue cb4b1d27e0d94ab4  (verified to 63118339)
+iter 63400000/136279841 ( 46.52%)  1.63 ms/iter  ETA 32.91 h  residue e5398b3f49909c64  (verified to 63118339)
+iter 63500000/136279841 ( 46.60%)  1.61 ms/iter  ETA 32.59 h  residue d92dee61dd1583f0  (verified to 63118339)
+iter 63600000/136279841 ( 46.67%)  1.62 ms/iter  ETA 32.75 h  residue a1ad30218a4f66cc  (verified to 63118339)
+[checkpoint: 63694249/136279841 squarings (46.74%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 63700000/136279841 ( 46.74%)  1.67 ms/iter  ETA 33.60 h  residue 561336bc0b977b14  (verified to 63694249)
+iter 63800000/136279841 ( 46.82%)  1.63 ms/iter  ETA 32.73 h  residue c2a6266e96e1e8ea  (verified to 63694249)
+iter 63900000/136279841 ( 46.89%)  1.61 ms/iter  ETA 32.46 h  residue 3a432000b55a4228  (verified to 63694249)
+iter 64000000/136279841 ( 46.96%)  1.61 ms/iter  ETA 32.38 h  residue 7a400068eea7f168  (verified to 63694249)
+iter 64100000/136279841 ( 47.04%)  1.69 ms/iter  ETA 33.84 h  residue 03784120934d80c8  (verified to 63694249)
+iter 64200000/136279841 ( 47.11%)  1.65 ms/iter  ETA 33.14 h  residue 426abce3a6202854  (verified to 63694249)
+iter 64300000/136279841 ( 47.18%)  1.68 ms/iter  ETA 33.59 h  residue 650f7b01f129712e  (verified to 64225690)
+iter 64400000/136279841 ( 47.26%)  1.65 ms/iter  ETA 32.91 h  residue e14ab071bcde5ef0  (verified to 64225690)
+iter 64500000/136279841 ( 47.33%)  1.66 ms/iter  ETA 33.05 h  residue 943d190a694d53ce  (verified to 64225690)
+iter 64600000/136279841 ( 47.40%)  1.71 ms/iter  ETA 34.10 h  residue ac28fa37bbbeb77a  (verified to 64225690)
+iter 64700000/136279841 ( 47.48%)  1.68 ms/iter  ETA 33.33 h  residue 944d2f30abbe002e  (verified to 64225690)
+[checkpoint: 64782646/136279841 squarings (47.54%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 64800000/136279841 ( 47.55%)  1.65 ms/iter  ETA 32.70 h  residue 2564ae852a7ede1a  (verified to 64782646)
+iter 64900000/136279841 ( 47.62%)  1.62 ms/iter  ETA 32.16 h  residue f17ed47a591a0486  (verified to 64782646)
+iter 65000000/136279841 ( 47.70%)  1.69 ms/iter  ETA 33.55 h  residue 3cbacf450d6cdee8  (verified to 64782646)
+iter 65100000/136279841 ( 47.77%)  1.63 ms/iter  ETA 32.20 h  residue 9f257144d2166714  (verified to 64782646)
+iter 65200000/136279841 ( 47.84%)  1.63 ms/iter  ETA 32.16 h  residue 18a23de5cc8b9dfc  (verified to 64782646)
+iter 65300000/136279841 ( 47.92%)  1.61 ms/iter  ETA 31.80 h  residue a160ef52b66d40ce  (verified to 64782646)
+iter 65400000/136279841 ( 47.99%)  1.63 ms/iter  ETA 32.04 h  residue c364a65fbc9a2c26  (verified to 65314087)
+iter 65500000/136279841 ( 48.06%)  1.61 ms/iter  ETA 31.64 h  residue bf03fb664c81866c  (verified to 65314087)
+iter 65600000/136279841 ( 48.14%)  1.64 ms/iter  ETA 32.15 h  residue 6d35e9dc7ee2f5a8  (verified to 65314087)
+iter 65700000/136279841 ( 48.21%)  1.62 ms/iter  ETA 31.82 h  residue fba4dcc3af6bff08  (verified to 65314087)
+iter 65800000/136279841 ( 48.28%)  1.59 ms/iter  ETA 31.22 h  residue bc1739194b8e4734  (verified to 65314087)
+[checkpoint: 65889268/136279841 squarings (48.35%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 65900000/136279841 ( 48.36%)  1.63 ms/iter  ETA 31.78 h  residue dd0e1a6dea3c73f0  (verified to 65889268)
+iter 66000000/136279841 ( 48.43%)  1.62 ms/iter  ETA 31.59 h  residue 759c752ed71e1276  (verified to 65889268)
+iter 66100000/136279841 ( 48.50%)  1.61 ms/iter  ETA 31.33 h  residue 5acb02095a376090  (verified to 65889268)
+iter 66200000/136279841 ( 48.58%)  1.64 ms/iter  ETA 31.95 h  residue da4a91458d4daf94  (verified to 65889268)
+iter 66300000/136279841 ( 48.65%)  1.6 ms/iter  ETA 31.18 h  residue 61dd08085eebe1ac  (verified to 65889268)
+iter 66400000/136279841 ( 48.72%)  1.6 ms/iter  ETA 31.14 h  residue e1ea5ee3ffc1c31c  (verified to 65889268)
+iter 66500000/136279841 ( 48.80%)  1.61 ms/iter  ETA 31.24 h  residue a3df728d7dd904e0  (verified to 66420709)
+iter 66600000/136279841 ( 48.87%)  1.61 ms/iter  ETA 31.10 h  residue ac4797d8b77022f8  (verified to 66420709)
+iter 66700000/136279841 ( 48.94%)  1.6 ms/iter  ETA 30.95 h  residue c8ca2b0b2e272d7a  (verified to 66420709)
+iter 66800000/136279841 ( 49.02%)  1.64 ms/iter  ETA 31.57 h  residue 6d1273d82fc8f402  (verified to 66420709)
+iter 66900000/136279841 ( 49.09%)  1.6 ms/iter  ETA 30.84 h  residue c748c84630c74c2a  (verified to 66420709)
+iter 67000000/136279841 ( 49.16%)  1.61 ms/iter  ETA 31.02 h  residue ec85377fe4c0a604  (verified to 66952150)
+[checkpoint: 67006096/136279841 squarings (49.17%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 67100000/136279841 ( 49.24%)  1.62 ms/iter  ETA 31.09 h  residue b3edcf4ad29ec706  (verified to 67006096)
+iter 67200000/136279841 ( 49.31%)  1.62 ms/iter  ETA 31.09 h  residue 974c85ea60410880  (verified to 67006096)
+iter 67300000/136279841 ( 49.38%)  1.62 ms/iter  ETA 30.98 h  residue adacb4ae7aaecd4c  (verified to 67006096)
+iter 67400000/136279841 ( 49.46%)  1.59 ms/iter  ETA 30.33 h  residue 5483796e06c134f8  (verified to 67006096)
+iter 67500000/136279841 ( 49.53%)  1.58 ms/iter  ETA 30.16 h  residue b03b3f64179cc758  (verified to 67006096)
+iter 67600000/136279841 ( 49.60%)  1.59 ms/iter  ETA 30.37 h  residue 347af958a836baa6  (verified to 67537537)
+iter 67700000/136279841 ( 49.68%)  1.57 ms/iter  ETA 29.96 h  residue c0e2b1c36b616c9c  (verified to 67537537)
+iter 67800000/136279841 ( 49.75%)  1.57 ms/iter  ETA 29.92 h  residue c448e566c9902498  (verified to 67537537)
+iter 67900000/136279841 ( 49.82%)  1.57 ms/iter  ETA 29.85 h  residue 4f7fd576996dbbf6  (verified to 67537537)
+iter 68000000/136279841 ( 49.90%)  1.57 ms/iter  ETA 29.85 h  residue 8c441069eb66cc34  (verified to 67537537)
+iter 68100000/136279841 ( 49.97%)  1.59 ms/iter  ETA 30.05 h  residue d63a44a21d9d8530  (verified to 68068978)
+[checkpoint: 68139691/136279841 squarings (50.00%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 68200000/136279841 ( 50.04%)  1.59 ms/iter  ETA 30.07 h  residue fa80018fa7485d38  (verified to 68139691)
+iter 68300000/136279841 ( 50.12%)  1.58 ms/iter  ETA 29.83 h  residue 62ec5e291dff7184  (verified to 68139691)
+iter 68400000/136279841 ( 50.19%)  1.57 ms/iter  ETA 29.60 h  residue f6d0e4a539bd306e  (verified to 68139691)
+iter 68500000/136279841 ( 50.26%)  1.57 ms/iter  ETA 29.55 h  residue b09f93ca52100912  (verified to 68139691)
+iter 68600000/136279841 ( 50.34%)  1.57 ms/iter  ETA 29.52 h  residue addc1876edf0d306  (verified to 68139691)
+iter 68700000/136279841 ( 50.41%)  1.59 ms/iter  ETA 29.80 h  residue c3beeb7171f49938  (verified to 68671132)
+iter 68800000/136279841 ( 50.48%)  1.58 ms/iter  ETA 29.59 h  residue d1e9aa0dbe8f0622  (verified to 68671132)
+iter 68900000/136279841 ( 50.56%)  1.57 ms/iter  ETA 29.46 h  residue aef58dd74c1ac0a4  (verified to 68671132)
+iter 69000000/136279841 ( 50.63%)  1.58 ms/iter  ETA 29.46 h  residue ff188df794b08278  (verified to 68671132)
+iter 69100000/136279841 ( 50.70%)  1.57 ms/iter  ETA 29.31 h  residue 8caad8cfefe60b32  (verified to 68671132)
+iter 69200000/136279841 ( 50.78%)  1.57 ms/iter  ETA 29.23 h  residue 736d634677a9f9f4  (verified to 68671132)
+[checkpoint: 69282763/136279841 squarings (50.84%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 69300000/136279841 ( 50.85%)  1.59 ms/iter  ETA 29.67 h  residue 8143a0c93550171e  (verified to 69282763)
+iter 69400000/136279841 ( 50.92%)  1.57 ms/iter  ETA 29.21 h  residue 9482a0484ffff880  (verified to 69282763)
+iter 69500000/136279841 ( 51.00%)  1.58 ms/iter  ETA 29.25 h  residue 5ad623fca6bc5aaa  (verified to 69282763)
+iter 69600000/136279841 ( 51.07%)  1.57 ms/iter  ETA 29.10 h  residue a9fa58a6c76197aa  (verified to 69282763)
+iter 69700000/136279841 ( 51.14%)  1.61 ms/iter  ETA 29.82 h  residue 2fe90b06e9d585ce  (verified to 69282763)
+iter 69800000/136279841 ( 51.22%)  1.69 ms/iter  ETA 31.20 h  residue 5728f824846121cc  (verified to 69282763)
+iter 69900000/136279841 ( 51.29%)  1.66 ms/iter  ETA 30.61 h  residue 1cba73b5294c1f18  (verified to 69814204)
+iter 70000000/136279841 ( 51.36%)  1.62 ms/iter  ETA 29.77 h  residue 6129f0b6d59d29e4  (verified to 69814204)
+iter 70100000/136279841 ( 51.44%)  1.65 ms/iter  ETA 30.30 h  residue 03f8ad4b4147ce3e  (verified to 69814204)
+iter 70200000/136279841 ( 51.51%)  1.6 ms/iter  ETA 29.39 h  residue 4c2fbece2f4bfb36  (verified to 69814204)
+iter 70300000/136279841 ( 51.59%)  1.61 ms/iter  ETA 29.42 h  residue 9ba045e9bd7baaa0  (verified to 69814204)
+[checkpoint: 70398133/136279841 squarings (51.66%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 70400000/136279841 ( 51.66%)  1.63 ms/iter  ETA 29.78 h  residue 9b58a7ba123008d4  (verified to 70398133)
+iter 70500000/136279841 ( 51.73%)  1.6 ms/iter  ETA 29.24 h  residue ca1f6b1663429df6  (verified to 70398133)
+iter 70600000/136279841 ( 51.81%)  1.65 ms/iter  ETA 30.17 h  residue d0061dbda16abad2  (verified to 70398133)
+iter 70700000/136279841 ( 51.88%)  1.67 ms/iter  ETA 30.49 h  residue 2ab283598e38c7ec  (verified to 70398133)
+iter 70800000/136279841 ( 51.95%)  1.69 ms/iter  ETA 30.81 h  residue 534df773539be2ec  (verified to 70398133)
+iter 70900000/136279841 ( 52.03%)  1.66 ms/iter  ETA 30.12 h  residue ce53b5bf889dd8ba  (verified to 70398133)
+iter 71000000/136279841 ( 52.10%)  1.68 ms/iter  ETA 30.48 h  residue 44e03507a5a4f612  (verified to 70929574)
+iter 71100000/136279841 ( 52.17%)  1.66 ms/iter  ETA 30.12 h  residue 83eb085c56792be8  (verified to 70929574)
+iter 71200000/136279841 ( 52.25%)  1.68 ms/iter  ETA 30.35 h  residue 0ba64ff4c387451a  (verified to 70929574)
+iter 71300000/136279841 ( 52.32%)  1.67 ms/iter  ETA 30.16 h  residue 6001b355e8a95ee4  (verified to 70929574)
+iter 71400000/136279841 ( 52.39%)  1.61 ms/iter  ETA 28.95 h  residue d0edd463641a4de6  (verified to 70929574)
+[checkpoint: 71482885/136279841 squarings (52.45%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 71500000/136279841 ( 52.47%)  1.69 ms/iter  ETA 30.44 h  residue f3c0b749a4cc01cc  (verified to 71482885)
+iter 71600000/136279841 ( 52.54%)  1.66 ms/iter  ETA 29.87 h  residue 63bae2a633e0c6ec  (verified to 71482885)
+iter 71700000/136279841 ( 52.61%)  1.67 ms/iter  ETA 29.99 h  residue f98362c3014d1eda  (verified to 71482885)
+iter 71800000/136279841 ( 52.69%)  1.62 ms/iter  ETA 28.95 h  residue 05b6d587f877579a  (verified to 71482885)
+iter 71900000/136279841 ( 52.76%)  1.59 ms/iter  ETA 28.38 h  residue a8e2ac70ff1a201e  (verified to 71482885)
+iter 72000000/136279841 ( 52.83%)  1.58 ms/iter  ETA 28.15 h  residue 7f868b4402fbae66  (verified to 71482885)
+iter 72100000/136279841 ( 52.91%)  1.59 ms/iter  ETA 28.27 h  residue eeaa17cb42bd5cfe  (verified to 72014326)
+iter 72200000/136279841 ( 52.98%)  1.57 ms/iter  ETA 28.00 h  residue d29c7f4bf0998714  (verified to 72014326)
+iter 72300000/136279841 ( 53.05%)  1.58 ms/iter  ETA 28.14 h  residue 8228ab104709663c  (verified to 72014326)
+iter 72400000/136279841 ( 53.13%)  1.59 ms/iter  ETA 28.18 h  residue 96fd044fb4eb939c  (verified to 72014326)
+iter 72500000/136279841 ( 53.20%)  1.58 ms/iter  ETA 28.08 h  residue 3d9fbb7691e9a3f2  (verified to 72014326)
+iter 72600000/136279841 ( 53.27%)  1.6 ms/iter  ETA 28.23 h  residue ddfac898739ce642  (verified to 72545767)
+[checkpoint: 72606274/136279841 squarings (53.28%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 72700000/136279841 ( 53.35%)  1.6 ms/iter  ETA 28.31 h  residue f7375db081f437a8  (verified to 72606274)
+iter 72800000/136279841 ( 53.42%)  1.59 ms/iter  ETA 27.97 h  residue 37c0d05979c6d298  (verified to 72606274)
+iter 72900000/136279841 ( 53.49%)  1.59 ms/iter  ETA 27.95 h  residue eac0fcb259f25c60  (verified to 72606274)
+iter 73000000/136279841 ( 53.57%)  1.59 ms/iter  ETA 27.88 h  residue 77a352d940baf0a2  (verified to 72606274)
+iter 73100000/136279841 ( 53.64%)  1.59 ms/iter  ETA 27.87 h  residue d7def647c00202b0  (verified to 72606274)
+iter 73200000/136279841 ( 53.71%)  1.6 ms/iter  ETA 27.98 h  residue 054b81324696bc2a  (verified to 73137715)
+iter 73300000/136279841 ( 53.79%)  1.59 ms/iter  ETA 27.74 h  residue d7ea99b638206518  (verified to 73137715)
+iter 73400000/136279841 ( 53.86%)  1.59 ms/iter  ETA 27.85 h  residue 808d55513e55c856  (verified to 73137715)
+iter 73500000/136279841 ( 53.93%)  1.59 ms/iter  ETA 27.64 h  residue 15f389d61ace08ee  (verified to 73137715)
+iter 73600000/136279841 ( 54.01%)  1.58 ms/iter  ETA 27.58 h  residue e2103ec7b4b6d9f2  (verified to 73137715)
+iter 73700000/136279841 ( 54.08%)  1.59 ms/iter  ETA 27.71 h  residue 5d7fb141e70ec3ec  (verified to 73669156)
+[checkpoint: 73739869/136279841 squarings (54.11%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 73800000/136279841 ( 54.15%)  1.6 ms/iter  ETA 27.73 h  residue 4c9894168fca8aa8  (verified to 73739869)
+iter 73900000/136279841 ( 54.23%)  1.59 ms/iter  ETA 27.47 h  residue c9cb94b298998750  (verified to 73739869)
+iter 74000000/136279841 ( 54.30%)  1.59 ms/iter  ETA 27.45 h  residue 2471f1da56c1c992  (verified to 73739869)
+iter 74100000/136279841 ( 54.37%)  1.59 ms/iter  ETA 27.43 h  residue 35274f0ed9f33238  (verified to 73739869)
+iter 74200000/136279841 ( 54.45%)  1.58 ms/iter  ETA 27.31 h  residue 7fd3360e00f5c6a0  (verified to 73739869)
+iter 74300000/136279841 ( 54.52%)  1.6 ms/iter  ETA 27.53 h  residue ef33ce679cc8bd5c  (verified to 74271310)
+iter 74400000/136279841 ( 54.59%)  1.58 ms/iter  ETA 27.23 h  residue 8236f675910c30b8  (verified to 74271310)
+iter 74500000/136279841 ( 54.67%)  1.58 ms/iter  ETA 27.19 h  residue 161897ec29c238f8  (verified to 74271310)
+iter 74600000/136279841 ( 54.74%)  1.59 ms/iter  ETA 27.22 h  residue fdac4dd40c5d8a28  (verified to 74271310)
+iter 74700000/136279841 ( 54.81%)  1.59 ms/iter  ETA 27.17 h  residue b242eade335e38d0  (verified to 74271310)
+iter 74800000/136279841 ( 54.89%)  1.59 ms/iter  ETA 27.11 h  residue 8190af301b192356  (verified to 74271310)
+[checkpoint: 74873464/136279841 squarings (54.94%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 74900000/136279841 ( 54.96%)  1.61 ms/iter  ETA 27.44 h  residue 846fe304df901c42  (verified to 74873464)
+iter 75000000/136279841 ( 55.03%)  1.58 ms/iter  ETA 26.92 h  residue efb9e4ee68e1dbc2  (verified to 74873464)
+iter 75100000/136279841 ( 55.11%)  1.59 ms/iter  ETA 26.94 h  residue da19a18de5905f0c  (verified to 74873464)
+iter 75200000/136279841 ( 55.18%)  1.58 ms/iter  ETA 26.88 h  residue d900449c820756d4  (verified to 74873464)
+iter 75300000/136279841 ( 55.25%)  1.58 ms/iter  ETA 26.84 h  residue f5ec66fecdd14f92  (verified to 74873464)
+iter 75400000/136279841 ( 55.33%)  1.58 ms/iter  ETA 26.79 h  residue 79e20b4b463a1e9e  (verified to 74873464)
+iter 75500000/136279841 ( 55.40%)  1.6 ms/iter  ETA 26.96 h  residue 68d92b5d4605864c  (verified to 75404905)
+iter 75600000/136279841 ( 55.47%)  1.58 ms/iter  ETA 26.70 h  residue fae729fd71398874  (verified to 75404905)
+iter 75700000/136279841 ( 55.55%)  1.58 ms/iter  ETA 26.65 h  residue af3b930365b708ba  (verified to 75404905)
+iter 75800000/136279841 ( 55.62%)  1.59 ms/iter  ETA 26.63 h  residue 815d604a32b5b8a8  (verified to 75404905)
+iter 75900000/136279841 ( 55.69%)  1.58 ms/iter  ETA 26.58 h  residue 59bb8e7436a126a8  (verified to 75404905)
+iter 76000000/136279841 ( 55.77%)  1.6 ms/iter  ETA 26.77 h  residue 6e7711ecbed5060e  (verified to 75936346)
+[checkpoint: 76008517/136279841 squarings (55.77%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 76100000/136279841 ( 55.84%)  1.6 ms/iter  ETA 26.68 h  residue 92e3ce1277ff7898  (verified to 76008517)
+iter 76200000/136279841 ( 55.91%)  1.58 ms/iter  ETA 26.42 h  residue 35f3b0572aca49ec  (verified to 76008517)
+iter 76300000/136279841 ( 55.99%)  1.59 ms/iter  ETA 26.42 h  residue d7c9e95e43041206  (verified to 76008517)
+iter 76400000/136279841 ( 56.06%)  1.59 ms/iter  ETA 26.37 h  residue 99adc8b8c6f41da6  (verified to 76008517)
+iter 76500000/136279841 ( 56.13%)  1.59 ms/iter  ETA 26.33 h  residue cce751aaf049ba34  (verified to 76008517)
+iter 76600000/136279841 ( 56.21%)  1.6 ms/iter  ETA 26.45 h  residue 3f1d857ab096bb0c  (verified to 76539958)
+iter 76700000/136279841 ( 56.28%)  1.58 ms/iter  ETA 26.22 h  residue 3f06e4a16ba7af34  (verified to 76539958)
+iter 76800000/136279841 ( 56.35%)  1.59 ms/iter  ETA 26.24 h  residue 158e4077cf4dae7a  (verified to 76539958)
+iter 76900000/136279841 ( 56.43%)  1.58 ms/iter  ETA 26.12 h  residue 12adbc048edadfae  (verified to 76539958)
+iter 77000000/136279841 ( 56.50%)  1.59 ms/iter  ETA 26.11 h  residue 9c2f7700643e28bc  (verified to 76539958)
+iter 77100000/136279841 ( 56.57%)  1.6 ms/iter  ETA 26.26 h  residue 04a59af263e08a52  (verified to 77071399)
+[checkpoint: 77142841/136279841 squarings (56.61%), verified -> irred_r136279841_s12338357.ckpt, 0.03 s]
+iter 77200000/136279841 ( 56.65%)  1.6 ms/iter  ETA 26.20 h  residue cc5589b230692e5e  (verified to 77142841)
+iter 77300000/136279841 ( 56.72%)  1.59 ms/iter  ETA 26.01 h  residue cf593eae8d6059cc  (verified to 77142841)
+iter 77400000/136279841 ( 56.79%)  1.58 ms/iter  ETA 25.91 h  residue 47cbbb69b57d85b8  (verified to 77142841)
+iter 77500000/136279841 ( 56.87%)  1.58 ms/iter  ETA 25.87 h  residue 9bac744efff5c5ee  (verified to 77142841)
+iter 77600000/136279841 ( 56.94%)  1.59 ms/iter  ETA 25.85 h  residue 15a1205e2fbb503a  (verified to 77142841)
+iter 77700000/136279841 ( 57.02%)  1.6 ms/iter  ETA 25.97 h  residue 4ed369e03421a214  (verified to 77674282)
+iter 77800000/136279841 ( 57.09%)  1.58 ms/iter  ETA 25.72 h  residue 9ce7113f1c2baae6  (verified to 77674282)
+iter 77900000/136279841 ( 57.16%)  1.59 ms/iter  ETA 25.74 h  residue 5ba6118ae8a8c7ca  (verified to 77674282)
+iter 78000000/136279841 ( 57.24%)  1.6 ms/iter  ETA 25.90 h  residue 20f552eca26d68f4  (verified to 77674282)
+iter 78100000/136279841 ( 57.31%)  1.6 ms/iter  ETA 25.87 h  residue c9d046da9a04fc68  (verified to 77674282)
+iter 78200000/136279841 ( 57.38%)  1.6 ms/iter  ETA 25.74 h  residue c0ca2035a522bc1a  (verified to 77674282)
+[checkpoint: 78274249/136279841 squarings (57.44%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 78300000/136279841 ( 57.46%)  1.62 ms/iter  ETA 26.04 h  residue e10c75b442a48d2c  (verified to 78274249)
+iter 78400000/136279841 ( 57.53%)  1.59 ms/iter  ETA 25.55 h  residue aeec27781203b03a  (verified to 78274249)
+iter 78500000/136279841 ( 57.60%)  1.58 ms/iter  ETA 25.41 h  residue e7215eed2a3e7628  (verified to 78274249)
+iter 78600000/136279841 ( 57.68%)  1.58 ms/iter  ETA 25.38 h  residue c17d3b2bfb6fd5b6  (verified to 78274249)
+iter 78700000/136279841 ( 57.75%)  1.59 ms/iter  ETA 25.41 h  residue af462d3245c5652e  (verified to 78274249)
+iter 78800000/136279841 ( 57.82%)  1.6 ms/iter  ETA 25.51 h  residue 6f8928d440903cea  (verified to 78274249)
+iter 78900000/136279841 ( 57.90%)  1.69 ms/iter  ETA 26.89 h  residue c8eb17bb775b68ca  (verified to 78805690)
+iter 79000000/136279841 ( 57.97%)  1.68 ms/iter  ETA 26.69 h  residue d1fd7530decd5c58  (verified to 78805690)
+iter 79100000/136279841 ( 58.04%)  1.67 ms/iter  ETA 26.58 h  residue 13214aac6e26e066  (verified to 78805690)
+iter 79200000/136279841 ( 58.12%)  1.67 ms/iter  ETA 26.40 h  residue 7032e72624477ba8  (verified to 78805690)
+iter 79300000/136279841 ( 58.19%)  1.6 ms/iter  ETA 25.34 h  residue b41f6005fcd95ec6  (verified to 78805690)
+[checkpoint: 79383058/136279841 squarings (58.25%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 79400000/136279841 ( 58.26%)  1.65 ms/iter  ETA 26.07 h  residue 890093ef4a725bba  (verified to 79383058)
+iter 79500000/136279841 ( 58.34%)  1.68 ms/iter  ETA 26.51 h  residue d86ee4e01a5cbf80  (verified to 79383058)
+iter 79600000/136279841 ( 58.41%)  1.63 ms/iter  ETA 25.63 h  residue 48d62f6ddb9d1c9c  (verified to 79383058)
+iter 79700000/136279841 ( 58.48%)  1.66 ms/iter  ETA 26.02 h  residue 5541d510bb555c76  (verified to 79383058)
+iter 79800000/136279841 ( 58.56%)  1.62 ms/iter  ETA 25.38 h  residue cfd467231c6f5e96  (verified to 79383058)
+iter 79900000/136279841 ( 58.63%)  1.65 ms/iter  ETA 25.83 h  residue 95d01167609328be  (verified to 79383058)
+iter 80000000/136279841 ( 58.70%)  1.64 ms/iter  ETA 25.61 h  residue 8d308bf19ca50732  (verified to 79914499)
+iter 80100000/136279841 ( 58.78%)  1.62 ms/iter  ETA 25.35 h  residue 01e3eab8d72f6150  (verified to 79914499)
+iter 80200000/136279841 ( 58.85%)  1.63 ms/iter  ETA 25.40 h  residue 76c93bfac4488d02  (verified to 79914499)
+iter 80300000/136279841 ( 58.92%)  1.65 ms/iter  ETA 25.61 h  residue 53ca9d9b32fe6a0a  (verified to 79914499)
+iter 80400000/136279841 ( 59.00%)  1.69 ms/iter  ETA 26.29 h  residue 909dc07d47a4a4d6  (verified to 79914499)
+[checkpoint: 80472913/136279841 squarings (59.05%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 80500000/136279841 ( 59.07%)  1.72 ms/iter  ETA 26.58 h  residue 0607f09a7ed66978  (verified to 80472913)
+iter 80600000/136279841 ( 59.14%)  1.72 ms/iter  ETA 26.62 h  residue d16799be61f7d970  (verified to 80472913)
+iter 80700000/136279841 ( 59.22%)  1.7 ms/iter  ETA 26.20 h  residue 96d2ea60eeeb9002  (verified to 80472913)
+iter 80800000/136279841 ( 59.29%)  1.63 ms/iter  ETA 25.19 h  residue 4b18c8d3dcad1ab2  (verified to 80472913)
+iter 80900000/136279841 ( 59.36%)  1.68 ms/iter  ETA 25.92 h  residue 9e92a44f29e464d8  (verified to 80472913)
+iter 81000000/136279841 ( 59.44%)  1.68 ms/iter  ETA 25.84 h  residue d9cd154db3338982  (verified to 80472913)
+iter 81100000/136279841 ( 59.51%)  1.66 ms/iter  ETA 25.49 h  residue b7354bc4bac16a8c  (verified to 81004354)
+iter 81200000/136279841 ( 59.58%)  1.62 ms/iter  ETA 24.81 h  residue da7205c2ddcbbb72  (verified to 81004354)
+iter 81300000/136279841 ( 59.66%)  1.73 ms/iter  ETA 26.40 h  residue 49626e1c1dd0325c  (verified to 81004354)
+iter 81400000/136279841 ( 59.73%)  1.63 ms/iter  ETA 24.89 h  residue a5ee25c1281631ec  (verified to 81004354)
+iter 81500000/136279841 ( 59.80%)  1.61 ms/iter  ETA 24.54 h  residue 4ffb02ffeb860858  (verified to 81004354)
+[checkpoint: 81551104/136279841 squarings (59.84%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 81600000/136279841 ( 59.88%)  1.7 ms/iter  ETA 25.79 h  residue 1e6ec4e7b8f6bfea  (verified to 81551104)
+iter 81700000/136279841 ( 59.95%)  1.71 ms/iter  ETA 25.93 h  residue b402086e1196d54a  (verified to 81551104)
+iter 81800000/136279841 ( 60.02%)  1.68 ms/iter  ETA 25.37 h  residue f5ddd57e7e14ade8  (verified to 81551104)
+iter 81900000/136279841 ( 60.10%)  1.66 ms/iter  ETA 25.13 h  residue e4c5866e197e5014  (verified to 81551104)
+iter 82000000/136279841 ( 60.17%)  1.66 ms/iter  ETA 24.98 h  residue dade559b0219d130  (verified to 81551104)
+iter 82100000/136279841 ( 60.24%)  1.61 ms/iter  ETA 24.29 h  residue e02d175e53f01da4  (verified to 82082545)
+iter 82200000/136279841 ( 60.32%)  1.63 ms/iter  ETA 24.52 h  residue 63274bd5cc9942ba  (verified to 82082545)
+iter 82300000/136279841 ( 60.39%)  1.64 ms/iter  ETA 24.54 h  residue b40df6e2fd6d878a  (verified to 82082545)
+iter 82400000/136279841 ( 60.46%)  1.63 ms/iter  ETA 24.36 h  residue 994171c475a28f24  (verified to 82082545)
+iter 82500000/136279841 ( 60.54%)  1.65 ms/iter  ETA 24.63 h  residue 18c83a922db6ba66  (verified to 82082545)
+iter 82600000/136279841 ( 60.61%)  1.68 ms/iter  ETA 25.04 h  residue 2366ebd24b284384  (verified to 82082545)
+[checkpoint: 82638043/136279841 squarings (60.64%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 82700000/136279841 ( 60.68%)  1.71 ms/iter  ETA 25.40 h  residue 9be7bd533a306d72  (verified to 82638043)
+iter 82800000/136279841 ( 60.76%)  1.68 ms/iter  ETA 24.97 h  residue 60492a83903fdb96  (verified to 82638043)
+iter 82900000/136279841 ( 60.83%)  1.68 ms/iter  ETA 24.85 h  residue e0b720ff7bc8802c  (verified to 82638043)
+iter 83000000/136279841 ( 60.90%)  1.7 ms/iter  ETA 25.18 h  residue 83ed3193e2849fd2  (verified to 82638043)
+iter 83100000/136279841 ( 60.98%)  1.68 ms/iter  ETA 24.78 h  residue 7e362b50dc89773c  (verified to 82638043)
+iter 83200000/136279841 ( 61.05%)  1.7 ms/iter  ETA 25.11 h  residue 525346025fda96ca  (verified to 83169484)
+iter 83300000/136279841 ( 61.12%)  1.63 ms/iter  ETA 24.02 h  residue 4482a84c42e327e6  (verified to 83169484)
+iter 83400000/136279841 ( 61.20%)  1.63 ms/iter  ETA 23.91 h  residue ca5c192e959030fe  (verified to 83169484)
+iter 83500000/136279841 ( 61.27%)  1.6 ms/iter  ETA 23.52 h  residue 401593a3a9f6800a  (verified to 83169484)
+iter 83600000/136279841 ( 61.34%)  1.61 ms/iter  ETA 23.61 h  residue 703af9577f6fcd76  (verified to 83169484)
+iter 83700000/136279841 ( 61.42%)  1.6 ms/iter  ETA 23.44 h  residue 74d6155b7148fd56  (verified to 83169484)
+[checkpoint: 83727169/136279841 squarings (61.44%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 83800000/136279841 ( 61.49%)  1.63 ms/iter  ETA 23.71 h  residue 3e70dbb158f033c8  (verified to 83727169)
+iter 83900000/136279841 ( 61.56%)  1.6 ms/iter  ETA 23.26 h  residue 1ab4c5d426cc2556  (verified to 83727169)
+iter 84000000/136279841 ( 61.64%)  1.6 ms/iter  ETA 23.19 h  residue c40d1aa676fcf396  (verified to 83727169)
+iter 84100000/136279841 ( 61.71%)  1.59 ms/iter  ETA 23.06 h  residue 8fb0a44c852b13aa  (verified to 83727169)
+iter 84200000/136279841 ( 61.78%)  1.59 ms/iter  ETA 23.02 h  residue 11c348ef33a7e42c  (verified to 83727169)
+iter 84300000/136279841 ( 61.86%)  1.6 ms/iter  ETA 23.09 h  residue b0460d8285045ea8  (verified to 84258610)
+iter 84400000/136279841 ( 61.93%)  1.59 ms/iter  ETA 22.90 h  residue e8176713670a5408  (verified to 84258610)
+iter 84500000/136279841 ( 62.00%)  1.59 ms/iter  ETA 22.81 h  residue bc9ebfb51866c368  (verified to 84258610)
+iter 84600000/136279841 ( 62.08%)  1.59 ms/iter  ETA 22.84 h  residue ffe8fcbeff678046  (verified to 84258610)
+iter 84700000/136279841 ( 62.15%)  1.67 ms/iter  ETA 23.89 h  residue cab40d968a5f8236  (verified to 84258610)
+iter 84800000/136279841 ( 62.22%)  1.78 ms/iter  ETA 25.46 h  residue eb9ae6b88144c51a  (verified to 84790051)
+[checkpoint: 84836707/136279841 squarings (62.25%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 84900000/136279841 ( 62.30%)  1.79 ms/iter  ETA 25.58 h  residue 9740ec9642706e74  (verified to 84836707)
+iter 85000000/136279841 ( 62.37%)  1.77 ms/iter  ETA 25.25 h  residue 1f7a023036262ce6  (verified to 84836707)
+iter 85100000/136279841 ( 62.45%)  1.78 ms/iter  ETA 25.27 h  residue 2d8d360bc4ce014e  (verified to 84836707)
+iter 85200000/136279841 ( 62.52%)  1.78 ms/iter  ETA 25.31 h  residue 8ae1599a92ebe15e  (verified to 84836707)
+iter 85300000/136279841 ( 62.59%)  1.79 ms/iter  ETA 25.29 h  residue cd646efc4236c180  (verified to 84836707)
+iter 85400000/136279841 ( 62.67%)  1.79 ms/iter  ETA 25.33 h  residue 69bcd819f67990ec  (verified to 85368148)
+iter 85500000/136279841 ( 62.74%)  1.78 ms/iter  ETA 25.14 h  residue e24ea8434fafa634  (verified to 85368148)
+iter 85600000/136279841 ( 62.81%)  1.8 ms/iter  ETA 25.29 h  residue 51a00f629ba7f130  (verified to 85368148)
+iter 85700000/136279841 ( 62.89%)  1.77 ms/iter  ETA 24.91 h  residue ff91d42d6537b182  (verified to 85368148)
+iter 85800000/136279841 ( 62.96%)  1.79 ms/iter  ETA 25.12 h  residue ff9badef2a879612  (verified to 85368148)
+[checkpoint: 85844914/136279841 squarings (62.99%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 85900000/136279841 ( 63.03%)  1.83 ms/iter  ETA 25.56 h  residue c2b978d9c027b622  (verified to 85844914)
+iter 86000000/136279841 ( 63.11%)  1.82 ms/iter  ETA 25.42 h  residue 406ad9f57ebbc584  (verified to 85844914)
+iter 86100000/136279841 ( 63.18%)  1.81 ms/iter  ETA 25.21 h  residue 705d8d521ac0a0d6  (verified to 85844914)
+iter 86200000/136279841 ( 63.25%)  1.77 ms/iter  ETA 24.56 h  residue c605ddf4edffe576  (verified to 85844914)
+iter 86300000/136279841 ( 63.33%)  1.68 ms/iter  ETA 23.39 h  residue 8bbf961faaf9020e  (verified to 85844914)
+iter 86400000/136279841 ( 63.40%)  1.67 ms/iter  ETA 23.21 h  residue 4656e7ecdc03d1a8  (verified to 86376355)
+iter 86500000/136279841 ( 63.47%)  1.63 ms/iter  ETA 22.51 h  residue 4902f880c0337486  (verified to 86376355)
+iter 86600000/136279841 ( 63.55%)  1.71 ms/iter  ETA 23.63 h  residue 2dc73b3c4c471d56  (verified to 86376355)
+iter 86700000/136279841 ( 63.62%)  1.69 ms/iter  ETA 23.29 h  residue a3253a58169ff7fc  (verified to 86376355)
+iter 86800000/136279841 ( 63.69%)  1.73 ms/iter  ETA 23.79 h  residue d144f59bc2935944  (verified to 86376355)
+[checkpoint: 86886655/136279841 squarings (63.76%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 86900000/136279841 ( 63.77%)  1.73 ms/iter  ETA 23.76 h  residue 55bc714783857da4  (verified to 86886655)
+iter 87000000/136279841 ( 63.84%)  1.71 ms/iter  ETA 23.34 h  residue 2b86812a3561410a  (verified to 86886655)
+iter 87100000/136279841 ( 63.91%)  1.64 ms/iter  ETA 22.40 h  residue 943f057e784711de  (verified to 86886655)
+iter 87200000/136279841 ( 63.99%)  1.64 ms/iter  ETA 22.37 h  residue 7fa68e561a2f2fb6  (verified to 86886655)
+iter 87300000/136279841 ( 64.06%)  1.66 ms/iter  ETA 22.59 h  residue c2b67dcac4da2e22  (verified to 86886655)
+iter 87400000/136279841 ( 64.13%)  1.74 ms/iter  ETA 23.66 h  residue e7a5ebb8534458cc  (verified to 86886655)
+iter 87500000/136279841 ( 64.21%)  1.8 ms/iter  ETA 24.32 h  residue 2144b7b4b9840796  (verified to 87418096)
+iter 87600000/136279841 ( 64.28%)  1.77 ms/iter  ETA 23.89 h  residue 713bf62ab31a0eb8  (verified to 87418096)
+iter 87700000/136279841 ( 64.35%)  1.78 ms/iter  ETA 23.98 h  residue 1576687da19c2894  (verified to 87418096)
+iter 87800000/136279841 ( 64.43%)  1.79 ms/iter  ETA 24.10 h  residue 39ae0bee43c1ade2  (verified to 87418096)
+iter 87900000/136279841 ( 64.50%)  1.71 ms/iter  ETA 22.97 h  residue a48366bcd13595a0  (verified to 87418096)
+[checkpoint: 87933499/136279841 squarings (64.52%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 88000000/136279841 ( 64.57%)  1.7 ms/iter  ETA 22.85 h  residue b22ded370c367d42  (verified to 87933499)
+iter 88100000/136279841 ( 64.65%)  1.74 ms/iter  ETA 23.22 h  residue a1c1c8cd74dab182  (verified to 87933499)
+iter 88200000/136279841 ( 64.72%)  1.72 ms/iter  ETA 23.03 h  residue e0c7d2e9fd024694  (verified to 87933499)
+iter 88300000/136279841 ( 64.79%)  1.69 ms/iter  ETA 22.54 h  residue 9375ca3dc987f66c  (verified to 87933499)
+iter 88400000/136279841 ( 64.87%)  1.66 ms/iter  ETA 22.10 h  residue 411b35a62dfc5cac  (verified to 87933499)
+iter 88500000/136279841 ( 64.94%)  1.63 ms/iter  ETA 21.58 h  residue b53927b901074d54  (verified to 88464940)
+iter 88600000/136279841 ( 65.01%)  1.79 ms/iter  ETA 23.70 h  residue c725870556082190  (verified to 88464940)
+iter 88700000/136279841 ( 65.09%)  1.6 ms/iter  ETA 21.18 h  residue 780e667df240a4e8  (verified to 88464940)
+iter 88800000/136279841 ( 65.16%)  1.58 ms/iter  ETA 20.81 h  residue d05d35f270f9411c  (verified to 88464940)
+iter 88900000/136279841 ( 65.23%)  1.57 ms/iter  ETA 20.72 h  residue 419d407bb976a380  (verified to 88464940)
+iter 89000000/136279841 ( 65.31%)  1.6 ms/iter  ETA 20.97 h  residue f3742b553b04117e  (verified to 88996381)
+[checkpoint: 89017522/136279841 squarings (65.32%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 89100000/136279841 ( 65.38%)  1.6 ms/iter  ETA 21.02 h  residue db375c5a6d716a76  (verified to 89017522)
+iter 89200000/136279841 ( 65.45%)  1.6 ms/iter  ETA 20.92 h  residue e4fd4521823a66f8  (verified to 89017522)
+iter 89300000/136279841 ( 65.53%)  1.59 ms/iter  ETA 20.81 h  residue bfccf9c614d95332  (verified to 89017522)
+iter 89400000/136279841 ( 65.60%)  1.57 ms/iter  ETA 20.50 h  residue ebe8acc05620aeaa  (verified to 89017522)
+iter 89500000/136279841 ( 65.67%)  1.63 ms/iter  ETA 21.18 h  residue 03db0893b76c853e  (verified to 89017522)
+iter 89600000/136279841 ( 65.75%)  1.71 ms/iter  ETA 22.16 h  residue cc613b0bdd35cbea  (verified to 89548963)
+iter 89700000/136279841 ( 65.82%)  1.68 ms/iter  ETA 21.75 h  residue 7a5eb9787e98e062  (verified to 89548963)
+iter 89800000/136279841 ( 65.89%)  1.68 ms/iter  ETA 21.73 h  residue 5d84cf6659ba7422  (verified to 89548963)
+iter 89900000/136279841 ( 65.97%)  1.71 ms/iter  ETA 22.07 h  residue b9e7fdb5a2452e26  (verified to 89548963)
+iter 90000000/136279841 ( 66.04%)  1.71 ms/iter  ETA 22.05 h  residue 7317838785074458  (verified to 89548963)
+iter 90100000/136279841 ( 66.11%)  1.6 ms/iter  ETA 20.52 h  residue ef8cea057004d34a  (verified to 90080404)
+[checkpoint: 90112480/136279841 squarings (66.12%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 90200000/136279841 ( 66.19%)  1.6 ms/iter  ETA 20.48 h  residue 72b0a70c8ce353da  (verified to 90112480)
+iter 90300000/136279841 ( 66.26%)  1.59 ms/iter  ETA 20.35 h  residue 5542814993063f48  (verified to 90112480)
+iter 90400000/136279841 ( 66.33%)  1.59 ms/iter  ETA 20.24 h  residue de614e81abcfc824  (verified to 90112480)
+iter 90500000/136279841 ( 66.41%)  1.58 ms/iter  ETA 20.10 h  residue 85d415b7656a9282  (verified to 90112480)
+iter 90600000/136279841 ( 66.48%)  1.58 ms/iter  ETA 20.05 h  residue 51e18926d9826800  (verified to 90112480)
+iter 90700000/136279841 ( 66.55%)  1.6 ms/iter  ETA 20.28 h  residue 75f791831cc10466  (verified to 90643921)
+iter 90800000/136279841 ( 66.63%)  1.58 ms/iter  ETA 19.96 h  residue acd71a2bdaf112f2  (verified to 90643921)
+iter 90900000/136279841 ( 66.70%)  1.58 ms/iter  ETA 19.86 h  residue c8b601e8b5f24240  (verified to 90643921)
+iter 91000000/136279841 ( 66.77%)  1.59 ms/iter  ETA 20.02 h  residue e50473ddb276f422  (verified to 90643921)
+iter 91100000/136279841 ( 66.85%)  1.61 ms/iter  ETA 20.18 h  residue ec7e1e326d9abec6  (verified to 90643921)
+iter 91200000/136279841 ( 66.92%)  1.6 ms/iter  ETA 20.08 h  residue 46d1c5c25dc041c0  (verified to 91175362)
+[checkpoint: 91243888/136279841 squarings (66.95%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 91300000/136279841 ( 66.99%)  1.65 ms/iter  ETA 20.56 h  residue 2289f7e0e3fa50bc  (verified to 91243888)
+iter 91400000/136279841 ( 67.07%)  1.68 ms/iter  ETA 20.92 h  residue a9856e904fa65ba4  (verified to 91243888)
+iter 91500000/136279841 ( 67.14%)  1.64 ms/iter  ETA 20.35 h  residue ebb85cd9c8fc9e10  (verified to 91243888)
+iter 91600000/136279841 ( 67.21%)  1.71 ms/iter  ETA 21.28 h  residue bc3e5187681088b6  (verified to 91243888)
+iter 91700000/136279841 ( 67.29%)  1.61 ms/iter  ETA 19.98 h  residue f2ae773d95e65b58  (verified to 91243888)
+iter 91800000/136279841 ( 67.36%)  1.61 ms/iter  ETA 19.89 h  residue c422dd6dd70a9836  (verified to 91775329)
+iter 91900000/136279841 ( 67.43%)  1.58 ms/iter  ETA 19.50 h  residue f1d0920700b0bb4e  (verified to 91775329)
+iter 92000000/136279841 ( 67.51%)  1.58 ms/iter  ETA 19.38 h  residue a906c2ae867a81cc  (verified to 91775329)
+iter 92100000/136279841 ( 67.58%)  1.57 ms/iter  ETA 19.31 h  residue c26bf74b27aeb8ba  (verified to 91775329)
+iter 92200000/136279841 ( 67.65%)  1.58 ms/iter  ETA 19.31 h  residue 2bf83692b5d51ad4  (verified to 91775329)
+iter 92300000/136279841 ( 67.73%)  1.57 ms/iter  ETA 19.21 h  residue a83031baa3adbd16  (verified to 91775329)
+[checkpoint: 92359987/136279841 squarings (67.77%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 92400000/136279841 ( 67.80%)  1.6 ms/iter  ETA 19.47 h  residue 3349766742e0fb58  (verified to 92359987)
+iter 92500000/136279841 ( 67.88%)  1.58 ms/iter  ETA 19.16 h  residue dd279fad75d0d406  (verified to 92359987)
+iter 92600000/136279841 ( 67.95%)  1.57 ms/iter  ETA 19.02 h  residue c0beea8fec6704e6  (verified to 92359987)
+iter 92700000/136279841 ( 68.02%)  1.57 ms/iter  ETA 19.02 h  residue d000e49095f64028  (verified to 92359987)
+iter 92800000/136279841 ( 68.10%)  1.57 ms/iter  ETA 19.01 h  residue 5ebbd402930c869a  (verified to 92359987)
+iter 92900000/136279841 ( 68.17%)  1.58 ms/iter  ETA 19.06 h  residue 43e229129f8b1b5c  (verified to 92891428)
+iter 93000000/136279841 ( 68.24%)  1.57 ms/iter  ETA 18.89 h  residue 9e5194c239aa9108  (verified to 92891428)
+iter 93100000/136279841 ( 68.32%)  1.57 ms/iter  ETA 18.87 h  residue 4f35448eae1dc61c  (verified to 92891428)
+iter 93200000/136279841 ( 68.39%)  1.58 ms/iter  ETA 18.88 h  residue e2230ee4a58132ce  (verified to 92891428)
+iter 93300000/136279841 ( 68.46%)  1.58 ms/iter  ETA 18.82 h  residue 938e38be197dcd36  (verified to 92891428)
+iter 93400000/136279841 ( 68.54%)  1.58 ms/iter  ETA 18.77 h  residue 3e54e81f805e91d6  (verified to 92891428)
+iter 93500000/136279841 ( 68.61%)  1.59 ms/iter  ETA 18.87 h  residue 5243892e41a51ee4  (verified to 93422869)
+[checkpoint: 93502330/136279841 squarings (68.61%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 93600000/136279841 ( 68.68%)  1.58 ms/iter  ETA 18.76 h  residue d3c244a7f436116c  (verified to 93502330)
+iter 93700000/136279841 ( 68.76%)  1.57 ms/iter  ETA 18.58 h  residue 2fd0b76f8eabbd1c  (verified to 93502330)
+iter 93800000/136279841 ( 68.83%)  1.57 ms/iter  ETA 18.52 h  residue 6269fd4b7c6f8f24  (verified to 93502330)
+iter 93900000/136279841 ( 68.90%)  1.58 ms/iter  ETA 18.54 h  residue f6437675f21e0eba  (verified to 93502330)
+iter 94000000/136279841 ( 68.98%)  1.58 ms/iter  ETA 18.50 h  residue 1688aed9e41d178e  (verified to 93502330)
+iter 94100000/136279841 ( 69.05%)  1.58 ms/iter  ETA 18.53 h  residue 18f7b39ae7a0fc9a  (verified to 94033771)
+iter 94200000/136279841 ( 69.12%)  1.57 ms/iter  ETA 18.37 h  residue 5c8fb5f9a88133da  (verified to 94033771)
+iter 94300000/136279841 ( 69.20%)  1.57 ms/iter  ETA 18.34 h  residue 7b55c769b4e2699a  (verified to 94033771)
+iter 94400000/136279841 ( 69.27%)  1.57 ms/iter  ETA 18.31 h  residue d0ed573099b0453e  (verified to 94033771)
+iter 94500000/136279841 ( 69.34%)  1.58 ms/iter  ETA 18.30 h  residue 2e454535f5707afe  (verified to 94033771)
+iter 94600000/136279841 ( 69.42%)  1.59 ms/iter  ETA 18.42 h  residue fb5ea8428598f980  (verified to 94565212)
+[checkpoint: 94645402/136279841 squarings (69.45%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 94700000/136279841 ( 69.49%)  1.6 ms/iter  ETA 18.46 h  residue 66922f81778a1958  (verified to 94645402)
+iter 94800000/136279841 ( 69.56%)  1.59 ms/iter  ETA 18.32 h  residue d3090517191348e4  (verified to 94645402)
+iter 94900000/136279841 ( 69.64%)  1.58 ms/iter  ETA 18.14 h  residue 0659247d591e1a40  (verified to 94645402)
+iter 95000000/136279841 ( 69.71%)  1.58 ms/iter  ETA 18.13 h  residue 7bd5e21100aa47a6  (verified to 94645402)
+iter 95100000/136279841 ( 69.78%)  1.58 ms/iter  ETA 18.03 h  residue 99ba6a5365fe4062  (verified to 94645402)
+iter 95200000/136279841 ( 69.86%)  1.6 ms/iter  ETA 18.24 h  residue 10f4764c118e759c  (verified to 95176843)
+iter 95300000/136279841 ( 69.93%)  1.57 ms/iter  ETA 17.90 h  residue 0bd2432302df8c06  (verified to 95176843)
+iter 95400000/136279841 ( 70.00%)  1.57 ms/iter  ETA 17.83 h  residue eadb1c44419e1290  (verified to 95176843)
+iter 95500000/136279841 ( 70.08%)  1.58 ms/iter  ETA 17.86 h  residue 35864d6e51fcc91e  (verified to 95176843)
+iter 95600000/136279841 ( 70.15%)  1.57 ms/iter  ETA 17.76 h  residue c756ac31bf49d0e2  (verified to 95176843)
+iter 95700000/136279841 ( 70.22%)  1.57 ms/iter  ETA 17.68 h  residue 73f49997a6fd550c  (verified to 95176843)
+[checkpoint: 95785558/136279841 squarings (70.29%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 95800000/136279841 ( 70.30%)  1.59 ms/iter  ETA 17.91 h  residue ba7696d319fe3592  (verified to 95785558)
+iter 95900000/136279841 ( 70.37%)  1.57 ms/iter  ETA 17.58 h  residue 599450cd1a111bde  (verified to 95785558)
+iter 96000000/136279841 ( 70.44%)  1.57 ms/iter  ETA 17.59 h  residue a174736a7fc239f8  (verified to 95785558)
+iter 96100000/136279841 ( 70.52%)  1.57 ms/iter  ETA 17.51 h  residue 18894ee46c9af87a  (verified to 95785558)
+iter 96200000/136279841 ( 70.59%)  1.57 ms/iter  ETA 17.49 h  residue 301e3cf1c71fd0c8  (verified to 95785558)
+iter 96300000/136279841 ( 70.66%)  1.58 ms/iter  ETA 17.50 h  residue 6c545b7ed879a4a2  (verified to 95785558)
+iter 96400000/136279841 ( 70.74%)  1.58 ms/iter  ETA 17.53 h  residue c24d74c13320ad12  (verified to 96316999)
+iter 96500000/136279841 ( 70.81%)  1.57 ms/iter  ETA 17.39 h  residue a9ececbb182d5dd8  (verified to 96316999)
+iter 96600000/136279841 ( 70.88%)  1.57 ms/iter  ETA 17.33 h  residue ab13de16d444c1fe  (verified to 96316999)
+iter 96700000/136279841 ( 70.96%)  1.57 ms/iter  ETA 17.31 h  residue 1f8863aaea4bb53a  (verified to 96316999)
+iter 96800000/136279841 ( 71.03%)  1.57 ms/iter  ETA 17.23 h  residue 70789b07a7be506c  (verified to 96316999)
+iter 96900000/136279841 ( 71.10%)  1.58 ms/iter  ETA 17.33 h  residue 4be5390c2e793eae  (verified to 96848440)
+[checkpoint: 96929359/136279841 squarings (71.13%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 97000000/136279841 ( 71.18%)  1.59 ms/iter  ETA 17.31 h  residue 874a254e30d437b8  (verified to 96929359)
+iter 97100000/136279841 ( 71.25%)  1.57 ms/iter  ETA 17.14 h  residue 0732144b1aa243f6  (verified to 96929359)
+iter 97200000/136279841 ( 71.32%)  1.58 ms/iter  ETA 17.13 h  residue ac74ff2da8c54f82  (verified to 96929359)
+iter 97300000/136279841 ( 71.40%)  1.57 ms/iter  ETA 17.04 h  residue a98f0600c1706558  (verified to 96929359)
+iter 97400000/136279841 ( 71.47%)  1.57 ms/iter  ETA 17.00 h  residue 474f8a492110477c  (verified to 96929359)
+iter 97500000/136279841 ( 71.54%)  1.59 ms/iter  ETA 17.14 h  residue 198627be6a35abac  (verified to 97460800)
+iter 97600000/136279841 ( 71.62%)  1.58 ms/iter  ETA 16.93 h  residue a947bad6ca12fccc  (verified to 97460800)
+iter 97700000/136279841 ( 71.69%)  1.57 ms/iter  ETA 16.85 h  residue dbb942b7976fd024  (verified to 97460800)
+iter 97800000/136279841 ( 71.76%)  1.57 ms/iter  ETA 16.83 h  residue 86dac2f2678017d2  (verified to 97460800)
+iter 97900000/136279841 ( 71.84%)  1.57 ms/iter  ETA 16.78 h  residue 2cd179f40d5bef5e  (verified to 97460800)
+iter 98000000/136279841 ( 71.91%)  1.58 ms/iter  ETA 16.85 h  residue 7b74f76f8762ed64  (verified to 97992241)
+[checkpoint: 98071702/136279841 squarings (71.96%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 98100000/136279841 ( 71.98%)  1.58 ms/iter  ETA 16.79 h  residue 14c2cb56700bbc22  (verified to 98071702)
+iter 98200000/136279841 ( 72.06%)  1.57 ms/iter  ETA 16.61 h  residue 8e8aa7943c187500  (verified to 98071702)
+iter 98300000/136279841 ( 72.13%)  1.57 ms/iter  ETA 16.58 h  residue b65efde5cce6daba  (verified to 98071702)
+iter 98400000/136279841 ( 72.20%)  1.58 ms/iter  ETA 16.61 h  residue 7df740ccbb7320da  (verified to 98071702)
+iter 98500000/136279841 ( 72.28%)  1.57 ms/iter  ETA 16.48 h  residue 6a0536915c5798c0  (verified to 98071702)
+iter 98600000/136279841 ( 72.35%)  1.58 ms/iter  ETA 16.51 h  residue 3468f7a3a81c3fdc  (verified to 98071702)
+iter 98700000/136279841 ( 72.42%)  1.59 ms/iter  ETA 16.64 h  residue 7a5f6e5008426706  (verified to 98603143)
+iter 98800000/136279841 ( 72.50%)  1.58 ms/iter  ETA 16.43 h  residue 6ae971f5d26482f6  (verified to 98603143)
+iter 98900000/136279841 ( 72.57%)  1.57 ms/iter  ETA 16.35 h  residue 6447ab678813d09e  (verified to 98603143)
+iter 99000000/136279841 ( 72.64%)  1.58 ms/iter  ETA 16.34 h  residue f30db9a8c1e9b954  (verified to 98603143)
+iter 99100000/136279841 ( 72.72%)  1.57 ms/iter  ETA 16.26 h  residue 4c40df70838a3d04  (verified to 98603143)
+iter 99200000/136279841 ( 72.79%)  1.59 ms/iter  ETA 16.35 h  residue c64ca520a2f793e0  (verified to 99134584)
+[checkpoint: 99212587/136279841 squarings (72.80%), verified -> irred_r136279841_s12338357.ckpt, 0.03 s]
+iter 99300000/136279841 ( 72.86%)  1.59 ms/iter  ETA 16.30 h  residue 26098a60278b2af8  (verified to 99212587)
+iter 99400000/136279841 ( 72.94%)  1.58 ms/iter  ETA 16.15 h  residue ebe9274a3a383918  (verified to 99212587)
+iter 99500000/136279841 ( 73.01%)  1.57 ms/iter  ETA 16.04 h  residue e65ac3a9a0229e66  (verified to 99212587)
+iter 99600000/136279841 ( 73.08%)  1.57 ms/iter  ETA 16.04 h  residue 716144d8f35413a4  (verified to 99212587)
+iter 99700000/136279841 ( 73.16%)  1.57 ms/iter  ETA 15.99 h  residue 333686e34d722136  (verified to 99212587)
+iter 99800000/136279841 ( 73.23%)  1.59 ms/iter  ETA 16.09 h  residue c0d8269b3e740490  (verified to 99744028)
+iter 99900000/136279841 ( 73.31%)  1.58 ms/iter  ETA 15.96 h  residue 7637c8b6a0aee8c8  (verified to 99744028)
+iter 100000000/136279841 ( 73.38%)  1.58 ms/iter  ETA 15.92 h  residue c640830501667436  (verified to 99744028)
+iter 100100000/136279841 ( 73.45%)  1.58 ms/iter  ETA 15.89 h  residue 74949adfc51541fa  (verified to 99744028)
+iter 100200000/136279841 ( 73.53%)  1.58 ms/iter  ETA 15.81 h  residue 12a69e9e674ed010  (verified to 99744028)
+iter 100300000/136279841 ( 73.60%)  1.58 ms/iter  ETA 15.84 h  residue bc392aed349dd772  (verified to 100275469)
+[checkpoint: 100353472/136279841 squarings (73.64%), verified -> irred_r136279841_s12338357.ckpt, 0.03 s]
+iter 100400000/136279841 ( 73.67%)  1.6 ms/iter  ETA 15.98 h  residue e9f3dab943514858  (verified to 100353472)
+iter 100500000/136279841 ( 73.75%)  1.58 ms/iter  ETA 15.72 h  residue 894b42089102a9e6  (verified to 100353472)
+iter 100600000/136279841 ( 73.82%)  1.63 ms/iter  ETA 16.12 h  residue 61105ab08f88e9ec  (verified to 100353472)
+iter 100700000/136279841 ( 73.89%)  1.6 ms/iter  ETA 15.85 h  residue a6412d7c5dff8722  (verified to 100353472)
+iter 100800000/136279841 ( 73.97%)  1.61 ms/iter  ETA 15.87 h  residue 8fa4c8f7c19e3f92  (verified to 100353472)
+iter 100900000/136279841 ( 74.04%)  1.76 ms/iter  ETA 17.29 h  residue d827054d1f6e2412  (verified to 100884913)
+iter 101000000/136279841 ( 74.11%)  1.7 ms/iter  ETA 16.62 h  residue 10089b38e038ad34  (verified to 100884913)
+iter 101100000/136279841 ( 74.19%)  1.66 ms/iter  ETA 16.25 h  residue cfcf65b7bd222692  (verified to 100884913)
+iter 101200000/136279841 ( 74.26%)  1.66 ms/iter  ETA 16.18 h  residue 09e069ff4ba5d2c4  (verified to 100884913)
+iter 101300000/136279841 ( 74.33%)  1.66 ms/iter  ETA 16.12 h  residue 8e13de32511f61dc  (verified to 100884913)
+iter 101400000/136279841 ( 74.41%)  1.62 ms/iter  ETA 15.74 h  residue 8e0d1152b89bbaea  (verified to 100884913)
+[checkpoint: 101447701/136279841 squarings (74.44%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 101500000/136279841 ( 74.48%)  1.63 ms/iter  ETA 15.77 h  residue 7c767efd9edb8aca  (verified to 101447701)
+iter 101600000/136279841 ( 74.55%)  1.62 ms/iter  ETA 15.62 h  residue 23da6a73df737fc4  (verified to 101447701)
+iter 101700000/136279841 ( 74.63%)  1.61 ms/iter  ETA 15.48 h  residue 69c31ca82f452890  (verified to 101447701)
+iter 101800000/136279841 ( 74.70%)  1.61 ms/iter  ETA 15.46 h  residue ba7e9dbdb758fc44  (verified to 101447701)
+iter 101900000/136279841 ( 74.77%)  1.6 ms/iter  ETA 15.33 h  residue 73167ac357149fca  (verified to 101447701)
+iter 102000000/136279841 ( 74.85%)  1.61 ms/iter  ETA 15.36 h  residue 59ead8dc1e083de8  (verified to 101979142)
+iter 102100000/136279841 ( 74.92%)  1.61 ms/iter  ETA 15.29 h  residue 0dd446bb2f8b10dc  (verified to 101979142)
+iter 102200000/136279841 ( 74.99%)  1.59 ms/iter  ETA 15.10 h  residue f05e26093cd62b0a  (verified to 101979142)
+iter 102300000/136279841 ( 75.07%)  1.6 ms/iter  ETA 15.13 h  residue 01a7e8ffa820e13c  (verified to 101979142)
+iter 102400000/136279841 ( 75.14%)  1.6 ms/iter  ETA 15.06 h  residue 35811f452989fda6  (verified to 101979142)
+iter 102500000/136279841 ( 75.21%)  1.6 ms/iter  ETA 15.02 h  residue e3347cbdf5badeaa  (verified to 101979142)
+[checkpoint: 102567445/136279841 squarings (75.26%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 102600000/136279841 ( 75.29%)  1.62 ms/iter  ETA 15.20 h  residue eddffbaf386e4060  (verified to 102567445)
+iter 102700000/136279841 ( 75.36%)  1.6 ms/iter  ETA 14.94 h  residue c0bd1978a5ee2b90  (verified to 102567445)
+iter 102800000/136279841 ( 75.43%)  1.61 ms/iter  ETA 14.99 h  residue f2adbfbeda0609e8  (verified to 102567445)
+iter 102900000/136279841 ( 75.51%)  1.61 ms/iter  ETA 14.93 h  residue e6426e2da72bacea  (verified to 102567445)
+iter 103000000/136279841 ( 75.58%)  1.6 ms/iter  ETA 14.81 h  residue 8b852db54e1409c8  (verified to 102567445)
+iter 103100000/136279841 ( 75.65%)  1.71 ms/iter  ETA 15.75 h  residue 7859870fee067c6a  (verified to 103098886)
+iter 103200000/136279841 ( 75.73%)  1.63 ms/iter  ETA 14.99 h  residue de527762c048ce50  (verified to 103098886)
+iter 103300000/136279841 ( 75.80%)  1.59 ms/iter  ETA 14.59 h  residue c2dd495578fc5b2e  (verified to 103098886)
+iter 103400000/136279841 ( 75.87%)  1.59 ms/iter  ETA 14.50 h  residue 106b9d840c62c13a  (verified to 103098886)
+iter 103500000/136279841 ( 75.95%)  1.58 ms/iter  ETA 14.41 h  residue 2e2311fa60ca76d6  (verified to 103098886)
+iter 103600000/136279841 ( 76.02%)  1.59 ms/iter  ETA 14.40 h  residue 45f1c676ffca808e  (verified to 103098886)
+[checkpoint: 103685731/136279841 squarings (76.08%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 103700000/136279841 ( 76.09%)  1.61 ms/iter  ETA 14.54 h  residue 0257fe6c6b2cb266  (verified to 103685731)
+iter 103800000/136279841 ( 76.17%)  1.57 ms/iter  ETA 14.20 h  residue 7b0c7764ac8d6ad4  (verified to 103685731)
+iter 103900000/136279841 ( 76.24%)  1.58 ms/iter  ETA 14.20 h  residue 6b631ee04ac41f68  (verified to 103685731)
+iter 104000000/136279841 ( 76.31%)  1.57 ms/iter  ETA 14.11 h  residue bb604bf60b232c94  (verified to 103685731)
+iter 104100000/136279841 ( 76.39%)  1.58 ms/iter  ETA 14.11 h  residue f1b6e54eefd47af2  (verified to 103685731)
+iter 104200000/136279841 ( 76.46%)  1.58 ms/iter  ETA 14.11 h  residue 0048f10c9250ae04  (verified to 103685731)
+iter 104300000/136279841 ( 76.53%)  1.59 ms/iter  ETA 14.16 h  residue 6535b0d8b7b704fe  (verified to 104217172)
+iter 104400000/136279841 ( 76.61%)  1.58 ms/iter  ETA 13.98 h  residue af830b899c574a00  (verified to 104217172)
+iter 104500000/136279841 ( 76.68%)  1.58 ms/iter  ETA 13.98 h  residue dc23a61cc705a8e4  (verified to 104217172)
+iter 104600000/136279841 ( 76.75%)  1.58 ms/iter  ETA 13.91 h  residue fa6429f97eed583a  (verified to 104217172)
+iter 104700000/136279841 ( 76.83%)  1.58 ms/iter  ETA 13.85 h  residue 8a8806f038b5ce2e  (verified to 104217172)
+iter 104800000/136279841 ( 76.90%)  1.59 ms/iter  ETA 13.91 h  residue 0d5b39cf808c2648  (verified to 104748613)
+[checkpoint: 104824429/136279841 squarings (76.92%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 104900000/136279841 ( 76.97%)  1.58 ms/iter  ETA 13.82 h  residue 38f3fd7e0ace5932  (verified to 104824429)
+iter 105000000/136279841 ( 77.05%)  1.58 ms/iter  ETA 13.73 h  residue 07020e92fc2c2912  (verified to 104824429)
+iter 105100000/136279841 ( 77.12%)  1.57 ms/iter  ETA 13.58 h  residue 973ff1c5a5e168e8  (verified to 104824429)
+iter 105200000/136279841 ( 77.19%)  1.57 ms/iter  ETA 13.59 h  residue a141543c320cc37e  (verified to 104824429)
+iter 105300000/136279841 ( 77.27%)  1.58 ms/iter  ETA 13.58 h  residue 020380e7792b3174  (verified to 104824429)
+iter 105400000/136279841 ( 77.34%)  1.59 ms/iter  ETA 13.65 h  residue b496925bd410197e  (verified to 105355870)
+iter 105500000/136279841 ( 77.41%)  1.57 ms/iter  ETA 13.43 h  residue 847fa5e8d29e272c  (verified to 105355870)
+iter 105600000/136279841 ( 77.49%)  1.57 ms/iter  ETA 13.37 h  residue ca39ffa19ca6e5f8  (verified to 105355870)
+iter 105700000/136279841 ( 77.56%)  1.57 ms/iter  ETA 13.38 h  residue 625e5c96eb2e8518  (verified to 105355870)
+iter 105800000/136279841 ( 77.63%)  1.57 ms/iter  ETA 13.33 h  residue a1e80d8c09aacffe  (verified to 105355870)
+iter 105900000/136279841 ( 77.71%)  1.58 ms/iter  ETA 13.36 h  residue b7178ba97561a84a  (verified to 105887311)
+[checkpoint: 105967501/136279841 squarings (77.76%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 106000000/136279841 ( 77.78%)  1.58 ms/iter  ETA 13.30 h  residue 9c73fb37720bbbd4  (verified to 105967501)
+iter 106100000/136279841 ( 77.85%)  1.57 ms/iter  ETA 13.16 h  residue a26cb5fcfde9d1ee  (verified to 105967501)
+iter 106200000/136279841 ( 77.93%)  1.57 ms/iter  ETA 13.14 h  residue a2bca637d538843c  (verified to 105967501)
+iter 106300000/136279841 ( 78.00%)  1.58 ms/iter  ETA 13.12 h  residue 6f689db49e29231a  (verified to 105967501)
+iter 106400000/136279841 ( 78.07%)  1.57 ms/iter  ETA 13.06 h  residue 5f54767dcbef6c9a  (verified to 105967501)
+iter 106500000/136279841 ( 78.15%)  1.58 ms/iter  ETA 13.08 h  residue 39bc03cbe210a4dc  (verified to 106498942)
+iter 106600000/136279841 ( 78.22%)  1.58 ms/iter  ETA 12.99 h  residue e347e0a5b0a9537c  (verified to 106498942)
+iter 106700000/136279841 ( 78.29%)  1.57 ms/iter  ETA 12.93 h  residue 10eaf89947ab4b42  (verified to 106498942)
+iter 106800000/136279841 ( 78.37%)  1.57 ms/iter  ETA 12.83 h  residue c3ede650323ffd72  (verified to 106498942)
+iter 106900000/136279841 ( 78.44%)  1.61 ms/iter  ETA 13.14 h  residue fb9dfa169f495cbe  (verified to 106498942)
+iter 107000000/136279841 ( 78.51%)  1.59 ms/iter  ETA 12.95 h  residue 6b4d3094114a060c  (verified to 106498942)
+iter 107100000/136279841 ( 78.59%)  1.59 ms/iter  ETA 12.93 h  residue b7ce9c0137dda628  (verified to 107030383)
+[checkpoint: 107106928/136279841 squarings (78.59%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 107200000/136279841 ( 78.66%)  1.58 ms/iter  ETA 12.77 h  residue 02daacdfcb6de716  (verified to 107106928)
+iter 107300000/136279841 ( 78.74%)  1.57 ms/iter  ETA 12.64 h  residue 7458cf77e2e29178  (verified to 107106928)
+iter 107400000/136279841 ( 78.81%)  1.57 ms/iter  ETA 12.60 h  residue 8514008b12b56f6a  (verified to 107106928)
+iter 107500000/136279841 ( 78.88%)  1.58 ms/iter  ETA 12.63 h  residue 5aa466e98c0e3852  (verified to 107106928)
+iter 107600000/136279841 ( 78.96%)  1.57 ms/iter  ETA 12.53 h  residue f997460c33bbad6c  (verified to 107106928)
+iter 107700000/136279841 ( 79.03%)  1.59 ms/iter  ETA 12.63 h  residue 7490ec50dbf1aab2  (verified to 107638369)
+iter 107800000/136279841 ( 79.10%)  1.57 ms/iter  ETA 12.40 h  residue b1f00ac3cd88d120  (verified to 107638369)
+iter 107900000/136279841 ( 79.18%)  1.58 ms/iter  ETA 12.48 h  residue 1c85548bec7469a6  (verified to 107638369)
+iter 108000000/136279841 ( 79.25%)  1.58 ms/iter  ETA 12.40 h  residue 2d339b746c1a5abe  (verified to 107638369)
+iter 108100000/136279841 ( 79.32%)  1.58 ms/iter  ETA 12.38 h  residue 60fc5449df852ff8  (verified to 107638369)
+iter 108200000/136279841 ( 79.40%)  1.59 ms/iter  ETA 12.42 h  residue 8e6d7e6ffdf723fe  (verified to 108169810)
+[checkpoint: 108247813/136279841 squarings (79.43%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 108300000/136279841 ( 79.47%)  1.59 ms/iter  ETA 12.34 h  residue ebcb02f355eb75dc  (verified to 108247813)
+iter 108400000/136279841 ( 79.54%)  1.57 ms/iter  ETA 12.16 h  residue 07ebd71e06e9ad94  (verified to 108247813)
+iter 108500000/136279841 ( 79.62%)  1.57 ms/iter  ETA 12.10 h  residue 47feb8217aaf34bc  (verified to 108247813)
+iter 108600000/136279841 ( 79.69%)  1.57 ms/iter  ETA 12.07 h  residue e7cc05ae08fe26ae  (verified to 108247813)
+iter 108700000/136279841 ( 79.76%)  1.58 ms/iter  ETA 12.07 h  residue 934d335c5aa21cce  (verified to 108247813)
+iter 108800000/136279841 ( 79.84%)  1.58 ms/iter  ETA 12.09 h  residue 566df4393eeba40c  (verified to 108779254)
+iter 108900000/136279841 ( 79.91%)  1.58 ms/iter  ETA 12.00 h  residue f5c39ba0b4cc303c  (verified to 108779254)
+iter 109000000/136279841 ( 79.98%)  1.57 ms/iter  ETA 11.91 h  residue fedccd989e8f09d4  (verified to 108779254)
+iter 109100000/136279841 ( 80.06%)  1.58 ms/iter  ETA 11.91 h  residue c5b4e98f3e528980  (verified to 108779254)
+iter 109200000/136279841 ( 80.13%)  1.58 ms/iter  ETA 11.89 h  residue 79c3bd5adc8c6302  (verified to 108779254)
+iter 109300000/136279841 ( 80.20%)  1.58 ms/iter  ETA 11.81 h  residue 0d94622f25e2b04a  (verified to 108779254)
+[checkpoint: 109390156/136279841 squarings (80.27%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 109400000/136279841 ( 80.28%)  1.6 ms/iter  ETA 11.98 h  residue d746c07d9983b664  (verified to 109390156)
+iter 109500000/136279841 ( 80.35%)  1.59 ms/iter  ETA 11.82 h  residue e200361a97b51e28  (verified to 109390156)
+iter 109600000/136279841 ( 80.42%)  1.59 ms/iter  ETA 11.78 h  residue 868d5c06443d144e  (verified to 109390156)
+iter 109700000/136279841 ( 80.50%)  1.64 ms/iter  ETA 12.08 h  residue 0b83df1209d6e7d6  (verified to 109390156)
+iter 109800000/136279841 ( 80.57%)  1.65 ms/iter  ETA 12.16 h  residue c10bed6d06cabf1c  (verified to 109390156)
+iter 109900000/136279841 ( 80.64%)  1.64 ms/iter  ETA 12.00 h  residue a68fd260a774d744  (verified to 109390156)
+iter 110000000/136279841 ( 80.72%)  1.63 ms/iter  ETA 11.90 h  residue a0fbdee1316dd748  (verified to 109921597)
+iter 110100000/136279841 ( 80.79%)  1.65 ms/iter  ETA 12.00 h  residue 9ca6f365cabfd2ae  (verified to 109921597)
+iter 110200000/136279841 ( 80.86%)  1.68 ms/iter  ETA 12.18 h  residue 9721a361c7c6e408  (verified to 109921597)
+iter 110300000/136279841 ( 80.94%)  1.62 ms/iter  ETA 11.68 h  residue 8fe21400a0be6e9c  (verified to 109921597)
+iter 110400000/136279841 ( 81.01%)  1.65 ms/iter  ETA 11.88 h  residue d8e17608ca23ac7c  (verified to 109921597)
+[checkpoint: 110492404/136279841 squarings (81.08%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 110500000/136279841 ( 81.08%)  1.64 ms/iter  ETA 11.77 h  residue 21b343aed61dfdba  (verified to 110492404)
+iter 110600000/136279841 ( 81.16%)  1.69 ms/iter  ETA 12.08 h  residue 1d27b634b7d79fee  (verified to 110492404)
+iter 110700000/136279841 ( 81.23%)  1.65 ms/iter  ETA 11.70 h  residue e03f3992848f68ce  (verified to 110492404)
+iter 110800000/136279841 ( 81.30%)  1.7 ms/iter  ETA 12.05 h  residue de235f6a32d17e4a  (verified to 110492404)
+iter 110900000/136279841 ( 81.38%)  1.61 ms/iter  ETA 11.34 h  residue 38f78f4e797c3112  (verified to 110492404)
+iter 111000000/136279841 ( 81.45%)  1.66 ms/iter  ETA 11.65 h  residue 0d792b37e362a5ec  (verified to 110492404)
+iter 111100000/136279841 ( 81.52%)  1.7 ms/iter  ETA 11.86 h  residue 3f7cd4a058db1fd6  (verified to 111023845)
+iter 111200000/136279841 ( 81.60%)  1.63 ms/iter  ETA 11.36 h  residue e8cb28fa69c0608e  (verified to 111023845)
+iter 111300000/136279841 ( 81.67%)  1.7 ms/iter  ETA 11.82 h  residue 011b3c0d29585b54  (verified to 111023845)
+iter 111400000/136279841 ( 81.74%)  1.68 ms/iter  ETA 11.59 h  residue 01b825c373d54350  (verified to 111023845)
+iter 111500000/136279841 ( 81.82%)  1.59 ms/iter  ETA 10.92 h  residue 44010f4135652d88  (verified to 111023845)
+[checkpoint: 111580072/136279841 squarings (81.88%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 111600000/136279841 ( 81.89%)  1.6 ms/iter  ETA 10.99 h  residue a6293e23cf579106  (verified to 111580072)
+iter 111700000/136279841 ( 81.96%)  1.58 ms/iter  ETA 10.77 h  residue e37f3395d8080154  (verified to 111580072)
+iter 111800000/136279841 ( 82.04%)  1.58 ms/iter  ETA 10.75 h  residue 6c62a22a227cc000  (verified to 111580072)
+iter 111900000/136279841 ( 82.11%)  1.58 ms/iter  ETA 10.72 h  residue 8e3c619692f32038  (verified to 111580072)
+iter 112000000/136279841 ( 82.18%)  1.58 ms/iter  ETA 10.64 h  residue bec3d2e64b89f0c6  (verified to 111580072)
+iter 112100000/136279841 ( 82.26%)  1.57 ms/iter  ETA 10.56 h  residue be514bdadfa471aa  (verified to 111580072)
+iter 112200000/136279841 ( 82.33%)  1.58 ms/iter  ETA 10.57 h  residue 3f5766757734036c  (verified to 112111513)
+iter 112300000/136279841 ( 82.40%)  1.58 ms/iter  ETA 10.53 h  residue 3cacbca8f52f7964  (verified to 112111513)
+iter 112400000/136279841 ( 82.48%)  1.57 ms/iter  ETA 10.43 h  residue 454f0c91a1e7aa9a  (verified to 112111513)
+iter 112500000/136279841 ( 82.55%)  1.57 ms/iter  ETA 10.37 h  residue a67d506542e65728  (verified to 112111513)
+iter 112600000/136279841 ( 82.62%)  1.57 ms/iter  ETA 10.33 h  residue ff2df4825ebde9a4  (verified to 112111513)
+iter 112700000/136279841 ( 82.70%)  1.58 ms/iter  ETA 10.35 h  residue 5dd60023f33622da  (verified to 112642954)
+[checkpoint: 112721686/136279841 squarings (82.71%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 112800000/136279841 ( 82.77%)  1.59 ms/iter  ETA 10.35 h  residue d6a5d988178aa178  (verified to 112721686)
+iter 112900000/136279841 ( 82.84%)  1.57 ms/iter  ETA 10.22 h  residue 202b548b92b0c9ac  (verified to 112721686)
+iter 113000000/136279841 ( 82.92%)  1.57 ms/iter  ETA 10.18 h  residue 26325ec484bc0d10  (verified to 112721686)
+iter 113100000/136279841 ( 82.99%)  1.58 ms/iter  ETA 10.18 h  residue bdc9e12560c1d01a  (verified to 112721686)
+iter 113200000/136279841 ( 83.06%)  1.57 ms/iter  ETA 10.08 h  residue 6c2a8c51fec4265a  (verified to 112721686)
+iter 113300000/136279841 ( 83.14%)  1.58 ms/iter  ETA 10.09 h  residue 81e6f357b1a71126  (verified to 113253127)
+iter 113400000/136279841 ( 83.21%)  1.61 ms/iter  ETA 10.23 h  residue 74afd56574018e8e  (verified to 113253127)
+iter 113500000/136279841 ( 83.28%)  1.67 ms/iter  ETA 10.54 h  residue 4b7d78f2e555c222  (verified to 113253127)
+iter 113600000/136279841 ( 83.36%)  1.58 ms/iter  ETA 9.95 h  residue 264767e0fd2692d4  (verified to 113253127)
+iter 113700000/136279841 ( 83.43%)  1.61 ms/iter  ETA 10.11 h  residue 2d1290832a6121ee  (verified to 113253127)
+iter 113800000/136279841 ( 83.50%)  1.6 ms/iter  ETA 9.96 h  residue fc23a54bc021bdf0  (verified to 113784568)
+[checkpoint: 113851636/136279841 squarings (83.54%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 113900000/136279841 ( 83.58%)  1.62 ms/iter  ETA 10.06 h  residue 0c45b04ad734574e  (verified to 113851636)
+iter 114000000/136279841 ( 83.65%)  1.61 ms/iter  ETA 9.99 h  residue b43f14d6f5626a22  (verified to 113851636)
+iter 114100000/136279841 ( 83.72%)  1.68 ms/iter  ETA 10.33 h  residue 77548c75ed02d78a  (verified to 113851636)
+iter 114200000/136279841 ( 83.80%)  1.74 ms/iter  ETA 10.67 h  residue bfe9c286c3d04e02  (verified to 113851636)
+iter 114300000/136279841 ( 83.87%)  1.74 ms/iter  ETA 10.61 h  residue 4fe75ef6e797265a  (verified to 113851636)
+iter 114400000/136279841 ( 83.94%)  1.75 ms/iter  ETA 10.62 h  residue 03d80f2524b2e1fc  (verified to 114383077)
+iter 114500000/136279841 ( 84.02%)  1.73 ms/iter  ETA 10.49 h  residue 3bdcc7f0d06c0782  (verified to 114383077)
+iter 114600000/136279841 ( 84.09%)  1.74 ms/iter  ETA 10.46 h  residue 6d7acddf9594c7a6  (verified to 114383077)
+iter 114700000/136279841 ( 84.17%)  1.75 ms/iter  ETA 10.50 h  residue 59254c3b9ca1302e  (verified to 114383077)
+iter 114800000/136279841 ( 84.24%)  1.74 ms/iter  ETA 10.37 h  residue f61ecc99af2c2890  (verified to 114383077)
+iter 114900000/136279841 ( 84.31%)  1.73 ms/iter  ETA 10.29 h  residue 1cc453587276a470  (verified to 114383077)
+[checkpoint: 114900667/136279841 squarings (84.31%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 115000000/136279841 ( 84.39%)  1.75 ms/iter  ETA 10.35 h  residue 4dbe6fa46a6bb734  (verified to 114900667)
+iter 115100000/136279841 ( 84.46%)  1.73 ms/iter  ETA 10.21 h  residue 29719ce3f5b0ce9e  (verified to 114900667)
+iter 115200000/136279841 ( 84.53%)  1.74 ms/iter  ETA 10.18 h  residue 7688bcded5101846  (verified to 114900667)
+iter 115300000/136279841 ( 84.61%)  1.74 ms/iter  ETA 10.12 h  residue 3920f19282c40622  (verified to 114900667)
+iter 115400000/136279841 ( 84.68%)  1.74 ms/iter  ETA 10.11 h  residue cc242876769ade1c  (verified to 114900667)
+iter 115500000/136279841 ( 84.75%)  1.75 ms/iter  ETA 10.10 h  residue 5b005bbc140f9e28  (verified to 115432108)
+iter 115600000/136279841 ( 84.83%)  1.74 ms/iter  ETA 9.98 h  residue 8666e693a8beb658  (verified to 115432108)
+iter 115700000/136279841 ( 84.90%)  1.74 ms/iter  ETA 9.92 h  residue 1ccc1eda2641ae2c  (verified to 115432108)
+iter 115800000/136279841 ( 84.97%)  1.74 ms/iter  ETA 9.89 h  residue 71dadb76985658a8  (verified to 115432108)
+iter 115900000/136279841 ( 85.05%)  1.74 ms/iter  ETA 9.84 h  residue 072f4da78c8b03ce  (verified to 115432108)
+[checkpoint: 115936576/136279841 squarings (85.07%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 116000000/136279841 ( 85.12%)  1.75 ms/iter  ETA 9.88 h  residue 12a9743c497c51d4  (verified to 115936576)
+iter 116100000/136279841 ( 85.19%)  1.73 ms/iter  ETA 9.71 h  residue ef30d6b3a2cbb02a  (verified to 115936576)
+iter 116200000/136279841 ( 85.27%)  1.75 ms/iter  ETA 9.74 h  residue 93087677dd986884  (verified to 115936576)
+iter 116300000/136279841 ( 85.34%)  1.74 ms/iter  ETA 9.66 h  residue 62ab3c1d1a5dbb10  (verified to 115936576)
+iter 116400000/136279841 ( 85.41%)  1.74 ms/iter  ETA 9.59 h  residue c02401049d2db150  (verified to 115936576)
+iter 116500000/136279841 ( 85.49%)  1.75 ms/iter  ETA 9.61 h  residue 106f861b6196c43c  (verified to 116468017)
+iter 116600000/136279841 ( 85.56%)  1.74 ms/iter  ETA 9.49 h  residue 8ff15fd2dead329c  (verified to 116468017)
+iter 116700000/136279841 ( 85.63%)  1.74 ms/iter  ETA 9.45 h  residue 9ec639bc977fa0ec  (verified to 116468017)
+iter 116800000/136279841 ( 85.71%)  1.74 ms/iter  ETA 9.43 h  residue 67bdb060421501ac  (verified to 116468017)
+iter 116900000/136279841 ( 85.78%)  1.74 ms/iter  ETA 9.35 h  residue 5339e4751ad40094  (verified to 116468017)
+[checkpoint: 116971756/136279841 squarings (85.83%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 117000000/136279841 ( 85.85%)  1.75 ms/iter  ETA 9.39 h  residue 0dbca1d90db6b19e  (verified to 116971756)
+iter 117100000/136279841 ( 85.93%)  1.73 ms/iter  ETA 9.20 h  residue 689cf5d084c4bcb2  (verified to 116971756)
+iter 117200000/136279841 ( 86.00%)  1.72 ms/iter  ETA 9.14 h  residue 0454bf8d59db7002  (verified to 116971756)
+iter 117300000/136279841 ( 86.07%)  1.75 ms/iter  ETA 9.25 h  residue f926063f580e4d60  (verified to 116971756)
+iter 117400000/136279841 ( 86.15%)  1.74 ms/iter  ETA 9.11 h  residue 3129f0405d8a2c20  (verified to 116971756)
+iter 117500000/136279841 ( 86.22%)  1.74 ms/iter  ETA 9.06 h  residue e0f7249608883a10  (verified to 116971756)
+iter 117600000/136279841 ( 86.29%)  1.65 ms/iter  ETA 8.56 h  residue 26640ba08ee9ced0  (verified to 117503197)
+iter 117700000/136279841 ( 86.37%)  1.65 ms/iter  ETA 8.49 h  residue 70feee5280d6ff20  (verified to 117503197)
+iter 117800000/136279841 ( 86.44%)  1.61 ms/iter  ETA 8.26 h  residue e5f1ccde1574e1e6  (verified to 117503197)
+iter 117900000/136279841 ( 86.51%)  1.6 ms/iter  ETA 8.17 h  residue 9574e87bf5763262  (verified to 117503197)
+iter 118000000/136279841 ( 86.59%)  1.6 ms/iter  ETA 8.10 h  residue 8553c9ac9ce64dc4  (verified to 117503197)
+[checkpoint: 118044844/136279841 squarings (86.62%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 118100000/136279841 ( 86.66%)  1.62 ms/iter  ETA 8.20 h  residue 6efedd762612d1f2  (verified to 118044844)
+iter 118200000/136279841 ( 86.73%)  1.6 ms/iter  ETA 8.03 h  residue 0c5387d5e45a1662  (verified to 118044844)
+iter 118300000/136279841 ( 86.81%)  1.6 ms/iter  ETA 7.99 h  residue 2b2bd20ff8801f8c  (verified to 118044844)
+iter 118400000/136279841 ( 86.88%)  1.59 ms/iter  ETA 7.89 h  residue 7046379601c9af36  (verified to 118044844)
+iter 118500000/136279841 ( 86.95%)  1.62 ms/iter  ETA 8.00 h  residue 5c01c21c2549bb62  (verified to 118044844)
+iter 118600000/136279841 ( 87.03%)  1.65 ms/iter  ETA 8.12 h  residue 4657f3b89bbb4e5c  (verified to 118576285)
+iter 118700000/136279841 ( 87.10%)  1.61 ms/iter  ETA 7.84 h  residue 73e3f4ca8a43467c  (verified to 118576285)
+iter 118800000/136279841 ( 87.17%)  1.6 ms/iter  ETA 7.79 h  residue 220ac15dd63ecd2c  (verified to 118576285)
+iter 118900000/136279841 ( 87.25%)  1.61 ms/iter  ETA 7.77 h  residue 150cdc1ded2ebcc4  (verified to 118576285)
+iter 119000000/136279841 ( 87.32%)  1.59 ms/iter  ETA 7.65 h  residue 39f9257da84e0d9a  (verified to 118576285)
+iter 119100000/136279841 ( 87.39%)  1.6 ms/iter  ETA 7.66 h  residue eff999539822d0f2  (verified to 118576285)
+[checkpoint: 119166046/136279841 squarings (87.44%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 119200000/136279841 ( 87.47%)  1.59 ms/iter  ETA 7.55 h  residue 8a8d8e87906207a4  (verified to 119166046)
+iter 119300000/136279841 ( 87.54%)  1.58 ms/iter  ETA 7.46 h  residue 58b7a0e940aee2e4  (verified to 119166046)
+iter 119400000/136279841 ( 87.61%)  1.58 ms/iter  ETA 7.43 h  residue 80b6c18c1b1edce0  (verified to 119166046)
+iter 119500000/136279841 ( 87.69%)  1.58 ms/iter  ETA 7.39 h  residue 74c22896137ad586  (verified to 119166046)
+iter 119600000/136279841 ( 87.76%)  1.58 ms/iter  ETA 7.33 h  residue a95ad517b561f332  (verified to 119166046)
+iter 119700000/136279841 ( 87.83%)  1.59 ms/iter  ETA 7.33 h  residue f138330d0f5ac05c  (verified to 119697487)
+iter 119800000/136279841 ( 87.91%)  1.58 ms/iter  ETA 7.24 h  residue e8374046e2b1c162  (verified to 119697487)
+iter 119900000/136279841 ( 87.98%)  1.58 ms/iter  ETA 7.21 h  residue 16ef0472c47ddbc2  (verified to 119697487)
+iter 120000000/136279841 ( 88.05%)  1.57 ms/iter  ETA 7.11 h  residue e83db3e12312c264  (verified to 119697487)
+iter 120100000/136279841 ( 88.13%)  1.57 ms/iter  ETA 7.06 h  residue 7d31328d3f4bc032  (verified to 119697487)
+iter 120200000/136279841 ( 88.20%)  1.57 ms/iter  ETA 7.01 h  residue f8ee4b63078a4166  (verified to 119697487)
+iter 120300000/136279841 ( 88.27%)  1.58 ms/iter  ETA 7.03 h  residue e37dda6513daa26a  (verified to 120228928)
+[checkpoint: 120305473/136279841 squarings (88.28%), verified -> irred_r136279841_s12338357.ckpt, 0.11 s]
+iter 120400000/136279841 ( 88.35%)  1.58 ms/iter  ETA 6.98 h  residue c9b1309c1a1a9ecc  (verified to 120305473)
+iter 120500000/136279841 ( 88.42%)  1.58 ms/iter  ETA 6.92 h  residue 21e580b823f91df0  (verified to 120305473)
+iter 120600000/136279841 ( 88.49%)  1.57 ms/iter  ETA 6.86 h  residue df089a8f97e86220  (verified to 120305473)
+iter 120700000/136279841 ( 88.57%)  1.57 ms/iter  ETA 6.80 h  residue 814371de3618b1e6  (verified to 120305473)
+iter 120800000/136279841 ( 88.64%)  1.57 ms/iter  ETA 6.75 h  residue 38b31ce7c1e66efe  (verified to 120305473)
+iter 120900000/136279841 ( 88.71%)  1.58 ms/iter  ETA 6.75 h  residue 279b48f2dd262674  (verified to 120836914)
+iter 121000000/136279841 ( 88.79%)  1.57 ms/iter  ETA 6.67 h  residue b81535ae34db364e  (verified to 120836914)
+iter 121100000/136279841 ( 88.86%)  1.57 ms/iter  ETA 6.63 h  residue 4b1832b14bf4acea  (verified to 120836914)
+iter 121200000/136279841 ( 88.93%)  1.57 ms/iter  ETA 6.60 h  residue ebcc805e60876aee  (verified to 120836914)
+iter 121300000/136279841 ( 89.01%)  1.58 ms/iter  ETA 6.56 h  residue b20cf5a7eb69c0b2  (verified to 120836914)
+iter 121400000/136279841 ( 89.08%)  1.59 ms/iter  ETA 6.57 h  residue c5b17707b105ee2a  (verified to 121368355)
+[checkpoint: 121448545/136279841 squarings (89.12%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 121500000/136279841 ( 89.15%)  1.58 ms/iter  ETA 6.50 h  residue c2c70e92035a8d04  (verified to 121448545)
+iter 121600000/136279841 ( 89.23%)  1.57 ms/iter  ETA 6.40 h  residue 6ed8bcea1c1a5cde  (verified to 121448545)
+iter 121700000/136279841 ( 89.30%)  1.57 ms/iter  ETA 6.36 h  residue 625fef72cb6de338  (verified to 121448545)
+iter 121800000/136279841 ( 89.37%)  1.57 ms/iter  ETA 6.33 h  residue eb7d04fe208964de  (verified to 121448545)
+iter 121900000/136279841 ( 89.45%)  1.58 ms/iter  ETA 6.30 h  residue 0184c006afb617fe  (verified to 121448545)
+iter 122000000/136279841 ( 89.52%)  1.58 ms/iter  ETA 6.27 h  residue f19aeb4b26fe5c9c  (verified to 121979986)
+iter 122100000/136279841 ( 89.60%)  1.57 ms/iter  ETA 6.19 h  residue 9742451915d35090  (verified to 121979986)
+iter 122200000/136279841 ( 89.67%)  1.57 ms/iter  ETA 6.14 h  residue bb6ec352aa67f2ba  (verified to 121979986)
+iter 122300000/136279841 ( 89.74%)  1.57 ms/iter  ETA 6.10 h  residue c3d075c54090995e  (verified to 121979986)
+iter 122400000/136279841 ( 89.82%)  1.58 ms/iter  ETA 6.09 h  residue e7753429454b0148  (verified to 121979986)
+iter 122500000/136279841 ( 89.89%)  1.57 ms/iter  ETA 6.01 h  residue 3efda6142c423126  (verified to 121979986)
+[checkpoint: 122592346/136279841 squarings (89.96%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 122600000/136279841 ( 89.96%)  1.6 ms/iter  ETA 6.07 h  residue 6f4fe56220232172  (verified to 122592346)
+iter 122700000/136279841 ( 90.04%)  1.57 ms/iter  ETA 5.94 h  residue 894614ad9c110f06  (verified to 122592346)
+iter 122800000/136279841 ( 90.11%)  1.57 ms/iter  ETA 5.89 h  residue c30ad10be29edd70  (verified to 122592346)
+iter 122900000/136279841 ( 90.18%)  1.57 ms/iter  ETA 5.84 h  residue ab370702a7e27450  (verified to 122592346)
+iter 123000000/136279841 ( 90.26%)  1.57 ms/iter  ETA 5.79 h  residue e5b3db40bbbf2288  (verified to 122592346)
+iter 123100000/136279841 ( 90.33%)  1.59 ms/iter  ETA 5.82 h  residue d5dd921fb3f8c902  (verified to 122592346)
+iter 123200000/136279841 ( 90.40%)  1.6 ms/iter  ETA 5.80 h  residue 43c16029c5afdb0e  (verified to 123123787)
+iter 123300000/136279841 ( 90.48%)  1.59 ms/iter  ETA 5.74 h  residue 77c8ecf16cccf31a  (verified to 123123787)
+iter 123400000/136279841 ( 90.55%)  1.59 ms/iter  ETA 5.68 h  residue 5b03a54436c5d9d8  (verified to 123123787)
+iter 123500000/136279841 ( 90.62%)  1.59 ms/iter  ETA 5.64 h  residue f232f9d7e753ae06  (verified to 123123787)
+iter 123600000/136279841 ( 90.70%)  1.59 ms/iter  ETA 5.59 h  residue 8d70634386a1b8f4  (verified to 123123787)
+iter 123700000/136279841 ( 90.77%)  1.6 ms/iter  ETA 5.58 h  residue 350a3d75ac86e1da  (verified to 123655228)
+[checkpoint: 123728857/136279841 squarings (90.79%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 123800000/136279841 ( 90.84%)  1.6 ms/iter  ETA 5.53 h  residue 3b9ce5d9bb68cad8  (verified to 123728857)
+iter 123900000/136279841 ( 90.92%)  1.58 ms/iter  ETA 5.42 h  residue b4008c48b240105c  (verified to 123728857)
+iter 124000000/136279841 ( 90.99%)  1.58 ms/iter  ETA 5.38 h  residue 4c9dec0fad037322  (verified to 123728857)
+iter 124100000/136279841 ( 91.06%)  1.57 ms/iter  ETA 5.33 h  residue a0137f6b762c3c5a  (verified to 123728857)
+iter 124200000/136279841 ( 91.14%)  1.57 ms/iter  ETA 5.27 h  residue f478c8ba2b2d77da  (verified to 123728857)
+iter 124300000/136279841 ( 91.21%)  1.58 ms/iter  ETA 5.26 h  residue f45750194573190c  (verified to 124260298)
+iter 124400000/136279841 ( 91.28%)  1.57 ms/iter  ETA 5.17 h  residue b7f84275618adac2  (verified to 124260298)
+iter 124500000/136279841 ( 91.36%)  1.58 ms/iter  ETA 5.16 h  residue 1cf5a2e6d393a7bc  (verified to 124260298)
+iter 124600000/136279841 ( 91.43%)  1.58 ms/iter  ETA 5.11 h  residue a475899d60479b4c  (verified to 124260298)
+iter 124700000/136279841 ( 91.50%)  1.58 ms/iter  ETA 5.09 h  residue c6af3a23734115aa  (verified to 124260298)
+iter 124800000/136279841 ( 91.58%)  1.58 ms/iter  ETA 5.04 h  residue cb631f98eac313ae  (verified to 124791739)
+[checkpoint: 124871200/136279841 squarings (91.63%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 124900000/136279841 ( 91.65%)  1.59 ms/iter  ETA 5.02 h  residue 905324c0bb64ee00  (verified to 124871200)
+iter 125000000/136279841 ( 91.72%)  1.57 ms/iter  ETA 4.92 h  residue 9815b1e88cabd074  (verified to 124871200)
+iter 125100000/136279841 ( 91.80%)  1.57 ms/iter  ETA 4.88 h  residue 9bf4aa90608fd842  (verified to 124871200)
+iter 125200000/136279841 ( 91.87%)  1.58 ms/iter  ETA 4.85 h  residue 5b0578d585c0f6d4  (verified to 124871200)
+iter 125300000/136279841 ( 91.94%)  1.57 ms/iter  ETA 4.78 h  residue b0d18cf2f8a0a66a  (verified to 124871200)
+iter 125400000/136279841 ( 92.02%)  1.59 ms/iter  ETA 4.81 h  residue 673de318529d3fea  (verified to 124871200)
+iter 125500000/136279841 ( 92.09%)  1.62 ms/iter  ETA 4.84 h  residue ad3924b6013aae84  (verified to 125402641)
+iter 125600000/136279841 ( 92.16%)  1.6 ms/iter  ETA 4.74 h  residue cf755bfc7d74a9f0  (verified to 125402641)
+iter 125700000/136279841 ( 92.24%)  1.6 ms/iter  ETA 4.70 h  residue 4b2829fbd62ad2d2  (verified to 125402641)
+iter 125800000/136279841 ( 92.31%)  1.61 ms/iter  ETA 4.69 h  residue c9a17306a2951bfc  (verified to 125402641)
+iter 125900000/136279841 ( 92.38%)  1.61 ms/iter  ETA 4.65 h  residue 50649d2a35a44d74  (verified to 125402641)
+iter 126000000/136279841 ( 92.46%)  1.63 ms/iter  ETA 4.64 h  residue 05e1ddde6cd0bc4a  (verified to 125934082)
+[checkpoint: 126000421/136279841 squarings (92.46%), verified -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 126100000/136279841 ( 92.53%)  1.62 ms/iter  ETA 4.58 h  residue 81a56a7cfe29fa6c  (verified to 126000421)
+iter 126200000/136279841 ( 92.60%)  1.61 ms/iter  ETA 4.50 h  residue 8f905584c19338c6  (verified to 126000421)
+iter 126300000/136279841 ( 92.68%)  1.61 ms/iter  ETA 4.47 h  residue 5f09337e0a43a55a  (verified to 126000421)
+iter 126400000/136279841 ( 92.75%)  1.6 ms/iter  ETA 4.38 h  residue a981423c8aff6832  (verified to 126000421)
+iter 126500000/136279841 ( 92.82%)  1.59 ms/iter  ETA 4.31 h  residue d4e86c1bde541682  (verified to 126000421)
+iter 126600000/136279841 ( 92.90%)  1.6 ms/iter  ETA 4.30 h  residue 7db4432b05940270  (verified to 126531862)
+iter 126700000/136279841 ( 92.97%)  1.6 ms/iter  ETA 4.26 h  residue 36b4830cdbbdbfb8  (verified to 126531862)
+iter 126800000/136279841 ( 93.04%)  1.61 ms/iter  ETA 4.23 h  residue 3ab3b646d1b6ca38  (verified to 126531862)
+iter 126900000/136279841 ( 93.12%)  1.63 ms/iter  ETA 4.25 h  residue 811bd33c93a946e4  (verified to 126531862)
+iter 127000000/136279841 ( 93.19%)  1.64 ms/iter  ETA 4.23 h  residue d7b2f41eeb9aa0fa  (verified to 126531862)
+iter 127100000/136279841 ( 93.26%)  1.63 ms/iter  ETA 4.16 h  residue 5f6daa81723ad63e  (verified to 127063303)
+[checkpoint: 127117249/136279841 squarings (93.28%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 127200000/136279841 ( 93.34%)  1.64 ms/iter  ETA 4.14 h  residue 98ab99d9568cd1a4  (verified to 127117249)
+iter 127300000/136279841 ( 93.41%)  1.62 ms/iter  ETA 4.03 h  residue e3beef7cd618c630  (verified to 127117249)
+iter 127400000/136279841 ( 93.48%)  1.62 ms/iter  ETA 3.99 h  residue bb59255e1c65cc5c  (verified to 127117249)
+iter 127500000/136279841 ( 93.56%)  1.62 ms/iter  ETA 3.94 h  residue fc7d5d0f770105c2  (verified to 127117249)
+iter 127600000/136279841 ( 93.63%)  1.63 ms/iter  ETA 3.93 h  residue e0a5f9e362bfed72  (verified to 127117249)
+iter 127700000/136279841 ( 93.70%)  1.62 ms/iter  ETA 3.87 h  residue 509b755b2bb7bef6  (verified to 127648690)
+iter 127800000/136279841 ( 93.78%)  1.64 ms/iter  ETA 3.86 h  residue 15371daf76701e9e  (verified to 127648690)
+iter 127900000/136279841 ( 93.85%)  1.62 ms/iter  ETA 3.77 h  residue e2a739ff1eb992f0  (verified to 127648690)
+iter 128000000/136279841 ( 93.92%)  1.62 ms/iter  ETA 3.72 h  residue 63c18bede69d2d1c  (verified to 127648690)
+iter 128100000/136279841 ( 94.00%)  1.6 ms/iter  ETA 3.64 h  residue 4e691ec22184cd74  (verified to 127648690)
+iter 128200000/136279841 ( 94.07%)  1.61 ms/iter  ETA 3.61 h  residue b74bb0d25be850a8  (verified to 128180131)
+[checkpoint: 128229703/136279841 squarings (94.09%), verified -> irred_r136279841_s12338357.ckpt, 0.04 s]
+iter 128300000/136279841 ( 94.14%)  1.61 ms/iter  ETA 3.58 h  residue 2234b77007d6c2fe  (verified to 128229703)
+iter 128400000/136279841 ( 94.22%)  1.62 ms/iter  ETA 3.54 h  residue 559b37f80354bacc  (verified to 128229703)
+iter 128500000/136279841 ( 94.29%)  1.61 ms/iter  ETA 3.47 h  residue c4b7e72266d642fc  (verified to 128229703)
+iter 128600000/136279841 ( 94.36%)  1.6 ms/iter  ETA 3.41 h  residue 2e02194def32b224  (verified to 128229703)
+iter 128700000/136279841 ( 94.44%)  1.61 ms/iter  ETA 3.39 h  residue 84fed61965aba1f4  (verified to 128229703)
+iter 128800000/136279841 ( 94.51%)  1.61 ms/iter  ETA 3.35 h  residue 1cc7bdd30a557628  (verified to 128761144)
+iter 128900000/136279841 ( 94.58%)  1.6 ms/iter  ETA 3.28 h  residue 4e7566db7f867166  (verified to 128761144)
+iter 129000000/136279841 ( 94.66%)  1.6 ms/iter  ETA 3.23 h  residue bd9114edd5bcfb02  (verified to 128761144)
+iter 129100000/136279841 ( 94.73%)  1.61 ms/iter  ETA 3.21 h  residue 7aacd9a6dcade75a  (verified to 128761144)
+iter 129200000/136279841 ( 94.80%)  1.61 ms/iter  ETA 3.17 h  residue 83ef89ca3035b7c2  (verified to 128761144)
+iter 129300000/136279841 ( 94.88%)  1.62 ms/iter  ETA 3.14 h  residue 57fdeb2bb71c974e  (verified to 129292585)
+[checkpoint: 129349447/136279841 squarings (94.91%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 129400000/136279841 ( 94.95%)  1.62 ms/iter  ETA 3.10 h  residue 7483b310156a4ef4  (verified to 129349447)
+iter 129500000/136279841 ( 95.03%)  1.69 ms/iter  ETA 3.18 h  residue baba21dda0b1dcbc  (verified to 129349447)
+iter 129600000/136279841 ( 95.10%)  1.67 ms/iter  ETA 3.10 h  residue 4a6b3798b0c589b2  (verified to 129349447)
+iter 129700000/136279841 ( 95.17%)  1.62 ms/iter  ETA 2.96 h  residue dbfed3f32c967810  (verified to 129349447)
+iter 129800000/136279841 ( 95.25%)  1.63 ms/iter  ETA 2.93 h  residue 3dd3587d5600aa8a  (verified to 129349447)
+iter 129900000/136279841 ( 95.32%)  1.7 ms/iter  ETA 3.02 h  residue 2ca92b4a975e754a  (verified to 129880888)
+iter 130000000/136279841 ( 95.39%)  1.68 ms/iter  ETA 2.93 h  residue d041125df4d05086  (verified to 129880888)
+iter 130100000/136279841 ( 95.47%)  1.61 ms/iter  ETA 2.76 h  residue af92047aca724528  (verified to 129880888)
+iter 130200000/136279841 ( 95.54%)  1.62 ms/iter  ETA 2.73 h  residue 94ad9d7b1abf8a6a  (verified to 129880888)
+iter 130300000/136279841 ( 95.61%)  1.62 ms/iter  ETA 2.69 h  residue 0352752ee9777e60  (verified to 129880888)
+iter 130400000/136279841 ( 95.69%)  1.63 ms/iter  ETA 2.66 h  residue d5f1bee4c61b7828  (verified to 129880888)
+[checkpoint: 130443676/136279841 squarings (95.72%), verified -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 130500000/136279841 ( 95.76%)  1.63 ms/iter  ETA 2.62 h  residue 0b31d10ed6644142  (verified to 130443676)
+iter 130600000/136279841 ( 95.83%)  1.6 ms/iter  ETA 2.52 h  residue bfe15e6aae70f774  (verified to 130443676)
+iter 130700000/136279841 ( 95.91%)  1.67 ms/iter  ETA 2.59 h  residue b6c254dbc220746a  (verified to 130443676)
+iter 130800000/136279841 ( 95.98%)  1.7 ms/iter  ETA 2.58 h  residue 8883537495d89642  (verified to 130443676)
+iter 130900000/136279841 ( 96.05%)  1.7 ms/iter  ETA 2.55 h  residue 49720e97d9dcc234  (verified to 130443676)
+iter 131000000/136279841 ( 96.13%)  1.68 ms/iter  ETA 2.47 h  residue b1c13d0a58c8658a  (verified to 130975117)
+iter 131100000/136279841 ( 96.20%)  1.61 ms/iter  ETA 2.31 h  residue 970d978a85d824ca  (verified to 130975117)
+iter 131200000/136279841 ( 96.27%)  1.61 ms/iter  ETA 2.27 h  residue f47b8cabc3a716a2  (verified to 130975117)
+iter 131300000/136279841 ( 96.35%)  1.62 ms/iter  ETA 2.25 h  residue f4957311d6603458  (verified to 130975117)
+iter 131400000/136279841 ( 96.42%)  1.6 ms/iter  ETA 2.17 h  residue 0b935fd091ac9bc4  (verified to 130975117)
+iter 131500000/136279841 ( 96.49%)  1.58 ms/iter  ETA 2.10 h  residue af14e61c164339dc  (verified to 130975117)
+[checkpoint: 131544466/136279841 squarings (96.53%), verified -> irred_r136279841_s12338357.ckpt, 0.08 s]
+iter 131600000/136279841 ( 96.57%)  1.62 ms/iter  ETA 2.11 h  residue 10ce3a1107d0e274  (verified to 131544466)
+iter 131700000/136279841 ( 96.64%)  1.63 ms/iter  ETA 2.08 h  residue 1732461d65c17898  (verified to 131544466)
+iter 131800000/136279841 ( 96.71%)  1.65 ms/iter  ETA 2.05 h  residue ea3ef808cb7aea1e  (verified to 131544466)
+iter 131900000/136279841 ( 96.79%)  1.62 ms/iter  ETA 118.5 min  residue 43e3bd2c885f26b8  (verified to 131544466)
+iter 132000000/136279841 ( 96.86%)  1.65 ms/iter  ETA 117.4 min  residue fbd250e79b650156  (verified to 131544466)
+iter 132100000/136279841 ( 96.93%)  1.67 ms/iter  ETA 116.1 min  residue 94d93d2387c50482  (verified to 132075907)
+iter 132200000/136279841 ( 97.01%)  1.63 ms/iter  ETA 110.7 min  residue 8a8e2f1144fe6e4a  (verified to 132075907)
+iter 132300000/136279841 ( 97.08%)  1.61 ms/iter  ETA 106.7 min  residue da3a0c5deaa22ff6  (verified to 132075907)
+iter 132400000/136279841 ( 97.15%)  1.62 ms/iter  ETA 104.7 min  residue a3b9a00515a95cc8  (verified to 132075907)
+iter 132500000/136279841 ( 97.23%)  1.62 ms/iter  ETA 101.8 min  residue ca37b562e7a3741c  (verified to 132075907)
+iter 132600000/136279841 ( 97.30%)  1.62 ms/iter  ETA 99.3 min  residue e79107d851a996a8  (verified to 132075907)
+[checkpoint: 132648172/136279841 squarings (97.34%), verified -> irred_r136279841_s12338357.ckpt, 0.05 s]
+iter 132700000/136279841 ( 97.37%)  1.67 ms/iter  ETA 99.9 min  residue 86dfb4503b003116  (verified to 132648172)
+iter 132800000/136279841 ( 97.45%)  1.64 ms/iter  ETA 95.0 min  residue f7fdacf111e93436  (verified to 132648172)
+iter 132900000/136279841 ( 97.52%)  1.62 ms/iter  ETA 91.3 min  residue f6c5d525c4f5aa70  (verified to 132648172)
+iter 133000000/136279841 ( 97.59%)  1.61 ms/iter  ETA 88.2 min  residue d145eecea7ba5192  (verified to 132648172)
+iter 133100000/136279841 ( 97.67%)  1.65 ms/iter  ETA 87.2 min  residue e5341bbc5b8a4a22  (verified to 132648172)
+iter 133200000/136279841 ( 97.74%)  1.62 ms/iter  ETA 83.4 min  residue ab1ceab69f2f40ca  (verified to 133179613)
+iter 133300000/136279841 ( 97.81%)  1.61 ms/iter  ETA 79.9 min  residue 730a9d5907ad63e2  (verified to 133179613)
+iter 133400000/136279841 ( 97.89%)  1.66 ms/iter  ETA 79.8 min  residue 6258b39ff5a13b02  (verified to 133179613)
+iter 133500000/136279841 ( 97.96%)  1.63 ms/iter  ETA 75.3 min  residue 3225d2b6e127721e  (verified to 133179613)
+iter 133600000/136279841 ( 98.03%)  1.6 ms/iter  ETA 71.6 min  residue aa4708cdea35fb98  (verified to 133179613)
+iter 133700000/136279841 ( 98.11%)  1.61 ms/iter  ETA 69.1 min  residue 74e682ecef04562c  (verified to 133179613)
+[checkpoint: 133755523/136279841 squarings (98.15%), verified -> irred_r136279841_s12338357.ckpt, 0.06 s]
+iter 133800000/136279841 ( 98.18%)  1.63 ms/iter  ETA 67.4 min  residue a6428b53c7e4c290  (verified to 133755523)
+iter 133900000/136279841 ( 98.25%)  1.6 ms/iter  ETA 63.4 min  residue 2d191ead6fea5026  (verified to 133755523)
+iter 134000000/136279841 ( 98.33%)  1.6 ms/iter  ETA 60.8 min  residue f69f232cc70eed06  (verified to 133755523)
+iter 134100000/136279841 ( 98.40%)  1.61 ms/iter  ETA 58.4 min  residue 090dffeb8f5b104a  (verified to 133755523)
+iter 134200000/136279841 ( 98.47%)  1.65 ms/iter  ETA 57.2 min  residue e289028644b6171c  (verified to 133755523)
+iter 134300000/136279841 ( 98.55%)  1.71 ms/iter  ETA 56.5 min  residue 7195b37ffe061672  (verified to 134286964)
+iter 134400000/136279841 ( 98.62%)  1.69 ms/iter  ETA 53.1 min  residue 3c0333d46eda732a  (verified to 134286964)
+iter 134500000/136279841 ( 98.69%)  1.69 ms/iter  ETA 50.1 min  residue 8761c5046094fb5a  (verified to 134286964)
+iter 134600000/136279841 ( 98.77%)  1.62 ms/iter  ETA 45.2 min  residue 9da5bf819bec368c  (verified to 134286964)
+iter 134700000/136279841 ( 98.84%)  1.61 ms/iter  ETA 42.4 min  residue 5cf31473a7e101f8  (verified to 134286964)
+iter 134800000/136279841 ( 98.91%)  1.59 ms/iter  ETA 39.2 min  residue 2f064d7b3dee7d00  (verified to 134286964)
+[checkpoint: 134857771/136279841 squarings (98.96%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 134900000/136279841 ( 98.99%)  1.61 ms/iter  ETA 37.0 min  residue 816450017e06859e  (verified to 134857771)
+iter 135000000/136279841 ( 99.06%)  1.58 ms/iter  ETA 33.6 min  residue dd7195172edc2b78  (verified to 134857771)
+iter 135100000/136279841 ( 99.13%)  1.58 ms/iter  ETA 31.1 min  residue 4a26057dc8022538  (verified to 134857771)
+iter 135200000/136279841 ( 99.21%)  1.58 ms/iter  ETA 28.4 min  residue 0c8d1d20b690f27e  (verified to 134857771)
+iter 135300000/136279841 ( 99.28%)  1.57 ms/iter  ETA 25.7 min  residue 86e66cf835bb4918  (verified to 134857771)
+iter 135400000/136279841 ( 99.35%)  1.59 ms/iter  ETA 23.3 min  residue 468cd0e8ac042022  (verified to 135389212)
+iter 135500000/136279841 ( 99.43%)  1.58 ms/iter  ETA 20.5 min  residue 467672b9c61d1692  (verified to 135389212)
+iter 135600000/136279841 ( 99.50%)  1.58 ms/iter  ETA 17.9 min  residue e36065edac7f25e0  (verified to 135389212)
+iter 135700000/136279841 ( 99.57%)  1.58 ms/iter  ETA 15.2 min  residue 1e6783fa71f15b72  (verified to 135389212)
+iter 135800000/136279841 ( 99.65%)  1.59 ms/iter  ETA 12.7 min  residue 3edd310629f40ab0  (verified to 135389212)
+iter 135900000/136279841 ( 99.72%)  1.59 ms/iter  ETA 10.1 min  residue 93de4045a7dc9590  (verified to 135389212)
+[checkpoint: 135995740/136279841 squarings (99.79%), verified -> irred_r136279841_s12338357.ckpt, 0.07 s]
+iter 136000000/136279841 ( 99.79%)  1.61 ms/iter  ETA 7.5 min  residue 8dc8cb38239fc7a8  (verified to 135995740)
+iter 136100000/136279841 ( 99.87%)  1.58 ms/iter  ETA 4.7 min  residue cc6b24ff04845338  (verified to 135995740)
+iter 136200000/136279841 ( 99.94%)  1.58 ms/iter  ETA 2.1 min  residue a19a76057089dede  (verified to 135995740)
+Error checking: 218 windows verified
+Note: 53604160 of the 136279841 squarings were NOT error-checked
+136279841 12338357 irreducible (primitive if 2^136279841-1 is prime)
+136279841 12338357 irreducible (may be primitive) LOG

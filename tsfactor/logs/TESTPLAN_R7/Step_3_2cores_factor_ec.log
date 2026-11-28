@@ -1,0 +1,81 @@
+$ sleep 0; s=843; mkdir -p $s; cd $s; time ../factor_ec -v -p -f 1 -s0 $s -s1 $((s+1)) -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+../factor_ec -v -p -f 1 -s0 843 -s1 844 -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=12 block(s)
+Stop when number of blocks is > q1=40
+Use fine DDF above 530450
+Using 1 thread(s)
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+...
+Degree 55: skip
+Exponentiation took 5.253365
+Current q 12
+Interval 56..223:
+   squares/products took 23.5 (wct 23.6), per term 0.140 (wct 0.140)
+   gcd took 44.224857
+Current q 24
+Interval 224..559:
+   squares/products took 47.6 (wct 47.6), per term 0.142 (wct 0.142)
+   gcd took 44.574339
+Current q 36
+Interval 560..1063:
+   squares/products took 72.2 (wct 72.2), per term 0.143 (wct 0.143)
+   gcd took 44.581745
+Current q 48
+Interval 1064..1735:
+q > q1 so skipping further test
+843 u
+Error checking: 0 detection(s) / recovery(ies)
+
+real    4m42.447s
+user    4m29.413s
+sys     0m12.970s
+
+
+$ sleep 3; s=2666; mkdir -p $s; cd $s; time ../factor_ec -v -p -f 1 -s0 $s -s1 $((s+1)) -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+../factor_ec -v -p -f 1 -s0 2666 -s1 2667 -k 55 -skip 55 -m 14 -q 12 -z 40 136279841
+This is factor version 3.01
+based on NTL version 11.6.0
+Error checking ENABLED: Gerbicz window 8 block(s), fold modulus x^3904+1
+Test separately degrees up to k0=55
+Skip degrees up to 55
+Using block size of m=14
+Start with q0=12 block(s)
+Stop when number of blocks is > q1=40
+Use fine DDF above 530450
+Using 1 thread(s)
+Using reciprocal trinomial
+Using fastsqr
+By Swan's theorem search at most to degree 45426613
+Degree 2: skip
+...
+Degree 55: skip
+Exponentiation took 5.681674
+Current q 12
+Interval 56..223:
+   squares/products took 21.6 (wct 21.6), per term 0.129 (wct 0.129)
+   gcd took 44.334741
+Current q 24
+Interval 224..559:
+   squares/products took 45.4 (wct 45.4), per term 0.135 (wct 0.135)
+   gcd took 44.754720
+Current q 36
+Interval 560..1063:
+   squares/products took 68.9 (wct 68.9), per term 0.137 (wct 0.137)
+   gcd took 44.451511
+Current q 48
+Interval 1064..1735:
+q > q1 so skipping further test
+2666 u
+Error checking: 0 detection(s) / recovery(ies)
+
+real    4m35.461s
+user    4m22.322s
+sys     0m13.113s

@@ -1,7 +1,13 @@
-# irred devkit Makefile.  Everything builds into build/.
+# irred Makefile.  Everything builds into build/.
 #
-#   make            irred (native) + the test programs
-#   make test       all the tests below (a few minutes)
+#   make            irred (native) + the test programs, and irred_gpu when
+#                   nvcc is found (make gpu NVCC=/path/to/nvcc otherwise)
+#   make gpu        irred_gpu: the same program with the GPU backend
+#   make emul       irred_gpu_emul: irred_gpu under the CUDA emulation
+#                   (kernels run as loops on the CPU; no GPU needed)
+#   make gputest    tests/gpu_test.sh on irred_gpu (GPU_BIN=... to choose)
+#   make emultest   tests/gpu_test.sh on irred_gpu_emul
+#   make test       all the CPU tests below (a few minutes)
 #   make selftest   irred --selftest for every build
 #   make cmp        compare every build with the naive reference (many r, s)
 #   make sweep      exhaustive fault-injection sweep
@@ -13,11 +19,22 @@
 # Needs gcc (or CC=clang), GNU make, bash, python3 (only for two tests).
 
 CC      ?= gcc
+CXX     ?= g++
 CFLAGS  ?= -O3 -march=native -fopenmp
 WARN    = -Wall -Wextra
 B       = build
+NVCC    ?= nvcc
+NVFLAGS ?= -O3 -arch=native
+# cuda_emul.h (the CUDA emulation) lives with tsfactor
+EMUL_H  ?= ../tsfactor/tsfactor/cuda_emul.h
+HAVE_NVCC := $(shell command -v $(NVCC) >/dev/null 2>&1 && echo 1)
 
-all: $(B)/irred $(B)/irred_generic $(B)/irred_asan $(B)/ref $(B)/irred315 $(B)/irred020
+CPU_ALL = $(B)/irred $(B)/irred_generic $(B)/irred_asan $(B)/ref $(B)/irred315 $(B)/irred020
+
+all: $(CPU_ALL) $(if $(HAVE_NVCC),gpu,nocuda)
+
+nocuda:
+	@echo "== $(NVCC) not found: built the CPU programs only (make gpu NVCC=/path/to/nvcc for irred_gpu) =="
 
 $(B):
 	mkdir -p $(B)
@@ -53,6 +70,32 @@ $(B)/irred315: reference/irred315_orig.c reference/irred315_compile.patch | $(B)
 $(B)/irred020: reference/irred_0.20.c | $(B)
 	$(CC) -O3 -march=native -w -o $@ $< -lm
 
+# GPU build: irred.c (the driver, with -DIRRED_GPU) + irred_gpu.cu (backend)
+gpu: $(B)/irred_gpu
+
+$(B)/irred_gpu.o: irred/irred.c | $(B)
+	$(CC) $(CFLAGS) $(WARN) -DIRRED_GPU -c -o $@ $<
+
+$(B)/irred_gpu: $(B)/irred_gpu.o irred/irred_gpu.cu irred/gf2_trin_sqr.cuh
+	$(NVCC) $(NVFLAGS) -Iirred -o $@ irred/irred_gpu.cu $(B)/irred_gpu.o \
+	    -lm -Xcompiler -fopenmp
+
+# the same under the CUDA emulation (g++ only)
+emul: $(B)/irred_gpu_emul
+
+$(B)/irred_gpu_emul.o: irred/irred_gpu.cu irred/gf2_trin_sqr.cuh $(EMUL_H) | $(B)
+	$(CXX) -O2 -march=native $(WARN) -x c++ -DIRRED_EMUL -Iirred \
+	    -I$(dir $(EMUL_H)) -c -o $@ irred/irred_gpu.cu
+
+$(B)/irred_gpu_emul: $(B)/irred_gpu.o $(B)/irred_gpu_emul.o
+	$(CXX) -fopenmp -o $@ $^ -lm
+
+gputest: $(B)/irred $(B)/ref
+	tests/gpu_test.sh $(or $(GPU_BIN),$(B)/irred_gpu) $(B)
+
+emultest: $(B)/irred_gpu_emul $(B)/irred $(B)/ref
+	tests/gpu_test.sh $(B)/irred_gpu_emul $(B)
+
 selftest: $(B)/irred $(B)/irred_generic $(B)/irred_asan
 	$(B)/irred --selftest | tail -1
 	$(B)/irred --selftest --isa avx2 | tail -1
@@ -83,4 +126,4 @@ test: selftest cmp sweep ckpt bug014
 clean:
 	rm -rf $(B)
 
-.PHONY: all selftest cmp sweep ckpt bench bug014 test clean
+.PHONY: all gpu emul nocuda gputest emultest selftest cmp sweep ckpt bench bug014 test clean

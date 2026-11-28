@@ -1,5 +1,20 @@
 # Low-cost error checking for trinomial factor search over GF(2)
-## Analysis + handoff document — Round 6
+## Analysis + handoff document — Round 7
+
+> **Round 7 in one paragraph.** Gord's run of the round-6 test plan: nvcc
+> builds round 10, both selftests pass (the GPU one ten times running), the
+> regression passes for both builds, and the step-5 survivor took 192.8 s
+> with the new schedule (342 s before). The round's main item is **GPU
+> irred** (`irred/docs/irred_handoff.md` §4b): the single-chain XOR Gerbicz
+> check of irred (one polynomial, F^L(D) = D + V + u) now runs with the
+> squarings on the GPU. The design keeps the verified state V in host
+> memory: at a window close the check's L squarings run on the GPU, then
+> x, D and u are downloaded and compared with V in the same host loop that
+> takes u's CRC, so V and every checkpoint are copied from the words that
+> were compared; a corrupted transfer in either direction surfaces as a
+> failed check, never as a wrong verified state. Validated under the CUDA
+> emulation by the full fault sweeps (8,606 injected faults, all detected,
+> all results right). tsfactor got small fixes (round 11 in its handoff).
 
 > **Round 6 in one paragraph.** Gord's run of the round-5 test plan: the
 > certified gcd is 29% faster than NTL's on his machine on one thread
@@ -41,10 +56,12 @@
 > and 9 there).
 
 **Status: implemented in all three programs (tsfactor, tsfactor_cpu,
-factor_ec), on by default in all.** `tsfactor` round 9 (= this document's
-round 5) is verified on the real GPU; round 10 (round 6 here) is verified
-under emulation and on the CPU, and has not been through nvcc. `factor_ec`
-3.01 is verified at small r and in a production-shape run in the sandbox.
+factor_ec), on by default in all; and in irred and irred_gpu (irred's own
+single-chain version).** `tsfactor` round 10 (= this document's round 6)
+is verified on the real GPU (Gord, R6 test plan); round 11 (round 7 here)
+changes no checking code. `factor_ec` 3.01 is verified at small r and in a
+production-shape run in the sandbox. irred_gpu is verified under emulation
+and has not been through nvcc.
 
 The core fact is unchanged: in characteristic 2 the squaring map is
 **additive** as well as multiplicative, so the Gerbicz "product of
@@ -59,7 +76,8 @@ version and deterministic for single faults.
 |---|---|
 | `errorcheck_handoff.md` | This document: the mathematics, the measurements, the status ledger. Start here. |
 | `tsfactor_handoff.md` | The complete tsfactor record. Round 8 there is the error-checking integration (where each check sits, recovery, options, tests); Round 9 is the gcd work of round 5; Round 10 the driver/backend split and `tsfactor_cpu` (round 6). |
-| `TESTPLAN_R6.md` | What to run on the real machine now, in order, and what to send back. |
+| `TESTPLAN_R7.md` | What to run on the real machine now (tsfactor round 11), in order, and what to send back; GPU irred: `irred/docs/TESTPLAN.md`. |
+| `irred/docs/irred_handoff.md` | irred and irred_gpu; §3 is irred's single-chain version of the check, §4b its GPU build. |
 | **tsfactor** | |
 | `gf2_ec.h` | Fold algebra (host) + checking kernels (device). Header-only. Replaces round 3's `ec_cuda.cuh`. |
 | `ts_core.h` | The driver (round 6): the checking logic, chain bookkeeping, restarts, checkpoints; backend-independent. |
@@ -991,7 +1009,7 @@ the interval schedule now measures its own gcd/scan cost ratio, finished
 survivors no longer leave checkpoint files behind. `factor_ec`: closed-form
 init check implemented, checking on by default.
 
-Round 6 (this one; tsfactor round 10): Gord's run of round 5 — nvcc clean,
+Round 6 (tsfactor round 10): Gord's run of round 5 — nvcc clean,
 selftest and gcdstress PASS, the certified gcd 36.3 s on one thread against
 NTL's 51.0 s, 17.0 s on four threads (2.1x, saturating), `--gpu-gcd` ahead
 inside tsfactor (19.1 against 21.7 s). The tsfactor code was split into a
@@ -1019,6 +1037,18 @@ fix).
 `factor_ec` 3.01: factor_modified 2.02's squaring (vectorisable reduce loop,
 constants precomputed per r) and `-Z`; the checks are unchanged and pass the
 same regression and fault sweep.
+
+Round 7 (tsfactor round 11, irred 0.23): Gord's run of round 6 on the real
+GPU — nvcc builds (two warnings, fixed), `tsfactor --selftest` all PASS ten
+times in a row, `tsfactor_cpu --selftest` all PASS, `ts_regress.sh` all PASS
+for both builds, the step-5 survivor in 192.8 s with every check on (0
+detections). The new item is the GPU build of irred, whose check is the
+single-chain identity of irred_handoff §3.1 with the squarings on the GPU
+and the comparison and V on the host (paragraph at the top). Its map check
+compares the GPU squaring with irred's `ref_square`; its selftest compares
+every GPU kernel with `ref_square` at every mask boundary (5,168 cases) and
+GPU chains with the CPU backend; the full `ec_sweep_all.sh` runs on the
+emulated GPU build with all faults detected and all results right.
 
 ### `tsfactor` on the real GPU (Gord, round-4 code, RTX 2070 SUPER, 6-core Zen 2)
 
@@ -1073,8 +1103,10 @@ said it used modular products; it does not).
 
 - [x] Round-5 numbers on Gord's machine (above, round 6).
 - [x] nvcc compile of the round-5 tsfactor.cu (clean).
-- [ ] **nvcc compile of the round-10 tsfactor.cu** (restructured host code,
-      kernels unchanged) and its selftest on the card.
+- [x] nvcc compile of the round-10 tsfactor.cu and its selftest on the card
+      (Gord, R6: clean apart from two warnings, fixed in round 11).
+- [ ] **nvcc compile of irred_gpu** and its selftest, tests and full-size
+      timings on the card (irred TESTPLAN steps 1–3).
 - [ ] tsfactor_cpu's check cost and throughput on Zen 2 / cloud CPUs, six
       processes at once (memory bandwidth).
 - [ ] `factor_ec -ect` at production size with the closed-form init check.
@@ -1158,16 +1190,30 @@ sequentially. Round 5 changed only host code.
 | Checkpoint/tuning/lock logic | `ts_ckpt10.sh`, both builds, both directions of cross-build resume |
 | Persistent-fault path at production size | the bug above: init check failed 4 times, exit 3, nothing written |
 
+### `tsfactor` — verified on the real GPU, round-10 code (Gord, R6 test plan)
+
+nvcc build; `--selftest` all PASS (ten consecutive runs); `ts_regress.sh` all
+PASS (GPU and CPU builds); the step-5 survivor (192.8 s, 4 certified gcds,
+261 blocks and 37 chain windows verified, 0 detections); setting a survivor
+aside and resuming it; checkpoint and lock behaviour (`logs/TESTPLAN_R6/`).
+
+### `irred_gpu` — verified under emulation (round 7), NOT on a GPU
+
+Selftest (kernels vs `ref_square`, GPU vs CPU chains, every fault site, the
+linear-bug demonstration); `tests/gpu_test.sh` (144 results vs the naive
+reference, CPU agreement, checkpoints between the builds, the full fault
+sweeps); ASan+UBSan; the residues after 2000 and 4000 squarings at
+r = 136279841, s = 12338357 equal the Zen 2's. Not compiled by nvcc, not
+run on a GPU.
+
 ### `tsfactor` — NOT verified
 
-* **Round 10 (round 6 here) has not been through nvcc or run on a GPU.**
-  Round 5 has (clean, all tests passed). Round 10's changes are host code
-  plus the restructuring of tsfactor.cu around unchanged kernels.
+* ~~Round 10 has not been through nvcc~~ (it has: above). Round 11's
+  changes are host code in `ts_core.h` (verified here: selftest, regress)
+  and one format string in tsfactor.cu.
 * (Measured since: the round-5 gcd on Gord's six cores and tuned gf2x —
   36.3 s on one thread, 17.0 s on four, §12.)
 * **Concurrency of the checking kernels beyond what the selftest exercises.**
-* **The round-10 interval schedule in production** (the dynamic programme
-  replaced the self-measuring recurrence of round 5): selftest (DP == brute
-  force) and small-r scans only; TESTPLAN_R6's step-5 survivor is its first
-  production test.
+* ~~The round-10 interval schedule in production~~: the step-5 survivor ran
+  it (192.8 s, intervals as planned).
 * **tsfactor_cpu on Zen 2 or cloud CPUs**, alone or six at once.

@@ -1,0 +1,24 @@
+* Step 3: When running in the cloud, I think the most common practice would be to run six different one-core instances instead of one instance with six or more cores. The reason would be not just to try to avoid multiple cores competing for the memory bandwidth of a single physical machine, but also the fact that a single N-core spot instance (for N > 2) will usually cost more than N times the cost of a one-core spot instance, per hour of usage, especially for N larger than 2. However, if using a high-performance GPU in the cloud, these are usually attached to a virtual machine with a large number of cores, so this multi-core setup could be used to run multiple tsfactor_cpu processes in parallel with a single tsfactor process, although that is: probably not cost-effective.
+
+I have attached the logs for:
+
+ Step_3_6cores_tsfactor_cpu.log
+ Step_3_4cores_tsfactor_cpu.log
+ Step_3_2cores_tsfactor_cpu.log
+ Step_3_1core_tsfactor_cpu.log
+
+ Step_3_6cores_factor_ec.log
+ Step_3_4cores_factor_ec.log
+ Step_3_2cores_factor_ec.log
+ Step_3_1core_factor_ec.log
+
+These ran on a WSL virtual machine with 16GB of memory.
+
+Memory usage per process for tsfactor_cpu peaked at about 7.0% of 16GB memory; memory usage per process for factor_ec peaked in the mid-to-high 11% range. The peaks occurred during the GCD phase.
+
+With one simultaneous process, factor_ec and tsfactor_cpu have about the same runtime. With more simultaneous processes, factor_ec slows down more than tsfactor_cpu does.
+
+Pleae let me know if you want any further runs, or if the above wasn't quite what you wanted. I can rerun if necessary. 
+
+
+* Step 4: I was able to verify the added blank lines because I had an actual case of a "kept for later" s-value in the current production run

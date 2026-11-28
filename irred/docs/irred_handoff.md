@@ -1,4 +1,4 @@
-# irred — handoff (complete record, Rounds 1–3)
+# irred — handoff (complete record, Rounds 1–4)
 
 Fork of R. P. Brent's `irred` 3.15 (2003), now in
 `github.com/nclvrps/mersenne_trinomial`, subdirectory `irred/`.
@@ -8,8 +8,12 @@ irreducible iff the result is x. Here sodd is whichever of s, r−s is odd;
 using the reciprocal trinomial when s is even is harmless, because it is
 irreducible iff the original is.
 
+Since round 4 (0.23) there is also a GPU build, `irred_gpu`, which works
+modulo x^r + x^smod + 1 with smod = min(s, r−s) (§4b).
+
 This file supersedes the earlier versions of `claude/irred_handoff.md` in
-the Brent trinomials project (Round 1, 2026-11-17; Rounds 1–2, 2026-11-19).
+the Brent trinomials project (Round 1, 2026-11-17; Rounds 1–2, 2026-11-19;
+Rounds 1–3, 2026-11-25).
 
 ---------------------------------------------------------------------------
 ## 0. Where things stand
@@ -20,7 +24,20 @@ the Brent trinomials project (Round 1, 2026-11-17; Rounds 1–2, 2026-11-19).
 | 0.14 | 2026-05 | Gord's fork, cleaned up; **has a reduction bug** (§2.3); `reference/irred_0.14.c` |
 | 0.20 | 2026-11-17 | Round 1: CLI `r s`, 64-bit residue, checkpoints, bug fixed, ~2–4x faster; `reference/irred_0.20.c` |
 | 0.21 | 2026-11-19 | Round 2: Gerbicz error checking, map check, `--threads`, `--nt` |
-| **0.22** | **2026-11-25** | **Round 3: 0.20 checkpoints no longer read (and never overwritten), `--nt` automatic, `--stop-after`; `irred/irred.c`** |
+| 0.22 | 2026-11-25 | Round 3: 0.20 checkpoints no longer read (and never overwritten), `--nt` automatic, `--stop-after` |
+| **0.23** | **2026-11-27** | **Round 4: the GPU build `irred_gpu` (driver + CPU/GPU backends); `irred/irred.c`, `irred/irred_gpu.cu`, `irred/gf2_trin_sqr.cuh`** |
+
+* **Round 4 (0.23, §4b): GPU irred.** irred.c became the driver of two
+  backends: the CPU code it always had, or `irred_gpu.cu`, where the
+  polynomials being squared stay in GPU memory. The CPU build `irred` is
+  unchanged in behaviour and still needs only a C compiler. New squaring
+  kernels (`gf2_trin_sqr.cuh`) need about 2.5 loads per output word instead
+  of tsfactor's 10; all are timed at start and the fastest is used.
+  Validated under the CUDA emulation (selftest, 144 results against the
+  naive reference, CPU↔GPU checkpoints, the full fault sweeps, ASan) and at
+  full size: the residues after 2000 and 4000 squarings of s = 12338357
+  equal the ones Gord's Zen 2 printed. **Not yet compiled by nvcc**
+  (TESTPLAN step 1).
 
 * **Round 3 (0.22, §4a)**, from Gord's round-2 test plan on his Zen 2:
   version 1 (0.20) checkpoints are no longer read — 0.22 refuses to start
@@ -43,7 +60,7 @@ the Brent trinomials project (Round 1, 2026-11-17; Rounds 1–2, 2026-11-19).
 ---------------------------------------------------------------------------
 ## 1. The program
 
-### 1.1 Usage (0.22)
+### 1.1 Usage (0.23)
 
     irred [options] r s
 
@@ -56,13 +73,17 @@ the Brent trinomials project (Round 1, 2026-11-17; Rounds 1–2, 2026-11-19).
     --isa auto|avx512|avx2|generic      --selftest      -h, --help
     error checking: --no-ec  --ec-block L  --ec-window N  --ec-retries N
                     --map-checks N  --seed N  --ec-fault SITE:N (testing)
+    GPU build only: --device N  --sq-kernel auto|fused|k2|k4|k8  --cpu
 
 The result line keeps the old log format:
 
     r s irreducible (may be primitive) LOG
-    r s x0123456789abcdef LOG     (s odd)      r s y... LOG   (s even: reciprocal)
+    r s x0123456789abcdef LOG     (modulo the trinomial itself)
+    r s y0123456789abcdef LOG     (modulo the reciprocal x^r + x^(r-s) + 1:
+                                   CPU build when s is even, GPU when s > r/2)
 
-The residue is the low 64 bits of x^(2^r) mod (x^r + x^sodd + 1); its low
+The residue is the low 64 bits of x^(2^r) mod (x^r + x^sodd + 1) (GPU
+build: x^r + x^min(s, r−s) + 1, §4b); its low
 8 hex digits are the 32-bit residue of 3.15 and 0.14 (except where 0.14 was
 wrong, §2.3). Before the result, the program (since 0.21) prints whether
 all r squarings were error-checked.
@@ -73,7 +94,8 @@ checkpoint, unless `--no-ckpt`), 3 error check failed persistently or map
 check failed.
 
 Limits: r odd, r ≥ 257, r − sodd ≥ 128 (i.e. s ≥ 128 if s is even,
-r − s ≥ 128 if s is odd). Small odd s is fine.
+r − s ≥ 128 if s is odd). Small odd s is fine. The GPU build takes any
+0 < s < r.
 
 ### 1.2 Brent's algorithm, as implemented
 
@@ -389,7 +411,7 @@ no `timeout` at all.
    0.20 work to a version mix-up.
 2. **`--nt` is automatic.** If neither `--nt` nor `--no-nt` is given, the
    streaming stores are used when the two squaring buffers (2 × r/8 bytes,
-   33 MB at r = 136279841) exceed the L3 cache one core sees: the size from
+   32.5 MiB at r = 136279841) exceed the L3 cache one core sees: the size from
    `/sys/devices/system/cpu/cpu0/cache/index*/` (level 3, i.e. one Zen CCX,
    16 MB on Zen 2), else `sysconf(_SC_LEVEL3_CACHE_SIZE)`, else off. It says
    so when it turns them on. On the sandbox's Xeon (260 MB L3) they stay off,
@@ -410,6 +432,120 @@ checks: stop with a verified checkpoint and exit 2, resume to the right
 result, and a `--no-ckpt` timing run that leaves no files).  At
 r = 136279841, s = 12338357, the residues after 2000, 4000 and 6000
 squarings agree with Gord's 0.21 run on the Zen 2 (`logs/round3/`).
+
+---------------------------------------------------------------------------
+## 4b. Round 4 (0.23, 2026-11-27): the GPU build
+
+Gord: "Please go ahead and create the GPU version of irred" — to recheck
+x^136279841 + x^12338357 + 1 independently (CPU irred and tsfactor have
+both said irreducible/primitive) — with CPU-only builds always possible.
+
+**Structure (the tsfactor pattern, much smaller).** `irred.c` is the
+driver: command line, error checking, checkpoints, map check, selftest.
+It reaches the polynomials it squares only through `struct backend`
+(square, copy, add, get/put to the host, word 0, a bit flip for fault
+injection, alloc/release). `cpu_backend` is the code irred always had;
+`gpu_backend` (only with `-DIRRED_GPU`) calls `irred_gpu.cu`. The verified
+state V lives in host memory with either backend, so checkpoints, the
+rollback point and the final result are host data as before. Build:
+
+    make            # irred etc.; irred_gpu too when nvcc is found
+    make gpu        # build/irred_gpu  (gcc -DIRRED_GPU irred.c + nvcc irred_gpu.cu)
+    make emul       # build/irred_gpu_emul (the same under cuda_emul.h, g++ only)
+
+`irred_gpu --cpu` runs the CPU backend. GPU options: `--device N`,
+`--sq-kernel auto|fused|k2|k4|k8`. `--threads`, `--nt`, `--isa` are CPU
+options and are ignored (with a note) on the GPU.
+
+**The modulus.** The GPU kernels need the middle exponent ≤ (r−1)/2, so the
+GPU build works modulo x^r + x^smod + 1, smod = min(s, r−s). The CPU build
+keeps sodd (Brent's algorithm needs it odd). For odd s < r/2, which
+includes s = 12338357, the two are the same trinomial: same states, same
+residues, interchangeable checkpoints (tested both ways). The residue
+letter keeps its meaning: `x` = modulo the trinomial itself, `y` = modulo
+its reciprocal. So for even s < r/2 the CPU prints a `y` residue and the
+GPU an `x` residue — different numbers, the same verdict. The GPU build
+takes every 0 < s < r, including the even s < 128 the CPU build refuses.
+The checkpoint header's `sodd` field now holds the modulus' middle
+exponent; a checkpoint of the other build for the other modulus is
+recognised ("it holds powers of x modulo ...") and left alone.
+
+**The kernels (`gf2_trin_sqr.cuh`, self-contained, includable by tsfactor).**
+With SQ the square before reduction (SQ[2i] = a_i), output bit t is
+
+    SQ[t] + SQ[t+r] + SQ[t+r−s]·[t ≥ s] + SQ[t+2r−s] + SQ[t+2r−2s]·[t ≥ s]
+
+(the 4th term is non-zero only for t < s−1, the 5th only for t < 2s−1; SQ
+vanishes above 2r−2, so only two bounds need masks). A 64-bit window of SQ
+at offset c is the spread of a 32-bit window of a at bit ⌈c/2⌉, shifted by
+one when c is odd, so one funnel-shifted 64-bit window of a gives two
+output words of a term. `trsq_k2/k4/k8`: one thread per 2/4/8 output
+words, one window of K/2+1 words per term, the masks only where a bound
+falls in the thread's words, the 4th and 5th terms only in threads below s
+and 2s. Load instructions: about 2.5 per output word (k2) or 2 (k4),
+against 10 for `trsq_fused` = tsfactor's `k_square_fused`, kept as the
+reference and as a fallback. The memory traffic floor of this formulation
+is about 1.5 reads + 1 write of a polynomial per squaring (each of the
+first three terms reads half of the input once; the 4th and 5th only the
+part below s and 2s): ~45 MB at r = 136279841, ~0.1 ms at the 2070 SUPER's
+448 GB/s, against 0.195 ms measured for the fused kernel (tsfactor's tuning
+line). At start
+`irred_gpu` times every kernel on a random polynomial (≥ 0.05 s each) and
+prints e.g. `GPU squaring kernel: k4 0.120 ms (fused 0.195, k2 ..., k8 ...)`.
+Even in the emulation, where the kernels run as loops on the CPU, the wide
+kernels are 2.5–3.7x faster than the fused one (fewer instructions).
+Expected time for r = 136279841: 7.4 h at the fused kernel's speed, about
+4–5 h if a wide kernel reaches 60–70% of the bandwidth.
+
+**Host side.** Kernel launches are asynchronous; every 32 squarings an event
+is recorded and the host waits (sleeping: `cudaDeviceScheduleBlockingSync`,
+`cudaEventBlockingSync`) for the one 32 squarings earlier, so the host stays
+at most 64 squarings ahead and uses almost no CPU. A progress line reads
+word 0 back (8 bytes). At a window close the check's L squarings run on the
+GPU; then x, D and u are downloaded and compared with V on the host in one
+pass that also takes u's CRC, exactly the CPU code's loop — so V (and every
+checkpoint) is copied from the very words that were compared. D is reset
+by uploading V. A corrupted transfer either way shows up as a failed check
+(retry), never as a wrong verified state: a bad upload of V into the work
+buffer is an error at step 0 of the next window, a bad download is a false
+alarm. Per window (~70–140 s at full size) that is 3 downloads and one
+upload of 17 MB. CUDA errors stop the program (exit 1) with the last
+checkpoint intact. GPU memory: 5 × 17 MB at r = 136279841.
+
+**Map check and selftest.** The start-up map check compares the GPU
+squaring with `ref_square` on the host (16 random inputs + one sparse).
+`ref_square` now takes the middle exponent as an argument, and a new
+`ref_chain` (r reference squarings from x) checks the selftest's table of
+known results and supplies the expected results for the GPU's modulus.
+`--selftest` of the GPU build adds: every kernel against `ref_square` on
+all-ones, x^(r−1) and random inputs for r ∈ {129, 255, 257, 263, 321, 383,
+1279, 4097, 4159, 4423, 9689} and s at every mask boundary (1, 2, 3, 31–33,
+63–65, 95–97, 127–129, 191–193, (r−1)/2 and the values just below it, r/3,
+r/4+1, random): 5,168 cases; then 300-squaring chains on the GPU (each
+kernel) against the CPU backend for four odd s < r/2; then the CPU build's
+checked/unchecked cases, every fault site and the linear-bug demonstration,
+all on the GPU backend.
+
+**Validation (sandbox, emulated GPU):** `make emultest` =
+`tests/gpu_test.sh build/irred_gpu_emul build`: selftest; 144 results equal
+`tools/ref` (now `ref r s gpu` computes the GPU's modulus) for r ∈ {257,
+263, 383, 1279, 2203, 4423} and s ∈ {1, 2, 3, 4, 63–65, 127–129, (r±1)/2,
+r−1, r−2, r−3, r−64, r−128, r−129, 6 random}; 107 comparisons with the CPU
+build agree (same residue where the moduli agree, same verdict
+otherwise); a CPU checkpoint resumed by the GPU build and vice versa
+(r = 44497, s = 8575: right result, no files left); an even-s checkpoint of
+the other build recognised and not used; `tests/ec_sweep_all.sh` on the GPU
+build: all 8,606 injected faults detected, all results right. ASan+UBSan
+build of the emulation: selftest and 75 runs against the reference, clean.
+Full size (emulated, 22 ms per squaring; `gpu_test.sh --full`): residues
+after 2000 and 4000 squarings of s = 12338357 = 524cef6916ae5278 and
+d61458d6bb7b0384, the values in Gord's Zen 2 log (`logs/round4/`). The CPU
+build after the refactoring: `make test` all pass (selftest ×8, 5,124
+comparisons, 3.15 comparison, sweeps, 22 checkpoint checks, bug014).
+
+**Small fix:** the round-3 notes said the squaring buffers are 33 MB at
+r = 136279841; they are 2 × 17,034,980 bytes = 32.5 MiB, which the program
+prints as "32 MB" (Gord's log). MB in irred's messages are MiB.
 
 ---------------------------------------------------------------------------
 ## 5. Verification ledger
@@ -446,52 +582,37 @@ build, `make selftest`; production-size timings for 1–6 threads with and
 without `--nt` (§4a); irred confirmed x^136279841 + x^12338357 + 1
 irreducible.
 
-**Round 3 (0.22), verified in the sandbox:** §4a.
+**Round 3 (0.22), verified in the sandbox:** §4a. **On Gord's machine**
+(round-3 test plan): build, `make selftest` (8 lines), `make test`; the
+automatic `--nt` turned itself on ("squaring buffers 32 MB > 16 MB L3");
+1.73 ms per squaring by default, 1.47–1.48 with 2 or 4 threads.
+
+**Round 4 (0.23), verified in the sandbox (emulated GPU):** §4b.
 
 **Not verified:**
 
-* 0.22 on Gord's machine, in particular the automatic `--nt` (it should turn
-  itself on there and print the line saying so).
+* `irred_gpu` compiled by nvcc and run on a GPU (TESTPLAN steps 1–3): the
+  kernel timings, which kernel wins, the full-size speed, and the 2000/4000
+  residues on the real card.
 * Non-x86 builds (the portable path is tested via `--isa generic`, but not
   on another architecture).
 
 ---------------------------------------------------------------------------
 ## 6. Open items / ideas for a next round (rough order of value)
 
-1. **GPU irred** (Gord: probably a later round; ~8–10 h instead of 2–3
-   days, and a fast independent recheck of a primitive trinomial).
-   tsfactor round 10 split its program into a driver and backends behind an
-   interface (`TsDev`, `ts_core.h`), with a CPU backend (`ts_cpu.h`) and a GPU
-   one; a GPU irred would follow the same pattern with a much smaller
-   interface: init(r, s), square_n(n), xor_into(D), equal(D, V), copy to/from
-   host, plus the start-up tuning record and fingerprint, the per-(r, s)
-   checkpoint names and the prefix lock that `ts_core.h` already has (worth
-   moving into a small shared header when irred uses them). The squaring
-   exists twice already: `k_square_fused` on the GPU (any parity, middle
-   exponent ≤ (r−1)/2) and, new in round 10, an even-s in-place BLZ
-   reduction on the CPU (`ts_cpu.h`), so a CPU irred could work modulo the
-   original trinomial for even s too. The residue question below then has a
-   clean answer: both programs can compute x^(2^r) modulo
-   x^r + x^min(s, r−s) + 1 (a new residue letter, say `z`), keeping today's
-   `x`/`y` residue as the CPU default for continuity with the old logs.
-   The original notes:
-   tsfactor already has validated GPU squaring for these
-   trinomials (`gf2_trinomial_cuda.h`: `k_spread_square` + two
-   `k_fold_pass`; tsfactor's fused single-pass squaring measured
-   **0.25 ms at r = 136279841** on the RTX 2070 SUPER). r squarings would
-   take ~10 hours, against ~1.7–3 days on CPUs. The XOR chain of §3.1 maps
-   directly onto it: one XOR kernel per block, the check on the device, and
-   only a flag back, as tsfactor does. The map check would compare the GPU
-   squaring against `ref_square` on the host.
-   **Design point.** The fold passes need s ≤ (r−1)/2. To produce
-   residues compatible with the CPU program, the GPU must reduce modulo
-   x^r + x^sodd + 1, which needs about ⌈r/(r−sodd)⌉ passes: 2 for
-   sodd ≤ r/2, but very many when s is small and even (then sodd = r − s).
-   Options: use min(s, r−s) and label the residue differently (the verdict
-   is the same, but CPU cross-checks need `tools/ref.c` adapted to any
-   middle exponent), or add passes only when 2 < ⌈r/(r−sodd)⌉ ≤ some
-   bound. tsfactor's emulation (`cuda_emul.h`) allows a sandbox-validated
-   first version, as in tsfactor rounds 4–5.
+1. ~~GPU irred~~ (done in round 4, §4b; to be run on the GPU). The round-3
+   notes had weighed a new residue letter (`z`) for the modulus
+   x^r + x^min(s, r−s) + 1; §4b keeps `x`/`y` instead, with their meaning
+   (the trinomial itself / its reciprocal) unchanged.
+1a. **tsfactor could use the new squaring kernels.** `gf2_trin_sqr.cuh` is
+   self-contained; if irred_gpu's start-up timing shows a wide kernel well
+   ahead of `fused`, tsfactor's TsGPU::square_slot can call `trsq_square`
+   (the h-table advance is about half of the GPU scan time: up to ~20% on a
+   survivor's scan). Its tuning would time the kernels as irred_gpu does.
+1b. **A GPU worker that switches to irred for deep survivors** (see the
+   harness design note): past a degree of about 10^6 without a factor, a
+   ~5–7 h irred run is cheaper in expectation than continuing the scan
+   towards r/3 (days).
 2. ~~Measure on Zen 2~~ (done, §4a). `--nt` is now automatic. `--threads`
    stays 1 by default: on Zen 2 two threads give 14% (1.76 → 1.52 ms) and
    more give nothing, and one process per core is the better use of a

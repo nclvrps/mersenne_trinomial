@@ -1,11 +1,15 @@
 /* irred.c                                      irred version forked from 3.15
 
 ***********************************************************
-Version 0.22 of forked version (2026):
+Version 0.23 of forked version (2026):
     https://github.com/nclvrps/mersenne_trinomial irred subdirectory
 
 This version includes Gerbicz-style error checking,
 and includes checkpointing and resuming from checkpoint after interruption.
+
+Two builds from this file: irred (CPU only; needs only a C compiler) and
+irred_gpu (this file compiled with -DIRRED_GPU, plus irred_gpu.cu: the
+squarings run on an NVIDIA GPU, everything else is the same program).
 
 A 64-bit hexadecimal residue is printed if the trinomial is not
 irreducible (version 0.14 and earlier printed only the low 32 bits;
@@ -69,7 +73,7 @@ Author: Richard P. Brent (rpb@comlab.ox.ac.uk)
 Dates:  20000528..20030328 (version 3.15)
 
 Author: Gord Palameta (for copyright purposes; actually Claude AI)
-Dates:  May to November 2026 (version 0.21 of forked version)
+Dates:  May to November 2026 (versions 0.14 to 0.23 of forked version)
 
 Summary:
 
@@ -79,15 +83,18 @@ Summary:
    using 64-bit word-length bit operations.
 
    The test computes x^(2^r) mod A(x) by r squarings; A(x) is irreducible
-   iff the result is x.  If s is even, the reciprocal trinomial
+   iff the result is x.  On the CPU, if s is even, the reciprocal trinomial
    x^r + x^(r-s) + 1 (irreducible iff the original one is) is used
-   instead, so that the middle exponent "sodd" is always odd.
+   instead, so that the middle exponent "sodd" is always odd.  The GPU
+   build uses whichever of s, r-s is smaller ("smod"), so for odd s < r/2
+   both builds work modulo the same trinomial.
 
 Restrictions, Assumptions and Limitations:
 
    Assumes r odd and r - sodd >= LIM = 2*64 = 128, where sodd is whichever
    of s, r-s is odd; i.e. s >= 128 if s is even, r - s >= 128 if s is odd.
-   (Version 0.14 and earlier required r - sodd >= 384.)
+   (Version 0.14 and earlier required r - sodd >= 384.)  The GPU build
+   takes any 0 < s < r.
 
    It is assumed that r is prime - if not true then a warning is printed.
    There is no check on whether or not 2^r-1 is prime.
@@ -135,6 +142,13 @@ Usage:
                                  picks the best the CPU has (for testing)
         -h, --help               usage
 
+        GPU build (irred_gpu) only:
+        --device N               which CUDA device (default 0)
+        --sq-kernel auto|fused|k2|k4|k8
+                                 squaring kernel; auto (the default) times
+                                 them all at start and takes the fastest
+        --cpu                    run on the CPU instead (as irred)
+
         Error checking (see "Error checking" below):
         --no-ec                  no Gerbicz check (as in 0.20)
         --ec-block L             squarings per block (default sqrt(r)/16,
@@ -158,12 +172,14 @@ Output:
         One result line, in the format of the old log files:
 
           r s irreducible (may be primitive) LOG
-          r s xHHHHHHHHHHHHHHHH LOG      (not irreducible, s odd)
-          r s yHHHHHHHHHHHHHHHH LOG      (not irreducible, s even)
+          r s xHHHHHHHHHHHHHHHH LOG      (not irreducible)
+          r s yHHHHHHHHHHHHHHHH LOG      (not irreducible, reciprocal)
 
         where HHHHHHHHHHHHHHHH is the low 64 bits (coefficients of
-        x^63 .. x^0) of x^(2^r) mod (x^r + x^sodd + 1), in hex.  "y" marks
-        that the reciprocal trinomial x^r + x^(r-s) + 1 was used.
+        x^63 .. x^0) of x^(2^r) mod (x^r + x^smod + 1), in hex; smod is
+        sodd on the CPU and min(s, r-s) on the GPU.  "y" marks that smod
+        is r - s, i.e. the reciprocal trinomial x^r + x^(r-s) + 1 was used
+        (CPU: s even; GPU: s > r/2).
 
         With --progress N, after every N squarings a line
           iter k/r ... residue HHHHHHHHHHHHHHHH
@@ -215,6 +231,9 @@ Checkpoints:
         checkpoint holds the last verified state, and a signal first
         finishes and verifies the current block.  Checkpoints written by
         0.20 (format version 1) are not read any more; 0.21 reads them.
+        A checkpoint of one build resumes in the other when both use the
+        same modulus (s odd, s < r/2); otherwise it is recognised and left
+        alone.
 
 Comments on timing and memory requirements:
 
@@ -301,10 +320,28 @@ Comments on different versions:
         fit in the L3 cache (--no-nt / --nt to override)
       - --stop-after N, for timing runs and tests (no `timeout` needed)
 
+    Forked version 0.23 (2026-11-27):
+      - the GPU build irred_gpu: this file is the driver (command line,
+        error checking, checkpoints, map check, selftest) for either of
+        two backends, the CPU code here or irred_gpu.cu; the polynomials
+        being squared stay in GPU memory, the verified state and
+        everything written to disk in host memory
+      - squaring kernels in gf2_trin_sqr.cuh (tsfactor's fused kernel and
+        new ones with about 2.5 loads per output word instead of 10),
+        timed at start; the fastest is used
+      - the map check compares the GPU squaring with ref_square; the
+        selftest compares every kernel with ref_square for many r and s
+        (every bound of the kernels' masks) and whole chains with the CPU
+      - ref_square takes the middle exponent as an argument; the selftest
+        also checks its known results against a reference chain
+
 Compile with, e.g.,
         gcc -O3 -march=native -fopenmp -o irred irred.c -lm
 (-fopenmp only matters for --threads; without it the program is the same,
-single-threaded.)
+single-threaded.)  The GPU build: make gpu (see the Makefile), i.e.
+        gcc -O3 -march=native -fopenmp -DIRRED_GPU -c -o irred_gpu.o irred.c
+        nvcc -O3 -arch=native -o irred_gpu irred_gpu.cu irred_gpu.o \
+             -lm -Xcompiler -fopenmp
 */
 
 #define _GNU_SOURCE
@@ -327,8 +364,8 @@ single-threaded.)
 #include <omp.h>
 #endif
 
-#define IRRED_VERSION "0.22"
-#define IRRED_DATE    "20261125"
+#define IRRED_VERSION "0.23"
+#define IRRED_DATE    "20261127"
 
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 #define HAVE_X86_SIMD 1
@@ -348,6 +385,8 @@ single-threaded.)
 /* Parameters depending on r and sodd (set by setup_params) */
 
 static int r, s, sodd;
+static int smod;                /* middle exponent of the modulus in use:
+                                   sodd on the CPU, min(s, r-s) on the GPU */
 static int alpha;               /* (r-1)/2 */
 static int q11;                 /* (r-1) div WLEN: index of the top word */
 static int q4;                  /* alpha div WLEN */
@@ -830,6 +869,37 @@ static void poly_copy(uint64_t *restrict dst, const uint64_t *restrict src)
   dst[q11] = src[q11] & mask1;
   }
 
+static void poly_xor(uint64_t *restrict d, const uint64_t *restrict s)
+  {
+  for (size_t i = 0; i <= (size_t)q11; i++)
+    d[i] ^= s[i];
+  }
+
+/* ------------------------------------------------------------------------ */
+/* Backends.  The driver -- run_test, the error check, the map check, the
+   checkpoints, main -- works on the polynomials it squares through these
+   operations.  The CPU backend is the code in this file; the GPU backend
+   (irred_gpu.cu, in the irred_gpu build) keeps them in GPU memory.  The
+   verified state V is in host memory with either. */
+
+struct backend {
+  const char *name;
+  bool host;                    /* the polynomials are in host memory */
+  bool min_s;                   /* modulus x^r + x^min(s, r-s) + 1 (else sodd) */
+  void (*setup)(void);          /* after r, s, smod and setup_params */
+  uint64_t *(*alloc)(void);     /* a zeroed polynomial */
+  void (*release)(uint64_t *p);
+  void (*square)(uint64_t *src, uint64_t *dst);   /* src may be clobbered */
+  void (*copy)(uint64_t *dst, const uint64_t *src);
+  void (*add)(uint64_t *dst, const uint64_t *src);   /* dst += src (XOR) */
+  void (*get)(const uint64_t *p, uint64_t *h);       /* to the host */
+  void (*put)(uint64_t *p, const uint64_t *h);       /* from the host */
+  uint64_t (*word0)(const uint64_t *p);              /* coefficients 0..63 */
+  void (*flip)(uint64_t *p, size_t w, int bit);      /* fault injection */
+  void (*linbug)(uint64_t *p);                       /* the "map" fault */
+};
+static const struct backend *BK;
+
 /* ------------------------------------------------------------------------ */
 /* Fault injection, for testing the error checks (--ec-fault SITE:N) */
 
@@ -841,12 +911,16 @@ static uint64_t fault_n = 0;            /* at the fault_n-th opportunity */
 static uint64_t fault_seen[F_NSITES];
 
 static void maybe_fault(int site, uint64_t *p)
-/* Flips one bit of polynomial p at the fault_n-th call for this site */
+/* Flips one bit of polynomial p at the fault_n-th call for this site.  p is
+   a backend polynomial, except for F_VER (the verified state, host memory). */
   {
   if (site != fault_site || ++fault_seen[site] != fault_n) return;
   size_t w = (size_t)((fault_n * 2654435761u) % (uint64_t)q11);  /* < q11 */
   int bit = (int)((fault_n * 40503u) % WLEN);
-  p[w] ^= (uint64_t)1 << bit;
+  if (site == F_VER)
+    p[w] ^= (uint64_t)1 << bit;
+  else
+    BK->flip(p, w, bit);
   printf("[ec-fault: flipped bit %d of word %zu at %s #%" PRIu64 "]\n",
          bit, w, fault_names[site], fault_n);
   }
@@ -923,7 +997,78 @@ static inline void square(uint64_t *src, uint64_t *dst)
     reducep(src);
     ilv(src, dst, 0, q41);
     }
-  if (fault_site == F_MAP) dst[3] ^= dst[1];
+  }
+
+/* The CPU backend */
+static void cpu_setup(void) { }
+static uint64_t *cpu_alloc(void) { return alloc_buffer(); }
+static void cpu_release(uint64_t *p) { free(p - FRONTPAD); }
+static void cpu_get(const uint64_t *p, uint64_t *h) { poly_copy(h, p); }
+static void cpu_put(uint64_t *p, const uint64_t *h) { poly_copy(p, h); }
+static uint64_t cpu_word0(const uint64_t *p) { return p[0]; }
+static void cpu_flip(uint64_t *p, size_t w, int bit) { p[w] ^= (uint64_t)1 << bit; }
+static void cpu_linbug(uint64_t *p) { p[3] ^= p[1]; }
+
+static const struct backend cpu_backend = {
+  "CPU", true, false, cpu_setup, cpu_alloc, cpu_release, square, poly_copy,
+  poly_xor, cpu_get, cpu_put, cpu_word0, cpu_flip, cpu_linbug
+};
+
+#ifdef IRRED_GPU
+/* The GPU backend: irred_gpu.cu */
+int irred_gpu_open(int device, int verbose);
+void irred_gpu_setup(int r, int smod);
+int irred_gpu_nkernels(void);
+const char *irred_gpu_kernel_name(int k);
+int irred_gpu_kernel(void);
+void irred_gpu_set_kernel(int k);
+void irred_gpu_tune(char *buf, size_t len);
+void irred_gpu_sync(void);
+uint64_t *irred_gpu_alloc(void);
+void irred_gpu_release(uint64_t *p);
+void irred_gpu_square(uint64_t *src, uint64_t *dst);
+void irred_gpu_copy(uint64_t *dst, const uint64_t *src);
+void irred_gpu_add(uint64_t *dst, const uint64_t *src);
+void irred_gpu_get(const uint64_t *p, uint64_t *h);
+void irred_gpu_put(uint64_t *p, const uint64_t *h);
+uint64_t irred_gpu_word0(const uint64_t *p);
+void irred_gpu_flip(uint64_t *p, size_t w, int bit);
+void irred_gpu_linbug(uint64_t *p);
+
+static void gpu_setup(void) { irred_gpu_setup(r, smod); }
+
+static const struct backend gpu_backend = {
+  "GPU", false, true, gpu_setup, irred_gpu_alloc, irred_gpu_release,
+  irred_gpu_square, irred_gpu_copy, irred_gpu_add, irred_gpu_get,
+  irred_gpu_put, irred_gpu_word0, irred_gpu_flip, irred_gpu_linbug
+};
+#endif
+
+static uint64_t *Xh, *Dh, *Uh;          /* host scratch for a GPU backend */
+
+static inline void bk_square(uint64_t *src, uint64_t *dst)
+  {
+  BK->square(src, dst);
+  if (fault_site == F_MAP) BK->linbug(dst);
+  }
+
+/* A host-readable copy of backend polynomial p (top word not masked): p
+   itself on the CPU, otherwise p downloaded into scratch */
+static const uint64_t *bk_view(const uint64_t *p, uint64_t *scratch)
+  {
+  if (BK->host) return p;
+  BK->get(p, scratch);
+  return scratch;
+  }
+
+/* r, s and everything that depends on them */
+static void set_trinomial(int rr, int ss)
+  {
+  r = rr;
+  s = ss;
+  setup_params();
+  smod = BK->min_s ? (s < r - s ? s : r - s) : sodd;
+  BK->setup();
   }
 
 /* ------------------------------------------------------------------------ */
@@ -944,8 +1089,9 @@ static inline void xor_at(uint64_t *c, uint64_t w, long pos)
   if (sh) c[wi + 1] ^= w >> (WLEN - sh);
   }
 
-static void ref_square(const uint64_t *u, uint64_t *c)
-/* c = u^2 mod (x^r + x^sodd + 1); c needs 2*nwords+1 words; canonical u */
+static void ref_square(const uint64_t *u, uint64_t *c, int m)
+/* c = u^2 mod (x^r + x^m + 1), 0 < m <= r - 64; c needs 2*nwords+1 words;
+   canonical u */
   {
   static uint16_t sp8[256];
   if (sp8[255] == 0)
@@ -973,12 +1119,34 @@ static void ref_square(const uint64_t *u, uint64_t *c)
     c[i] = 0;
     long e0 = WLEN * i - r;                         /* x^(64i) = x^e0 x^r */
     xor_at(c, w, e0);
-    xor_at(c, w, e0 + sodd);
+    xor_at(c, w, e0 + m);
     }
   uint64_t w = c[rw] >> rb;                         /* bits r, r+1, ... */
   c[rw] &= ((uint64_t)1 << rb) - 1;
   xor_at(c, w, 0);
-  xor_at(c, w, sodd);
+  xor_at(c, w, m);
+  }
+
+/* x^(2^r) mod (x^r + x^m + 1) by r reference squarings (slow: for the
+   selftest at small r).  Returns RES_IRRED, or RES_RESIDUE and *res. */
+static int ref_chain(int m, uint64_t *res)
+  {
+  uint64_t *u = calloc(nwords + 2, sizeof(uint64_t));
+  uint64_t *c = calloc(2 * nwords + 2, sizeof(uint64_t));
+  if (u == NULL || c == NULL) {
+    fprintf(stderr, "unable to allocate memory for the reference chain\n");
+    exit(EXIT_FAILURE);
+    }
+  u[0] = 2;
+  for (int k = 0; k < r; k++) {
+    ref_square(u, c, m);
+    memcpy(u, c, nwords * sizeof(uint64_t));
+    }
+  int rc = comparex(u) ? 0 : 1;         /* RES_IRRED, RES_RESIDUE */
+  *res = u[0];
+  free(u);
+  free(c);
+  return rc;
   }
 
 static uint64_t rng_state = 0x9E3779B97F4A7C15ULL;
@@ -991,34 +1159,36 @@ static uint64_t rng_next(void)
   }
 
 static bool map_check(uint64_t *A, uint64_t *B, int n)
-/* A, B: work buffers (contents destroyed).  Returns true if all agree. */
+/* A, B: work polynomials (contents destroyed).  Returns true if all agree. */
   {
   uint64_t *in = malloc(nwords * sizeof(uint64_t));
   uint64_t *ref = malloc((2 * nwords + 2) * sizeof(uint64_t));
-  if (in == NULL || ref == NULL) {
+  uint64_t *out = malloc(nwords * sizeof(uint64_t));
+  if (in == NULL || ref == NULL || out == NULL) {
     fprintf(stderr, "unable to allocate memory for the map check\n");
     exit(EXIT_FAILURE);
     }
   bool ok = true;
   for (int t = 0; t < n && ok; t++) {
-    memset(A, 0, bufwords * sizeof(uint64_t));
     for (size_t i = 0; i < nwords; i++)
-      A[i] = rng_next();
+      in[i] = rng_next();
     if (t == 0) {                       /* one sparse input: x^(r-1) + x */
-      memset(A, 0, nwords * sizeof(uint64_t));
-      A[0] = 2;
-      A[q11] = (uint64_t)1 << ((r - 1) & WLENM);
+      memset(in, 0, nwords * sizeof(uint64_t));
+      in[0] = 2;
+      in[q11] = (uint64_t)1 << ((r - 1) & WLENM);
       }
-    A[q11] &= mask1;
-    memcpy(in, A, nwords * sizeof(uint64_t));
-    square(A, B);
-    ref_square(in, ref);
+    in[q11] &= mask1;
+    BK->put(A, in);
+    bk_square(A, B);
+    const uint64_t *b = bk_view(B, out);
+    ref_square(in, ref, smod);
     for (size_t i = 0; i < (size_t)q11; i++)
-      if (B[i] != ref[i]) ok = false;
-    if (((B[q11] ^ ref[q11]) & mask1) != 0) ok = false;
+      if (b[i] != ref[i]) ok = false;
+    if (((b[q11] ^ ref[q11]) & mask1) != 0) ok = false;
     }
   free(in);
   free(ref);
+  free(out);
   return ok;
   }
 
@@ -1141,7 +1311,7 @@ static bool ckpt_write(const uint64_t *a, uint64_t k, uint32_t want_crc,
   memcpy(H.magic, CKPT_MAGIC, 8);
   H.version = CKPT_VERSION;
   H.hdr_bytes = sizeof H;
-  H.r = r; H.s = s; H.sodd = sodd;
+  H.r = r; H.s = s; H.sodd = smod;      /* the modulus' middle exponent */
   H.k = k;
   H.nwords = nwords;
   H.wall = h->wall;
@@ -1235,7 +1405,16 @@ static bool ckpt_load_one(const char *name, uint64_t *a, struct ckpt_hdr *H)
     fclose(f);
     return false;
     }
-  if (H->sodd != (uint64_t)sodd || H->nwords != nwords || H->k > (uint64_t)r ||
+  if (H->sodd != (uint64_t)smod && (H->sodd == (uint64_t)s ||
+                                     H->sodd == (uint64_t)(r - s))) {
+    printf("Ignoring %s: it holds powers of x modulo x^%d + x^%" PRIu64 " + 1, "
+           "this run works modulo x^%d + x^%d + 1\n  (the CPU build uses the "
+           "odd one of s and r - s, the GPU build the smaller)\n", name, r,
+           H->sodd, r, smod);
+    fclose(f);
+    return false;
+    }
+  if (H->sodd != (uint64_t)smod || H->nwords != nwords || H->k > (uint64_t)r ||
       H->unchecked > H->k) {
     printf("Ignoring %s: inconsistent header\n", name);
     fclose(f);
@@ -1333,12 +1512,6 @@ struct ecstat {
 };
 static struct ecstat ecs;
 
-static void poly_xor(uint64_t *restrict d, const uint64_t *restrict s)
-  {
-  for (size_t i = 0; i <= (size_t)q11; i++)
-    d[i] ^= s[i];
-  }
-
 /* Closes a window: checks F^Lb(D) == D + V + u.  On success sets V = u
    (and D = V), so the next window starts from it. */
 static bool ec_close(const uint64_t *u, long Lb)
@@ -1346,22 +1519,24 @@ static bool ec_close(const uint64_t *u, long Lb)
   double t0 = wall_now();
   ecs.checks++;
   ecs.sq_check += (uint64_t)Lb;
-  poly_copy(S1, Db);
+  BK->copy(S1, Db);
   uint64_t *x = S1, *y = S2;
   for (long i = 0; i < Lb; i++) {
-    square(x, y);
+    bk_square(x, y);
     uint64_t *t = x; x = y; y = t;
     if (i == 0) maybe_fault(F_CHK, x);
     }
+  /* compared, and u's CRC taken, from the same words (in host memory) */
+  const uint64_t *xv = bk_view(x, Xh), *dv = bk_view(Db, Dh), *uv = bk_view(u, Uh);
   uint64_t diff = 0;
   uint32_t c = 0xFFFFFFFFu;
   for (size_t j = 0; j < (size_t)q11; j++) {
-    const uint64_t w = u[j];
-    diff |= x[j] ^ Db[j] ^ Vb[j] ^ w;
+    const uint64_t w = uv[j];
+    diff |= xv[j] ^ dv[j] ^ Vb[j] ^ w;
     c = crc_word(c, w);
     }
-  const uint64_t w = u[q11] & mask1;
-  diff |= (x[q11] ^ Db[q11] ^ Vb[q11] ^ w) & mask1;
+  const uint64_t w = uv[q11] & mask1;
+  diff |= (xv[q11] ^ dv[q11] ^ Vb[q11] ^ w) & mask1;
   c = crc_word(c, w);
   const uint32_t crc_u = c ^ 0xFFFFFFFFu;
   bool ok = (diff == 0);
@@ -1370,12 +1545,12 @@ static bool ec_close(const uint64_t *u, long Lb)
        that were compared, so a damaged copy is caught here. */
     int tries = 0;
     do {
-      poly_copy(Vb, u);
+      poly_copy(Vb, uv);
     } while (poly_crc(Vb) != crc_u && ++tries < 3);
     if (tries == 3) ok = false;
     else {
       crcV = crc_u;
-      poly_copy(Db, Vb);
+      BK->put(Db, Vb);
       maybe_fault(F_VER, Vb);
       }
     }
@@ -1404,8 +1579,8 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
   const long N = ec_window > 0 ? ec_window : L;
   bool stop_msg = false;
 
-  poly_copy(a, Vb);
-  if (ec_enabled) poly_copy(Db, Vb);
+  BK->put(a, Vb);
+  if (ec_enabled) BK->put(Db, Vb);
 
   uint64_t k = k0, kv = k0;     /* squarings done; at V */
   long Lw = (r - k < (uint64_t)L) ? (long)(r - k) : L;  /* this window's block */
@@ -1420,7 +1595,7 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
     (hh).ec_failures = h0.ec_failures + ecs.failures; } while (0)
 
   while (k < (uint64_t)r) {
-    square(a, b);
+    bk_square(a, b);
     uint64_t *t = a; a = b; b = t;
     k++;
     maybe_fault(F_SQ, a);
@@ -1435,7 +1610,7 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
       fmt_duration(per * (double)((uint64_t)r - k), eta, sizeof eta);
       printf("iter %" PRIu64 "/%d (%6.2f%%)  %.3g ms/iter  ETA %s  "
              "residue %016" PRIx64, k, r, 100.0 * (double)k / r,
-             1e3 * per, eta, a[0]);
+             1e3 * per, eta, BK->word0(a));
       if (ec_enabled) printf("  (verified to %" PRIu64 ")", kv);
       printf("\n");
       last_prog_t = now;
@@ -1451,7 +1626,7 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
         struct history hh;
         HIST_NOW(hh);
         hh.unchecked = h0.unchecked + (k - k0);
-        bool w = ckpt_enabled && ckpt_write(a, k, 0, false, &hh);
+        bool w = ckpt_enabled && ckpt_write(bk_view(a, Uh), k, 0, false, &hh);
         last_ckpt = wall_now();
         if (stop_requested) {
           if (w) printf("Checkpoint written; run the same command again to "
@@ -1476,7 +1651,7 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
                wall_now() - last_ckpt >= ckpt_secs;
     bool tail = (uint64_t)r - k < (uint64_t)Lw;   /* includes k == r */
     if (!(nblk >= N || tail || due || stop_requested)) {
-      poly_xor(Db, a);
+      BK->add(Db, a);
       maybe_fault(F_ACC, Db);
       continue;
       }
@@ -1511,8 +1686,8 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
           }
         crcV = poly_crc(Vb);
         }
-      poly_copy(a, Vb);
-      poly_copy(Db, Vb);
+      BK->put(a, Vb);
+      BK->put(Db, Vb);
       k = kv;
       nblk = 0;
       Lw = ((uint64_t)r - k < (uint64_t)L) ? (long)((uint64_t)r - k) : L;
@@ -1544,12 +1719,13 @@ static int run_test(uint64_t *buf[2], uint64_t k0, long progress,
 
   /* the result comes from the verified copy (or from the working buffer,
      which holds the same words, if the copy was damaged since) */
-  const uint64_t *fin = ec_enabled ? Vb : a;
+  const uint64_t *fin = ec_enabled ? Vb : bk_view(a, Uh);
   if (ec_enabled && poly_crc(Vb) != crcV) {
-    if (poly_crc(a) == crcV) {
+    const uint64_t *av = bk_view(a, Uh);
+    if (poly_crc(av) == crcV) {
       printf("The copy of the verified final state was damaged in memory; "
              "using the working copy, which is intact\n");
-      fin = a;
+      fin = av;
       }
     else {
       printf("The verified final state was damaged in memory; run again\n");
@@ -1574,11 +1750,12 @@ static int check_params(void)
     printf("s must satisfy 0 < s < r\n");
     return 1;
     }
+  if (BK->min_s) return 0;              /* the GPU backend takes any s */
   int so = (s & 1) ? s : r - s;
   if (r - so < LIM) {
     printf("Need r - sodd >= %d, where sodd = %d is whichever of s, r-s is "
            "odd\n(i.e. s >= %d if s is even, r - s >= %d if s is odd); "
-           "use another program for this case\n", LIM, so, LIM, LIM);
+           "use the GPU build (irred_gpu) for this case\n", LIM, so, LIM, LIM);
     return 1;
     }
   return 0;
@@ -1586,30 +1763,40 @@ static int check_params(void)
 
 static void alloc_all(uint64_t *buf[2])
   {
-  buf[0] = alloc_buffer();
-  buf[1] = alloc_buffer();
-  Vb = alloc_buffer();
+  buf[0] = BK->alloc();
+  buf[1] = BK->alloc();
+  Vb = alloc_buffer();                  /* host memory with any backend */
   Db = S1 = S2 = NULL;
+  Xh = Dh = Uh = NULL;
   if (ec_enabled) {
-    Db = alloc_buffer();
-    S1 = alloc_buffer();
-    S2 = alloc_buffer();
+    Db = BK->alloc();
+    S1 = BK->alloc();
+    S2 = BK->alloc();
+    }
+  if (!BK->host) {
+    Uh = alloc_buffer();
+    if (ec_enabled) {
+      Xh = alloc_buffer();
+      Dh = alloc_buffer();
+      }
     }
   }
 
 static void free_all(uint64_t *buf[2])
   {
-  uint64_t *p[6] = { buf[0], buf[1], Vb, Db, S1, S2 };
-  for (int i = 0; i < 6; i++)
-    if (p[i]) free(p[i] - FRONTPAD);
-  Vb = Db = S1 = S2 = NULL;
+  uint64_t *p[5] = { buf[0], buf[1], Db, S1, S2 };
+  for (int i = 0; i < 5; i++)
+    if (p[i]) BK->release(p[i]);
+  uint64_t *h[4] = { Vb, Xh, Dh, Uh };
+  for (int i = 0; i < 4; i++)
+    if (h[i]) free(h[i] - FRONTPAD);
+  Vb = Db = S1 = S2 = Xh = Dh = Uh = NULL;
   }
 
 /* Runs one complete small test in memory (no checkpoints) */
 static int run_small(int rr, int ss, uint64_t *res)
   {
-  r = rr; s = ss;
-  setup_params();
+  set_trinomial(rr, ss);
   uint64_t *buf[2];
   alloc_all(buf);
   memset(&ecs, 0, sizeof ecs);
@@ -1625,6 +1812,116 @@ static int run_small(int rr, int ss, uint64_t *res)
   free_all(buf);
   return rc;
   }
+
+#ifdef IRRED_GPU
+/* Every GPU squaring kernel against the reference squaring on extreme and
+   random inputs, for many r and s (every bound of the kernels' masks and
+   windows); then chains of squarings, GPU against CPU, where both use the
+   same modulus (s odd, s < r/2). */
+static int gpu_selftest(void)
+  {
+  static const int R[] = { 129, 255, 257, 263, 321, 383, 1279, 4097, 4159,
+                           4423, 9689 };
+  const int saved = irred_gpu_kernel(), nk = irred_gpu_nkernels();
+  int fails = 0;
+  long cases = 0;
+  for (size_t ri = 0; ri < sizeof R / sizeof R[0]; ri++) {
+    const int rr = R[ri], h = (rr - 1) / 2;
+    const int cand[] = { 1, 2, 3, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128,
+                         129, 191, 192, 193, h, h - 1, h - 2, h - 31, h - 32,
+                         h - 63, h - 64, h - 65, rr / 3, rr / 4 + 1 };
+    int S[40], ns = 0;
+    for (size_t c = 0; c < sizeof cand / sizeof cand[0]; c++)
+      if (cand[c] >= 1 && cand[c] <= h) S[ns++] = cand[c];
+    for (int c = 0; c < 4; c++)
+      S[ns++] = 1 + (int)(rng_next() % (uint64_t)h);
+    for (int si = 0; si < ns; si++) {
+      set_trinomial(rr, S[si]);         /* smod = s */
+      uint64_t *A = BK->alloc(), *B = BK->alloc();
+      uint64_t *in = calloc(nwords + 2, sizeof(uint64_t));
+      uint64_t *ref = calloc(2 * nwords + 2, sizeof(uint64_t));
+      uint64_t *out = calloc(nwords + 2, sizeof(uint64_t));
+      for (int k = 0; k < nk; k++) {
+        irred_gpu_set_kernel(k);
+        for (int t = 0; t < 4; t++) {   /* all ones, x^(r-1), random x 2 */
+          for (size_t i = 0; i < nwords; i++)
+            in[i] = t == 0 ? ~(uint64_t)0 : t == 1 ? 0 : rng_next();
+          if (t == 1) in[q11] = (uint64_t)1 << ((rr - 1) & WLENM);
+          in[q11] &= mask1;
+          BK->put(A, in);
+          BK->square(A, B);
+          BK->get(B, out);
+          ref_square(in, ref, smod);
+          bool same = ((out[q11] ^ ref[q11]) & mask1) == 0;
+          for (size_t i = 0; i < (size_t)q11; i++)
+            if (out[i] != ref[i]) same = false;
+          cases++;
+          if (!same && ++fails <= 5)
+            printf("  GPU kernel %s wrong: r=%d s=%d input %d\n",
+                   irred_gpu_kernel_name(k), rr, S[si], t);
+          }
+        }
+      BK->release(A);
+      BK->release(B);
+      free(in);
+      free(ref);
+      free(out);
+      }
+    }
+  printf("selftest GPU squaring kernels vs reference (%d kernels, %ld cases): "
+         "%s\n", nk, cases, fails ? "FAILED" : "ok");
+
+  static const struct { int r, s; } C[] = {
+    { 1279, 501 }, { 4423, 1001 }, { 4423, 129 }, { 9689, 4187 } };
+  const int steps = 300;
+  int cf = 0;
+  const struct backend *gpu = BK;
+  for (size_t ci = 0; ci < sizeof C / sizeof C[0]; ci++) {
+    BK = &cpu_backend;
+    set_trinomial(C[ci].r, C[ci].s);
+    uint64_t *ca = cpu_alloc(), *cb = cpu_alloc();
+    uint64_t *start = calloc(nwords + 2, sizeof(uint64_t));
+    uint64_t *out = calloc(nwords + 2, sizeof(uint64_t));
+    for (size_t i = 0; i < nwords; i++) start[i] = rng_next();
+    start[q11] &= mask1;
+    poly_copy(ca, start);
+    for (int i = 0; i < steps; i++) {
+      square(ca, cb);
+      uint64_t *tmp = ca; ca = cb; cb = tmp;
+      }
+    BK = gpu;
+    set_trinomial(C[ci].r, C[ci].s);    /* the same modulus: smod = sodd */
+    for (int k = 0; k < nk; k++) {
+      irred_gpu_set_kernel(k);
+      uint64_t *ga = BK->alloc(), *gb = BK->alloc();
+      BK->put(ga, start);
+      for (int i = 0; i < steps; i++) {
+        BK->square(ga, gb);
+        uint64_t *tmp = ga; ga = gb; gb = tmp;
+        }
+      BK->get(ga, out);
+      bool same = ((out[q11] ^ ca[q11]) & mask1) == 0;
+      for (size_t i = 0; i < (size_t)q11; i++)
+        if (out[i] != ca[i]) same = false;
+      if (!same) {
+        cf++;
+        printf("  GPU kernel %s: chain differs from the CPU, r=%d s=%d\n",
+               irred_gpu_kernel_name(k), C[ci].r, C[ci].s);
+        }
+      BK->release(ga);
+      BK->release(gb);
+      }
+    cpu_release(ca);
+    cpu_release(cb);
+    free(start);
+    free(out);
+    }
+  irred_gpu_set_kernel(saved);
+  printf("selftest GPU == CPU, %d squarings, %d cases x %d kernels: %s\n",
+         steps, (int)(sizeof C / sizeof C[0]), nk, cf ? "FAILED" : "ok");
+  return fails + cf;
+  }
+#endif
 
 /* Small known cases (computed with an independent bit-by-bit program and
    consistent with irred 3.15).  r - sodd = 0 mod 128 for 4423 3015.  Then
@@ -1656,14 +1953,43 @@ static int selftest(void)
     if (!ok) fails++;
   }
 
+  /* the reference squaring chain against the known results (which are for
+     the modulus x^r + x^sodd + 1), and the results to expect from the
+     backend in use (the GPU uses x^r + x^min(s, r-s) + 1) */
+  bool xirred[sizeof T / sizeof T[0]];
+  uint64_t xres[sizeof T / sizeof T[0]];
+  {
+    bool ok = true;
+    for (int i = 0; i < nT; i++) {
+      uint64_t res = 0;
+      set_trinomial(T[i].r, T[i].s);
+      int rc = ref_chain(sodd, &res);
+      if (T[i].irred ? rc != RES_IRRED : (rc != RES_RESIDUE || res != T[i].res))
+        ok = false;
+      xirred[i] = T[i].irred;
+      xres[i] = T[i].res;
+      if (smod != sodd) {
+        rc = ref_chain(smod, &res);
+        xirred[i] = (rc == RES_IRRED);  /* the reciprocal: same verdict */
+        xres[i] = res;
+        if (xirred[i] != T[i].irred) ok = false;
+        }
+      }
+    printf("selftest reference chain vs known results: %s\n", ok ? "ok" : "FAILED");
+    if (!ok) fails++;
+  }
+#ifdef IRRED_GPU
+  if (!BK->host) fails += gpu_selftest();
+#endif
+
   const bool ec_saved = ec_enabled;
   for (int pass = 0; pass < 2; pass++) {
     ec_enabled = (pass == 0);
     for (int i = 0; i < nT; i++) {
       uint64_t res = 0;
       int rc = run_small(T[i].r, T[i].s, &res);
-      bool ok = T[i].irred ? rc == RES_IRRED
-                           : (rc == RES_RESIDUE && res == T[i].res);
+      bool ok = xirred[i] ? rc == RES_IRRED
+                          : (rc == RES_RESIDUE && res == xres[i]);
       printf("selftest r=%5d s=%5d %s: %s\n", T[i].r, T[i].s,
              ec_enabled ? "checked  " : "unchecked", ok ? "ok" : "FAILED");
       if (!ok) fails++;
@@ -1683,8 +2009,8 @@ static int selftest(void)
     uint64_t res = 0;
     int ti = F[i].ti;
     int rc = run_small(T[ti].r, T[ti].s, &res);
-    bool right = T[ti].irred ? rc == RES_IRRED
-                             : (rc == RES_RESIDUE && res == T[ti].res);
+    bool right = xirred[ti] ? rc == RES_IRRED
+                            : (rc == RES_RESIDUE && res == xres[ti]);
     bool ok = right && ecs.failures >= 1;
     printf("selftest fault %s:%" PRIu64 " (r=%d s=%d): %s (%" PRIu64
            " check failure%s, result %s)\n", fault_names[F[i].site], F[i].n,
@@ -1700,7 +2026,7 @@ static int selftest(void)
     int saved = map_checks;
     map_checks = 0;
     int rc = run_small(T[4].r, T[4].s, &res);
-    bool chain_blind = (rc == RES_RESIDUE && res != T[4].res &&
+    bool chain_blind = (rc == RES_RESIDUE && res != xres[4] &&
                         ecs.failures == 0);
     map_checks = saved > 0 ? saved : 16;
     rc = run_small(T[4].r, T[4].s, &res);
@@ -1742,6 +2068,11 @@ static void usage(FILE *f)
     "  --isa auto|avx512|avx2|generic\n"
     "                             interleave code to use (default auto)\n"
     "  -h, --help                 this message\n"
+    "GPU build (irred_gpu) only:\n"
+    "  --device N                 CUDA device (default 0)\n"
+    "  --sq-kernel NAME           auto (default: the fastest, timed at start),\n"
+    "                             fused, k2, k4 or k8\n"
+    "  --cpu                      run on the CPU instead\n"
     "Error checking (on by default):\n"
     "  --no-ec                    no Gerbicz check\n"
     "  --ec-block L               squarings per block (default sqrt(r)/16, >= 32)\n"
@@ -1785,6 +2116,11 @@ int main(int argc, char *argv[])
   const char *isa = "auto";
   uint64_t seed = 0;
   bool have_seed = false;
+#ifdef IRRED_GPU
+  bool use_gpu = true;
+#endif
+  long device = 0;
+  const char *sq_kernel = "auto";
 
   setvbuf(stdout, NULL, _IOLBF, 0);
   crc_init();
@@ -1839,6 +2175,33 @@ int main(int argc, char *argv[])
       }
     else if (!strcmp(arg, "--no-ec"))
       ec_enabled = false;
+    else if (!strcmp(arg, "--cpu")) {
+#ifdef IRRED_GPU
+      use_gpu = false;
+#endif
+      }
+    else if (!strcmp(arg, "--gpu") || !strcmp(arg, "--device") ||
+             !strcmp(arg, "--sq-kernel")) {
+#ifndef IRRED_GPU
+      fprintf(stderr, "%s: this irred was built without GPU support (the GPU "
+              "build is irred_gpu)\n", arg);
+      return EXIT_FAILURE;
+#else
+      if (!strcmp(arg, "--gpu"))
+        use_gpu = true;
+      else if (!strcmp(arg, "--device")) {
+        NEED_VALUE();
+        if (!parse_long(val, 0, 63, &device)) {
+          fprintf(stderr, "bad value for --device: %s\n", val);
+          return EXIT_FAILURE;
+          }
+        }
+      else {
+        NEED_VALUE();
+        sq_kernel = val;
+        }
+#endif
+      }
     else if (!strcmp(arg, "--nt"))
       nt_mode = 1;
     else if (!strcmp(arg, "--no-nt"))
@@ -1923,8 +2286,36 @@ int main(int argc, char *argv[])
 #undef NEED_VALUE
     }
 
-  printf("This is irred (forked github.com/nclvrps/mersenne_trinomial/ version %s, %s)\n",
-         IRRED_VERSION, IRRED_DATE);
+  printf("This is irred (forked github.com/nclvrps/mersenne_trinomial/ version %s, %s%s)\n",
+         IRRED_VERSION, IRRED_DATE,
+#ifdef IRRED_GPU
+         use_gpu ? ", GPU build" : ", GPU build running on the CPU"
+#else
+         ""
+#endif
+         );
+
+  BK = &cpu_backend;
+#ifdef IRRED_GPU
+  if (use_gpu) {
+    if (irred_gpu_open((int)device, verbose) != 0) return EXIT_FAILURE;
+    BK = &gpu_backend;
+    if (strcmp(sq_kernel, "auto") != 0) {
+      int k = -1;
+      for (int i = 0; i < irred_gpu_nkernels(); i++)
+        if (!strcmp(sq_kernel, irred_gpu_kernel_name(i))) k = i;
+      if (k < 0) {
+        fprintf(stderr, "--sq-kernel %s: unknown (auto, fused, k2, k4, k8)\n",
+                sq_kernel);
+        return EXIT_FAILURE;
+        }
+      irred_gpu_set_kernel(k);
+      }
+    }
+#else
+  (void)device;
+  (void)sq_kernel;
+#endif
 
   ilv_nt = (nt_mode == 1);
   if (!choose_interleave(isa)) {
@@ -1940,8 +2331,14 @@ int main(int argc, char *argv[])
     }
 #endif
   if (do_selftest) {
-    printf("Interleave: %s%s\n", ilv_name,
-           nthreads > 1 ? " (threads forced on for small r)" : "");
+    if (BK->host)
+      printf("Interleave: %s%s\n", ilv_name,
+             nthreads > 1 ? " (threads forced on for small r)" : "");
+#ifdef IRRED_GPU
+    else
+      printf("Backend: GPU (every squaring kernel is tested; the runs use %s)\n",
+             irred_gpu_kernel_name(irred_gpu_kernel()));
+#endif
     if (nthreads > 1) mt_min_words = mt_min_block = 1;
     ckpt_enabled = false;
     return selftest();
@@ -1964,8 +2361,9 @@ int main(int argc, char *argv[])
   s = (int)sl;
 
   if (check_params()) return EXIT_FAILURE;
+  set_trinomial(r, s);
   printf("Testing x^%d + x^%d + 1", r, s);
-  if (!(s & 1)) printf(" (via its reciprocal x^%d + x^%d + 1)", r, r - s);
+  if (smod != s) printf(" (via its reciprocal x^%d + x^%d + 1)", r, r - s);
   printf("\n");
   if (!prime(r))
     printf("Warning: r = %d is not prime, so irreducibility test "
@@ -1974,8 +2372,7 @@ int main(int argc, char *argv[])
     printf("Note: r = +-3 (mod 8), so by Swan's theorem this trinomial is "
            "reducible; testing anyway to compute the residue\n");
 
-  setup_params();
-  if (nt_mode < 0) {            /* automatic: streaming stores when the two
+  if (nt_mode < 0 && BK->host) {  /* automatic: streaming stores when the two
                                    squaring buffers do not fit in L3 */
     long l3 = l3_cache_bytes();
     double need = 2.0 * (double)nwords * 8.0;
@@ -1988,12 +2385,35 @@ int main(int argc, char *argv[])
                l3 >> 20);
       }
     }
-  if (verbose)
-    printf("sodd %d, delta %d (%d words + %d bits), %zu words per polynomial"
-           ", %s interleave\n", sodd, delta, deltaw, deltaq, nwords, ilv_name);
-  if (nthreads > 1)
-    printf("Threads: %d%s\n", nthreads, (long)q41 >= mt_min_words ? "" :
-           " requested, but r is too small for them to help: using 1");
+  char sqdesc[64];
+  if (BK->host) {
+    snprintf(sqdesc, sizeof sqdesc, "%s interleave", ilv_name);
+    if (verbose)
+      printf("sodd %d, delta %d (%d words + %d bits), %zu words per polynomial"
+             ", %s interleave\n", sodd, delta, deltaw, deltaq, nwords, ilv_name);
+    if (nthreads > 1)
+      printf("Threads: %d%s\n", nthreads, (long)q41 >= mt_min_words ? "" :
+             " requested, but r is too small for them to help: using 1");
+    }
+#ifdef IRRED_GPU
+  else {
+    if (nthreads > 1 || nt_mode >= 0 || strcmp(isa, "auto") != 0)
+      printf("Note: --threads, --nt and --isa are for the CPU; ignored\n");
+    if (!strcmp(sq_kernel, "auto")) {
+      char tb[160];
+      irred_gpu_tune(tb, sizeof tb);
+      printf("GPU squaring kernel: %s\n", tb);
+      }
+    else
+      printf("GPU squaring kernel: %s (--sq-kernel)\n",
+             irred_gpu_kernel_name(irred_gpu_kernel()));
+    snprintf(sqdesc, sizeof sqdesc, "GPU kernel %s",
+             irred_gpu_kernel_name(irred_gpu_kernel()));
+    if (verbose)
+      printf("modulus x^%d + x^%d + 1, %zu words per polynomial\n", r, smod,
+             nwords);
+    }
+#endif
 
   uint64_t *buf[2];
   alloc_all(buf);
@@ -2007,9 +2427,9 @@ int main(int argc, char *argv[])
     double tm = wall_now();
     if (!map_check(buf[0], buf[1], map_checks)) {
       printf("MAP CHECK FAILED: the fast squaring code disagrees with the "
-             "reference implementation for r = %d, s = %d (%s interleave).\n"
+             "reference implementation for r = %d, s = %d (%s).\n"
              "This is a bug (or a persistent hardware fault); nothing was "
-             "computed.\n", r, s, ilv_name);
+             "computed.\n", r, s, sqdesc);
       free_all(buf);
       return 3;
       }
@@ -2095,7 +2515,7 @@ int main(int argc, char *argv[])
   else {
     if (verbose)
       printf("Not irreducible/primitive, residue %016" PRIx64 " (hex)\n", res);
-    printf("%d %d %c%016" PRIx64 " LOG\n", r, s, (s == sodd) ? 'x' : 'y', res);
+    printf("%d %d %c%016" PRIx64 " LOG\n", r, s, (s == smod) ? 'x' : 'y', res);
     }
 
   if (ckpt_enabled) ckpt_remove_all();

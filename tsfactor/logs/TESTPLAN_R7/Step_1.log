@@ -1,0 +1,13 @@
+$ make
+== NTL: OK (-lntl -lgf2x -lgmp), gf2x called directly ==
+g++ -O3 -march=native -Wall -Wextra -fopenmp -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o tsfactor_cpu tsfactor_cpu.cpp gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -pthread
+== NTL: OK (-lntl -lgf2x -lgmp), gf2x called directly ==
+nvcc -O3 -arch=native -Xcompiler -march=native -I. -Icommon -DHAVE_NTL -DHAVE_GF2X -o tsfactor tsfactor.cu gf2_gcd_ntl.cpp -lntl -lgf2x -lgmp -Xcompiler -pthread
+
+
+$ ./tsfactor --selftest | tail -1
+SELFTEST: all PASS
+
+
+$ ./tsfactor_cpu --selftest | tail -1
+SELFTEST: all PASS

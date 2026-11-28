@@ -1,0 +1,23 @@
+$ build/irred_gpu --no-ckpt --progress 2000 --stop-after 30000 136279841 12338357
+This is irred (forked github.com/nclvrps/mersenne_trinomial/ version 0.23, 20261127, GPU build)
+GPU 0: NVIDIA GeForce RTX 2070 SUPER (sm_75, 40 SMs, 8191 MB)
+Testing x^136279841 + x^12338357 + 1
+GPU squaring kernel: k2 0.133 ms (fused 0.240, k4 0.137, k8 0.168)
+Checkpointing disabled
+Error checking: Gerbicz XOR chain, blocks of 729 squarings, windows of up to 729 blocks; map check passed
+iter 2000/136279841 (  0.00%)  0.11 ms/iter  ETA 4.16 h  residue 524cef6916ae5278  (verified to 0)
+iter 4000/136279841 (  0.00%)  0.109 ms/iter  ETA 4.13 h  residue d61458d6bb7b0384  (verified to 0)
+iter 6000/136279841 (  0.00%)  0.111 ms/iter  ETA 4.19 h  residue 48d654b6eef5b870  (verified to 0)
+iter 8000/136279841 (  0.01%)  0.109 ms/iter  ETA 4.13 h  residue c37bee576d83eac0  (verified to 0)
+iter 10000/136279841 (  0.01%)  0.111 ms/iter  ETA 4.19 h  residue 13636a0f50a7db2c  (verified to 0)
+iter 12000/136279841 (  0.01%)  0.109 ms/iter  ETA 4.13 h  residue b1a8f0877caddb2c  (verified to 0)
+iter 14000/136279841 (  0.01%)  0.111 ms/iter  ETA 4.21 h  residue 322daaf268426984  (verified to 0)
+iter 16000/136279841 (  0.01%)  0.11 ms/iter  ETA 4.15 h  residue 07eb8f491c6b205a  (verified to 0)
+iter 18000/136279841 (  0.01%)  0.111 ms/iter  ETA 4.19 h  residue 35e990e8a4b8bf4e  (verified to 0)
+iter 20000/136279841 (  0.01%)  0.109 ms/iter  ETA 4.13 h  residue 6289c745dbd0ce06  (verified to 0)
+iter 22000/136279841 (  0.02%)  0.111 ms/iter  ETA 4.19 h  residue c3997127d6dd7480  (verified to 0)
+iter 24000/136279841 (  0.02%)  0.109 ms/iter  ETA 4.14 h  residue 422c0fc6b4797d6a  (verified to 0)
+iter 26000/136279841 (  0.02%)  0.11 ms/iter  ETA 4.18 h  residue 90f829faec914cd2  (verified to 0)
+iter 28000/136279841 (  0.02%)  0.109 ms/iter  ETA 4.13 h  residue d787a2054c82f026  (verified to 0)
+iter 30000/136279841 (  0.02%)  0.111 ms/iter  ETA 4.19 h  residue 97b488763a1f6c36  (verified to 0)
+Stopping after 30000/136279841 squarings (--stop-after): finishing the block and verifying before stopping

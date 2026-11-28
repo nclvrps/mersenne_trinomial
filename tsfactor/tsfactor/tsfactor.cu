@@ -1318,7 +1318,7 @@ struct GpuPlatform : TsPlatform {
         char b[176];
         if (cudaGetDeviceProperties(&p, dev) == cudaSuccess) {
             p.name[sizeof p.name - 1] = '\0';
-            snprintf(b, sizeof b, "tsfactor %s on %s (sm_%d%d, %d SMs)",
+            snprintf(b, sizeof b, "tsfactor %s on %.120s (sm_%d%d, %d SMs)",
                      TS_ROUND_STR, p.name, p.major, p.minor,
                      p.multiProcessorCount);
         } else {

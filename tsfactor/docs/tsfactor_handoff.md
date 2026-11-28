@@ -1852,3 +1852,96 @@ OPEN QUESTIONS / NEXT STEPS
   - CPU: at the tuned m the squarings and the products cost the same,
     sqrt(t_sq t_mul) per degree each, so halving either buys ~29%.  The
     squaring now matches factor_modified's; the product is gf2x's.
+
+## Round 11 (small fixes from the R6 test plan; the CPU stage's last blocks)
+
+Written in the error-checking conversation (its round 7), from Gord's
+TESTPLAN_R6 logs (now in the repository: `logs/TESTPLAN_R6/`).  The main
+work of that round was GPU irred (irred handoff §4b); tsfactor got the
+fixes below.
+
+WHAT GORD'S RUN OF ROUND 10 SHOWED  (RTX 2070 SUPER, 6-core Zen 2)
+  - nvcc builds; two warnings (fixed, 1. below).  Both selftests all PASS,
+    the GPU one ten times in a row (--selftest-reps 10); ts_regress.sh all
+    PASS for both builds; ts_ckpt10 behaviour as designed.
+  - Start-up FFT tuning on the card picked fused tlv=3 blv=3 (the round-5
+    winner) in 10.5 s; t_sq 0.195 ms, t_mul 228 ms, m = 34.
+  - The step-5 survivor (s=12337659, skip 262): 192.8 s (round 9: 342 s;
+    predicted ~177 s): intervals 263..1078, 1079..2710, 2711..5362,
+    5363..9136, the factor of degree 5816 found in the fourth, 8874
+    degrees scanned.  Same results file as rounds 4-9 (sha256 8f7104e4...).
+  - Setting a survivor aside and resuming it later works; the "kept for
+    later" note was hard to spot (2. below).  The lock file stayed behind
+    after a run (3. below).  A rerun with every survivor done still tuned
+    the FFT for 10.5 s before saying so (4. below).
+  - Step 5, tsfactor_cpu against factor_ec on one survivor (s = 588, skip
+    55, maxd 279): 75.5 s against 74.9 s -- "somewhat similar, which might
+    be unexpected".  It is what the numbers give; my round-10 prediction
+    (~15 s ahead) was wrong because it compared the certified gcd with
+    NTL's GCD (51 s in gcdbench), but factor_ec calls halfgcd.cpp's
+    FastGCD, which took 42.5 s.  The whole difference, from the two logs:
+        tuning (once per process)            +3.4 s
+        start (m = 17 instead of 14)         +0.6 s
+        14 degrees more (56..293, whole
+          blocks of 17, vs 56..279)          +1.7 s
+        0.123 vs 0.121 s per degree          +0.4 s
+        certified gcd 36.6 s vs FastGCD 42.5 -5.9 s
+    5. below removes the overshoot; in a process that does many survivors
+    (tuning once) tsfactor_cpu should then be ~5 s (7%) faster per survivor
+    than factor_ec, with full error checking and a certified gcd.  The
+    number that matters for the cloud is still the one with every core
+    busy (TESTPLAN_R6 step 5, second part).
+
+CHANGES
+  1. nvcc warnings: `allow_no_ntl` exists only in builds without NTL; the
+     device name in the tuning fingerprint is cut at 120 characters
+     (`%.120s`), so the 176-byte field can no longer truncate.
+  2. The set-aside note is printed between blank lines as
+     "*** NOTE: 1 checkpoint(s) for s not in this list are kept for
+     later: ... ***", and again at the end of the run.
+  3. The prefix lock file is deleted at every normal exit (also after an
+     interrupt or a persistent fault).  Safe against a concurrent start: a
+     process that gets the flock checks that the file it locked is still
+     the one at the path (inode and device) and starts over if not.
+  4. Nothing pending -> "done: nothing to do -- all N survivors of LIST
+     are in PREFIX.results.txt", exit 0, before the device is set up or
+     anything is tuned.
+  5. Exact --maxd for one-interval scans.  When the whole scan of a
+     survivor, skip+1 .. maxd, is one interval (the CPU stage), the tuned m
+     makes the last block end up to m-1 degrees past maxd.  maxd_block_size
+     picks m' in [3m/4, m] (never more: no memory growth) with the least
+     modelled cost: m'(k0 + m'/2) squarings to start, then ceil(L/m')
+     blocks of m'^2 squarings plus one product (t_sq, t_mul from the tuning
+     record).  It applies only to a survivor started from scratch, without
+     --m, -Z, or a checkpoint, and says once per change: "block size 16
+     instead of 19 for the scan 56..279 (one interval): 14 blocks end at
+     --maxd exactly (m=19: at 283)".  Full size in the sandbox (s = 588):
+     Interval 56..279, 224 degrees.  With Gord's timings (m = 17): m' = 16,
+     about 1.7 s less per survivor.
+  6. TS_ROUND_STR "round 11": a round-10 checkpoint is resumed (format
+     unchanged) but tunes again, as for any change of binary.
+  7. A survivor with no factor up to the bound is reported as "s
+     primitive" only when r is one of the 52 known Mersenne exponents
+     (mersenne_exponent()); otherwise "s irreducible" -- the scan proves
+     irreducibility, and primitivity needs 2^r - 1 prime.  Checked at
+     r = 9001, s = 1599 (irreducible by survlaw, CPU irred and the emulated
+     irred_gpu).
+
+VALIDATION (sandbox)
+  - selftest all PASS, CPU build and GPU build (emulated).
+  - make regress: ts_regress.sh and ts_ckpt10.sh all PASS (CPU build).
+  - by hand: the lock file is gone after a normal run; a second run of the
+    same list prints "nothing to do" without tuning; the block-size choice
+    at small r (keeps m when fewer, larger blocks are cheaper, as at small r
+    where the product dominates) and at full size (above).
+
+ON GORD'S QUESTIONS
+  - "--sched linear, --m, --q0, -f: relics?"  --sched linear and --q0 are
+    kept as test knobs (ts_regress and the selftest use them to vary the
+    block structure while the results must not change); they could leave
+    the usage text.  --m stays useful (pins m and skips the m timing).
+    tsfactor has no -f.
+  - Survival law for non-Mersenne prime r: measured in the sandbox, see
+    `docs/harness_design.md` (repository top level), section "Survival
+    law".  The 1/k law and the constant 16/9 do not depend on whether
+    2^r - 1 is prime; the schedule needs no change for other r.
