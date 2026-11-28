@@ -29,6 +29,7 @@ A handful of lines instead have exactly this reduced format (any fields
 after the second are ignored):
 
     s u
+    s irreducible
     s primitive
 
 These lines are simply skipped -- they don't describe a factor to check.
@@ -293,14 +294,14 @@ def process_file(r, path, progress_every=0):
 
             parts = line.split()
 
-            if len(parts) >= 2 and parts[1] in ("u", "primitive"):
+            if len(parts) >= 2 and parts[1] in ("u", "irreducible", "primitive"):
                 skipped += 1
                 continue
 
             if len(parts) < 3:
                 sys.exit(
                     f"ERROR: line {lineno}: expected 'S D MASK' (or 'S u' / "
-                    f"'S primitive'), got: {line!r}"
+                    f"'S irreducible' / 'S primitive'), got: {line!r}"
                 )
 
             s_str, d_str, mask_str = parts[0], parts[1], parts[2]

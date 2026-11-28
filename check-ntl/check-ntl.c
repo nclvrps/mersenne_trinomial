@@ -61,14 +61,13 @@ int
 main (int argc, char *argv[])
 {
   unsigned long r, s, k;
-  int c;
   char *factor = NULL;
   unsigned long alloc = 0; /* allocated size of factor */
   unsigned long n; /* length of factor in hexadecimal */
   unsigned long trinomial = 0;
   unsigned long primitive = 0;
   int verbose = 0;
-  char str[10];
+  char str[12];
 
   if (argc >= 2 && strcmp (argv[1], "-v") == 0)
     {
@@ -94,6 +93,7 @@ main (int argc, char *argv[])
       if (scanf ("%lu", &k) != 1 || k == r)
         {
           if (scanf ("%s", str) != 1 || (strcmp (str, "primitive") != 0 &&
+                                         strcmp (str, "irreducible") != 0 &&
                                          strcmp (str, "u") != 0))
             {
               fprintf (stderr, "Error while reading k and/or primitive\n");
